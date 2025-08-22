@@ -1,1 +1,7 @@
-NL2X
+# NL2X
+
+##  Structure
+```
+/data           # Dir. of benchmarks
+/baseline       # Dir. of baselines
+```
