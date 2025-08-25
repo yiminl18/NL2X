@@ -2,6 +2,6 @@
 
 ##  Structure
 ```
-/data           # Dir. of benchmarks
-/baseline       # Dir. of baselines
+/benchmarks           # Dir. of benchmarks
+/baselines       # Dir. of baselines
 ```

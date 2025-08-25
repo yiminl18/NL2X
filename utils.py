@@ -1,9 +1,55 @@
 import argparse
+from baselines import list_baselines
+from benchmarks import list_benchmarks
 
 def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--workload", type=str, required=True, help="The workload to be evaluated")
-    parser.add_argument("--algo", type=str, required=True, help="The algorithm to be evaluated")
-    parser.add_argument("--seed", type=int, default=42, help="The seed to be evaluated")
+    parser = argparse.ArgumentParser(description="Modular Evaluation Framework")
+    
+    parser.add_argument(
+        "--baseline",
+        type=str,
+        required=True,
+        help=f"Baseline algorithm to evaluate. Available: {list_baselines()}"
+    )
+    
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        required=True,
+        help=f"Benchmark to evaluate on. Available: {list_benchmarks()}"
+    )
+    
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility"
+    )
+    
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Maximum number of samples to evaluate"
+    )
+    
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./results",
+        help="Directory to save results"
+    )
+    
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Compare all available baselines"
+    )
+    
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    
     return parser.parse_args()
-

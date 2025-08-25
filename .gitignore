@@ -1,8 +1,11 @@
 .DS_Store
 .vscode
 .idea
+.venv/
+.claude/
 
 node_modules/
 __pycache__/
 azuregpt4o.txt
 test.py
+results/
