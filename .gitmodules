@@ -1,0 +1,18 @@
+[submodule "baseline/Unify"]
+	path = baseline/Unify
+	url = git@github.com:TsinghuaDatabaseGroup/Unify.git
+[submodule "baseline/lotus"]
+	path = baseline/lotus
+	url = git@github.com:lotus-data/lotus.git
+[submodule "baseline/docetl"]
+	path = baseline/docetl
+	url = git@github.com:ucbepic/docetl.git
+[submodule "data/Kramabench"]
+	path = data/Kramabench
+	url = git@github.com:mitdbg/Kramabench.git
+[submodule "data/DSBench"]
+	path = data/DSBench
+	url = git@github.com:LiqiangJing/DSBench.git
+[submodule "data/CRAG"]
+	path = data/CRAG
+	url = git@github.com:facebookresearch/CRAG.git
