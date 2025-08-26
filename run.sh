@@ -1,6 +1,6 @@
-for BASELINE in "gpt4o_base"; do
+for BASELINE in "dummy"; do
   for SEED in 42; do
-    for BENCHMARK in "dsbench"; do
+    for BENCHMARK in "crag"; do
         python evaluate.py --baseline $BASELINE --benchmark $BENCHMARK --seed $SEED
     done
   done

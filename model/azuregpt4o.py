@@ -11,7 +11,8 @@ def gpt_4o_azure(prompt,
                 temperature=0,
                 top_p=1,
                 frequency_penalty=0,
-                presence_penalty=0):
+                presence_penalty=0,
+                return_usage=False):
     """
     Get response from Azure OpenAI API.
     
@@ -20,9 +21,10 @@ def gpt_4o_azure(prompt,
         key_path (str): Path to the API key file
         max_tokens (int): Maximum tokens for response
         temperature (float): Response randomness (0-1)
+        return_usage (bool): If True, return usage information along with content
         
     Returns:
-        str: The response content from the model
+        str or tuple: The response content from the model, or (content, usage) if return_usage=True
     """
     # Read API key
     with open(key_path, 'r') as f:
@@ -58,7 +60,12 @@ def gpt_4o_azure(prompt,
             presence_penalty=presence_penalty,
             stream=False
         )
-    return completion.choices[0].message.content
+    content = completion.choices[0].message.content
+    
+    if return_usage:
+        return content, completion.usage
+    else:
+        return content
 
 if __name__ == "__main__":
     # test the function

@@ -35,6 +35,7 @@ class EvaluationResult:
 class ContentDataType:
     type: str
     path: Optional[str] = None
+    content: Optional[Any] = None
 
 class BenchmarkInterface(ABC):
     def __init__(self, config: BenchmarkConfig):
