@@ -1,6 +1,6 @@
-for BASELINE in "mock_unify" "mock_docetl" "mock_lotus"; do
+for BASELINE in "gpt4o_base"; do
   for SEED in 42; do
-    for BENCHMARK in "mock_dsbench" "mock_kramabench" "mock_crag"; do
+    for BENCHMARK in "dsbench"; do
         python evaluate.py --baseline $BASELINE --benchmark $BENCHMARK --seed $SEED
     done
   done

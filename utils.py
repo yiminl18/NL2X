@@ -8,7 +8,7 @@ def parse_args():
     parser.add_argument(
         "--baseline",
         type=str,
-        required=True,
+        required=False,
         help=f"Baseline algorithm to evaluate. Available: {list_baselines()}"
     )
     
@@ -29,7 +29,7 @@ def parse_args():
     parser.add_argument(
         "--max-samples",
         type=int,
-        default=None,
+        default=1,
         help="Maximum number of samples to evaluate"
     )
     
@@ -52,4 +52,13 @@ def parse_args():
         help="Enable verbose logging"
     )
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    # Validate arguments
+    if not args.compare and args.baseline is None:
+        parser.error("--baseline is required when not using --compare")
+    
+    return args
+
+
+

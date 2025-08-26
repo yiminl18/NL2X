@@ -20,3 +20,4 @@ def list_benchmarks():
 from .mock_crag import MockCRAGBenchmark
 from .mock_dsbench import MockDSBenchBenchmark
 from .mock_kramabench import MockKramaBenchmark
+from .dsbench import DSBenchBenchmark

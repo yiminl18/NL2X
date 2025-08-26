@@ -70,9 +70,18 @@ class EvaluationFramework:
             eval_results.append(eval_result)
         
         total_time = time.time() - start_time
+        print(eval_results)
+        try:
+            aggregate_metrics = benchmark.compute_aggregate_metrics(eval_results)
+        except Exception as e:
+            logger.error(f"Error computing aggregate metrics for benchmark {benchmark_name}: {e}")
+            aggregate_metrics = {"error": f"Failed to compute metrics: {str(e)}"}
         
-        aggregate_metrics = benchmark.compute_aggregate_metrics(eval_results)
-        baseline_metrics = baseline.get_metrics()
+        try:
+            baseline_metrics = baseline.get_metrics()
+        except Exception as e:
+            logger.error(f"Error getting baseline metrics for {baseline_name}: {e}")
+            baseline_metrics = {"error": f"Failed to get baseline metrics: {str(e)}"}
         
         final_results = {
             "baseline": baseline_name,
@@ -158,17 +167,23 @@ class EvaluationFramework:
         
         all_metrics = set()
         for baseline_results in results.values():
-            all_metrics.update(baseline_results["aggregate_metrics"].keys())
+            if isinstance(baseline_results.get("aggregate_metrics"), dict):
+                all_metrics.update(baseline_results["aggregate_metrics"].keys())
+            else:
+                logger.warning(f"Invalid aggregate_metrics format for baseline {baseline_results.get('baseline', 'unknown')}")
         
         for metric in all_metrics:
             summary["metrics_comparison"][metric] = {}
             available_baselines = []
             
             for baseline, baseline_results in results.items():
-                value = baseline_results["aggregate_metrics"].get(metric, None)
-                summary["metrics_comparison"][metric][baseline] = value
-                if value is not None:
-                    available_baselines.append(baseline)
+                if isinstance(baseline_results.get("aggregate_metrics"), dict):
+                    value = baseline_results["aggregate_metrics"].get(metric, None)
+                    summary["metrics_comparison"][metric][baseline] = value
+                    if value is not None:
+                        available_baselines.append(baseline)
+                else:
+                    summary["metrics_comparison"][metric][baseline] = None
             
             summary["metric_availability"][metric] = {
                 "available_baselines": available_baselines,
@@ -177,20 +192,38 @@ class EvaluationFramework:
             }
         
         for metric, values in summary["metrics_comparison"].items():
-            valid_values = [(k, v) for k, v in values.items() if v is not None and isinstance(v, (int, float))]
+            # Filter for valid numeric values only
+            valid_values = []
+            for k, v in values.items():
+                if v is not None:
+                    try:
+                        # Try to convert to float to ensure it's numeric
+                        float_v = float(v)
+                        valid_values.append((k, float_v))
+                    except (ValueError, TypeError):
+                        # Skip non-numeric values
+                        logger.warning(f"Skipping non-numeric metric value for {metric} in baseline {k}: {v}")
+                        continue
             
             if valid_values:
                 best_baseline, best_value = max(valid_values, key=lambda x: x[1])
                 worst_baseline, worst_value = min(valid_values, key=lambda x: x[1])
+                mean_value = sum(v for _, v in valid_values) / len(valid_values)
+                
+                # Calculate standard deviation
+                if len(valid_values) > 1:
+                    variance = sum((v - mean_value) ** 2 for _, v in valid_values) / len(valid_values)
+                    std_value = variance ** 0.5
+                else:
+                    std_value = 0.0
                 
                 summary["metrics_comparison"][metric].update({
                     "best": best_baseline,
                     "best_value": best_value,
                     "worst": worst_baseline,
                     "worst_value": worst_value,
-                    "mean": sum(v for _, v in valid_values) / len(valid_values),
-                    "std": (sum((v - sum(v2 for _, v2 in valid_values) / len(valid_values)) ** 2 
-                               for _, v in valid_values) / len(valid_values)) ** 0.5 if len(valid_values) > 1 else 0.0,
+                    "mean": mean_value,
+                    "std": std_value,
                     "valid_comparisons": len(valid_values)
                 })
             else:

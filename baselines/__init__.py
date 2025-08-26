@@ -20,3 +20,5 @@ def list_baselines():
 from .mock_unify import MockUnifyBaseline
 from .mock_docetl import MockDocETLBaseline
 from .mock_lotus import MockLotusBaseline
+from .unify import UnifyBaseline
+from .gpt4o_base import GPT4oBaseBaseline

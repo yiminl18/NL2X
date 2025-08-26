@@ -31,6 +31,11 @@ class EvaluationResult:
     metrics: Dict[str, float]
     metadata: Optional[Dict[str, Any]] = None
 
+@dataclass
+class ContentDataType:
+    type: str
+    path: Optional[str] = None
+
 class BenchmarkInterface(ABC):
     def __init__(self, config: BenchmarkConfig):
         self.config = config
