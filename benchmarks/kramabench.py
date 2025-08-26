@@ -68,27 +68,26 @@ class KramaBenchBenchmark(BenchmarkInterface):
                 for data_source in task["data_sources"]:
                     # Handle different types of data sources
                     if data_source.endswith("/*"):
-                        # Directory with all files
+                        # Directory with all files (recursive)
                         dir_name = data_source[:-2]
                         dir_path = os.path.join(self.data_path, dir_name)
                         if os.path.exists(dir_path):
-                            for file_name in os.listdir(dir_path):
-                                file_path = os.path.join(dir_path, file_name)
-                                if os.path.isfile(file_path):
-                                    context[f"{dir_name}/{file_name}"] = self._create_content_type(file_path)
+                            self._add_directory_files(dir_path, dir_name, context, recursive=True)
                     elif data_source.endswith("/"):
                         # Directory reference
-                        dir_path = os.path.join(self.data_path, data_source)
+                        dir_name = data_source[:-1] if data_source != "/" else ""
+                        dir_path = os.path.join(self.data_path, dir_name)
                         if os.path.exists(dir_path):
-                            for file_name in os.listdir(dir_path):
-                                file_path = os.path.join(dir_path, file_name)
-                                if os.path.isfile(file_path):
-                                    context[f"{data_source}{file_name}"] = self._create_content_type(file_path)
+                            self._add_directory_files(dir_path, dir_name, context, recursive=False)
                     else:
                         # Single file reference
                         file_path = os.path.join(self.data_path, data_source)
                         if os.path.exists(file_path):
-                            context[data_source] = self._create_content_type(file_path)
+                            if os.path.isdir(file_path):
+                                # Handle case where it's actually a directory
+                                self._add_directory_files(file_path, data_source, context, recursive=False)
+                            else:
+                                context[data_source] = self._create_content_type(file_path)
             
             # Create sample
             sample = BenchmarkSample(
@@ -114,6 +113,31 @@ class KramaBenchBenchmark(BenchmarkInterface):
             
         return self._samples
     
+    def _add_directory_files(self, dir_path: str, dir_name: str, context: Dict[str, ContentDataType], recursive: bool = False):
+        """Add files from a directory to context."""
+        if recursive:
+            # Recursively walk through subdirectories
+            for root, _, files in os.walk(dir_path):
+                for file_name in files:
+                    file_path = os.path.join(root, file_name)
+                    # Get relative path from dir_path
+                    rel_path = os.path.relpath(file_path, dir_path)
+                    if dir_name:
+                        key = f"{dir_name}/{rel_path}".replace("\\", "/")
+                    else:
+                        key = rel_path.replace("\\", "/")
+                    context[key] = self._create_content_type(file_path)
+        else:
+            # Only process files in the immediate directory
+            for file_name in os.listdir(dir_path):
+                file_path = os.path.join(dir_path, file_name)
+                if os.path.isfile(file_path):
+                    if dir_name:
+                        key = f"{dir_name}/{file_name}"
+                    else:
+                        key = file_name
+                    context[key] = self._create_content_type(file_path)
+    
     def _create_content_type(self, file_path: str) -> ContentDataType:
         """Create ContentDataType based on file extension."""
         ext = Path(file_path).suffix.lower()
@@ -130,8 +154,25 @@ class KramaBenchBenchmark(BenchmarkInterface):
             return ContentDataType("html", path=file_path)
         elif ext in ['.pdf']:
             return ContentDataType("pdf", path=file_path)
+        elif ext in ['.txt', '.text', '.md', '.lst', '.dat']:
+            return ContentDataType("text", path=file_path)
+        elif ext in ['.npz', '.npy']:
+            # NumPy files
+            return ContentDataType("numpy", path=file_path)
+        elif ext in ['.tle']:
+            # TLE files (Two Line Element for satellites)
+            return ContentDataType("text", path=file_path)
+        elif ext in ['.cdf']:
+            # Common Data Format files
+            return ContentDataType("cdf", path=file_path)
+        elif ext in ['.gpkg']:
+            # GeoPackage files
+            return ContentDataType("geo", path=file_path)
+        elif ext in ['.sp3', '.hdr']:
+            # SP3 orbit files
+            return ContentDataType("text", path=file_path)
         else:
-            # Default to text
+            # Default to text for unknown extensions
             return ContentDataType("text", path=file_path)
     
     def get_samples(self) -> List[BenchmarkSample]:

@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 import os
 import base64
 import pandas as pd
+import json
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
@@ -24,15 +25,24 @@ def encode_image(image_path):
 
 def read_excel(file_path):
     """Read all sheets from an Excel file."""
-    xls = pd.ExcelFile(file_path)
-    sheets = {}
-    for sheet_name in xls.sheet_names:
-        sheets[sheet_name] = xls.parse(sheet_name)
-    return sheets
+    try:
+        xls = pd.ExcelFile(file_path)
+        sheets = {}
+        for sheet_name in xls.sheet_names:
+            sheets[sheet_name] = xls.parse(sheet_name)
+        return sheets
+    except Exception as e:
+        return None
 
-def dataframe_to_text(df):
-    """Convert DataFrame to readable text."""
-    return df.to_string(index=False)
+def dataframe_to_text(df, max_rows=1000):
+    """Convert DataFrame to readable text with row limit."""
+    if len(df) > max_rows:
+        df = df.head(max_rows)
+        text = df.to_string(index=False)
+        text += f"\n... (showing first {max_rows} of {len(df)} rows)"
+    else:
+        text = df.to_string(index=False)
+    return text
 
 def combine_sheets_text(sheets):
     """Combine all Excel sheets into a single text."""
@@ -44,20 +54,40 @@ def combine_sheets_text(sheets):
 
 def read_csv(file_path):
     """Read CSV file and return as text."""
-    df = pd.read_csv(file_path)
-    return dataframe_to_text(df)
+    try:
+        df = pd.read_csv(file_path)
+        return dataframe_to_text(df)
+    except Exception as e:
+        # Try with different parameters
+        try:
+            df = pd.read_csv(file_path, encoding='latin-1')
+            return dataframe_to_text(df)
+        except:
+            return f"Error reading CSV: {str(e)}"
 
 def read_json(file_path):
     """Read JSON file and return as formatted text."""
-    import json
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    return json.dumps(data, indent=2)
+    try:
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        return json.dumps(data, indent=2)
+    except Exception as e:
+        return f"Error reading JSON: {str(e)}"
 
 def read_text(file_path):
-    """Read text file."""
-    with open(file_path, "r") as f:
-        return f.read()
+    """Read text file with encoding fallback."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        # Try with different encoding
+        try:
+            with open(file_path, "r", encoding="latin-1") as f:
+                return f.read()
+        except:
+            return "(Unable to decode file content)"
+    except Exception as e:
+        return f"Error reading file: {str(e)}"
 
 @register_baseline("gpt_4o_zero_shot")
 class GPT4oZeroShotBaseline(BaselineInterface):
@@ -70,7 +100,6 @@ class GPT4oZeroShotBaseline(BaselineInterface):
         self.total_queries = 0
         self.total_time = 0
         self.total_cost = 0
-        self.cache = {}  # Initialize cache
         
         # Pricing for GPT-4o
         self.input_cost_per_1k = 0.0015
@@ -95,6 +124,8 @@ class GPT4oZeroShotBaseline(BaselineInterface):
                     continue
                 
                 if not file_path or not os.path.exists(file_path):
+                    if file_path:
+                        text_content += f"\n[{key}]: (File not found: {file_path})\n"
                     continue
                 
                 # Process based on file type
@@ -103,9 +134,13 @@ class GPT4oZeroShotBaseline(BaselineInterface):
                 elif file_type == "excel":
                     try:
                         sheets = read_excel(file_path)
-                        excel_text = combine_sheets_text(sheets)
-                        text_content += f"\n[Excel file: {key}]\n{excel_text}\n"
+                        if sheets:
+                            excel_text = combine_sheets_text(sheets)
+                            text_content += f"\n[Excel file: {key}]\n{excel_text}\n"
+                        else:
+                            text_content += f"\n[Excel file: {key}] (Could not read file)\n"
                     except Exception as e:
+                        text_content += f"\n[Excel file: {key}] (Error: {str(e)})\n"
                         if self.config.verbose:
                             self.logger.warning(f"Failed to read Excel file {file_path}: {e}")
                 elif file_type == "csv":
@@ -113,6 +148,7 @@ class GPT4oZeroShotBaseline(BaselineInterface):
                         csv_text = read_csv(file_path)
                         text_content += f"\n[CSV file: {key}]\n{csv_text}\n"
                     except Exception as e:
+                        text_content += f"\n[CSV file: {key}] (Error: {str(e)})\n"
                         if self.config.verbose:
                             self.logger.warning(f"Failed to read CSV file {file_path}: {e}")
                 elif file_type == "json":
@@ -120,6 +156,7 @@ class GPT4oZeroShotBaseline(BaselineInterface):
                         json_text = read_json(file_path)
                         text_content += f"\n[JSON file: {key}]\n{json_text}\n"
                     except Exception as e:
+                        text_content += f"\n[JSON file: {key}] (Error: {str(e)})\n"
                         if self.config.verbose:
                             self.logger.warning(f"Failed to read JSON file {file_path}: {e}")
                 elif file_type in ["text", "html"]:
@@ -127,19 +164,30 @@ class GPT4oZeroShotBaseline(BaselineInterface):
                         file_text = read_text(file_path)
                         text_content += f"\n[{key}]\n{file_text}\n"
                     except Exception as e:
+                        text_content += f"\n[{key}] (Error: {str(e)})\n"
                         if self.config.verbose:
                             self.logger.warning(f"Failed to read text file {file_path}: {e}")
                 elif file_type == "pdf":
                     # For PDF files, we'll just note their presence
-                    # Full PDF processing would require additional libraries
-                    text_content += f"\n[PDF file: {key}] (PDF processing not implemented - file present but not read)\n"
+                    # Full PDF processing would require additional libraries like PyPDF2
+                    text_content += f"\n[PDF file: {key}] (PDF processing not implemented - file present but content not extracted)\n"
+                elif file_type in ["numpy", "npz", "npy"]:
+                    # NumPy files would require numpy library
+                    text_content += f"\n[NumPy file: {key}] (NumPy file detected - requires numpy library for processing)\n"
+                elif file_type == "cdf":
+                    # CDF files would require specific scientific libraries
+                    text_content += f"\n[CDF file: {key}] (Common Data Format file - requires specialized library)\n"
+                elif file_type == "geo":
+                    # GeoPackage files would require geopandas or similar
+                    text_content += f"\n[GeoPackage file: {key}] (Geographic data file - requires spatial data library)\n"
                 else:
                     # Try to read as text for unknown types
                     try:
                         file_text = read_text(file_path)
                         text_content += f"\n[{key}]\n{file_text}\n"
                     except:
-                        pass
+                        # If can't read as text, note the file presence
+                        text_content += f"\n[Binary file: {key}] (File present but could not read as text)\n"
         
         return text_content, images
     
@@ -205,13 +253,6 @@ Examples of answer formats:
         """Process a single query with optional context."""
         start_time = time.time()
         
-        # Generate cache key
-        cache_key = f"{query}:{str(sorted(context.keys()) if context else [])}"
-        if cache_key in self.cache:
-            cached_result = self.cache[cache_key]
-            cached_result.metadata["from_cache"] = True
-            return cached_result
-        
         try:
             # Prepare context
             text_content, images = self._prepare_context(context)
@@ -241,6 +282,7 @@ Examples of answer formats:
             # Parse answer from response
             answer = response
             if "Answer:" in response:
+                # Extract everything after "Answer:"
                 answer = response.split("Answer:")[-1].strip()
             
             execution_time = time.time() - start_time
@@ -256,14 +298,10 @@ Examples of answer formats:
                     "num_images": len(images),
                     "text_length": len(text_content) if text_content else 0,
                     "tokens_used": usage.total_tokens,
-                    "cost": call_cost,
+                    "cost": call_cost
                 },
                 execution_time=execution_time
             )
-            
-            # Cache the result
-            if hasattr(self, 'cache'):
-                self.cache[cache_key] = result
             
             if self.config.verbose:
                 self.logger.info(f"Processed query in {execution_time:.2f}s, cost: ${call_cost:.4f}")
@@ -283,7 +321,7 @@ Examples of answer formats:
                 metadata={
                     "baseline": "gpt_4o_zero_shot",
                     "context_provided": context is not None,
-                    "from_cache": False
+                    "error": True
                 },
                 execution_time=execution_time,
                 error=str(e)
@@ -308,6 +346,5 @@ Examples of answer formats:
             "average_time": self.total_time / max(1, self.total_queries),
             "total_cost": self.total_cost,
             "average_cost": self.total_cost / max(1, self.total_queries),
-            "cache_size": len(self.cache) if hasattr(self, 'cache') else 0,
             "baseline_type": "gpt_4o_zero_shot"
         }
