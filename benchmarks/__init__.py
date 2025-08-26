@@ -17,8 +17,7 @@ def get_benchmark(name: str, **kwargs) -> BenchmarkInterface:
 def list_benchmarks():
     return list(_BENCHMARK_REGISTRY.keys())
 
-from .mock_crag import MockCRAGBenchmark
-from .mock_dsbench import MockDSBenchBenchmark
 from .mock_kramabench import MockKramaBenchmark
 from .dsbench import DSBenchBenchmark
 from .crag import CRAGBenchmark
+from .kramabench import KramaBenchBenchmark
