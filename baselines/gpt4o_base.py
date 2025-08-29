@@ -5,55 +5,20 @@ from typing import Any, Dict, List, Optional
 import cost
 from .base import BaselineInterface, BaselineResult, BaselineConfig
 from . import register_baseline
+from .utils import (
+    encode_image,
+    read_excel,
+    combine_sheets_text,
+    read_txt
+)
 from model.azuregpt4o import gpt_4o_azure
 import tiktoken
-import os
-import base64
-import pandas as pd
 
 MODEL_LIMITS = 128000
 TOKENS4GENERATION = 6000
 
 model_name = "gpt-4o"
 encoding = tiktoken.encoding_for_model(model_name)
-
-def find_jpg_files(directory):
-    jpg_files = [file for file in os.listdir(directory) if file.lower().endswith('.jpg') or file.lower().endswith('.png')]
-    return jpg_files if jpg_files else None
-
-# Function to encode the image
-def encode_image(image_path):
-  with open(image_path, "rb") as image_file:
-    return base64.b64encode(image_file.read()).decode('utf-8')
-
-def find_excel_files(directory):
-    jpg_files = [file for file in os.listdir(directory) if (file.lower().endswith('xlsx') or file.lower().endswith('xlsb') or file.lower().endswith('xlsm')) and not "answer" in file.lower()]
-    return jpg_files if jpg_files else None
-
-def read_excel(file_path):
-    # 读取Excel文件中的所有sheet
-    xls = pd.ExcelFile(file_path)
-    sheets = {}
-    for sheet_name in xls.sheet_names:
-        sheets[sheet_name] = xls.parse(sheet_name)
-    return sheets
-
-def dataframe_to_text(df):
-    # 将DataFrame转换为文本
-    text = df.to_string(index=False)
-    return text
-
-def combine_sheets_text(sheets):
-    # 将所有sheet的文本内容组合起来
-    combined_text = ""
-    for sheet_name, df in sheets.items():
-        sheet_text = dataframe_to_text(df)
-        combined_text += f"Sheet name: {sheet_name}\n{sheet_text}\n\n"
-    return combined_text
-
-def read_txt(path):
-    with open(path, "r") as f:
-        return f.read()
 
 def get_gpt_res(text, images):
     image_codes = []
