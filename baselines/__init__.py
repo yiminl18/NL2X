@@ -18,5 +18,5 @@ def list_baselines():
     return list(_BASELINE_REGISTRY.keys())
 
 from .gpt4o_base import GPT4oBaseBaseline
-from .gpt_4o_zero_shot import GPT4oZeroShotBaseline
+from .gpt4o_zero_shot import GPT4oZeroShotBaseline
 from .dummy import DummyBaseline

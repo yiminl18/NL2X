@@ -4,6 +4,7 @@ import os
 import base64
 import pandas as pd
 import json
+import numpy as np
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
@@ -89,7 +90,7 @@ def read_text(file_path):
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
-@register_baseline("gpt_4o_zero_shot")
+@register_baseline("gpt4o_zero_shot")
 class GPT4oZeroShotBaseline(BaselineInterface):
     """
     GPT-4o Zero-shot baseline implementation for KramaBench.
@@ -256,7 +257,7 @@ Examples of answer formats:
         try:
             # Prepare context
             text_content, images = self._prepare_context(context)
-            
+            print(f"Prepared text content length: {len(text_content)}")
             # Truncate text if too long
             if text_content:
                 token_count = len(encoding.encode(text_content))
@@ -267,6 +268,7 @@ Examples of answer formats:
                     if self.config.verbose:
                         self.logger.warning(f"Truncated context from {token_count} to {len(truncated_tokens)} tokens")
             
+            print(f"Prepared text content length2: {len(text_content)}")
             # Create prompt
             messages = self._create_prompt(query, text_content, images)
             
