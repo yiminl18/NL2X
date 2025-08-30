@@ -689,8 +689,7 @@ When generating a pipeline, the model must follow these rules:
 4. **Data Passing**
     * Files needed to be loaded are stored in a dict called `data_dict`.
         * This dict is prepared by other components and passed to the pipeline code. Do not reload or redefine it.
-        * The structure of `data_dict` is {<dataset_name>: <pandas.DataFrame>/Json}. The specific type of each dataset is according to the suffix of the dataset name.
-        * For example, if a dataset is named `users.csv`, it is loaded as a pandas DataFrame. Similarly, if a dataset is named `config.json`, it is loaded as a Json object.
+        * The structure of `data_dict` is {<dataset_name>: <pandas.DataFrame>}. 
 
 5. **Operator Correctness**
 

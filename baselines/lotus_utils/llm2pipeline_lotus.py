@@ -12,6 +12,7 @@ import subprocess
 from typing import List, Dict, Any, Optional, NamedTuple
 import traceback
 import re
+import pandas as pd
 
 # Data structure for pipeline-error pairs
 class FailedPipeline(NamedTuple):
@@ -25,8 +26,47 @@ sys.path.append('/Users/chiyuh/Workspace/NL2X/model')
 from azuregpt4o import gpt_4o_azure
 from prompt import INSTRUCTION_PROMPT, PIPELINE_GENERATION_PROMPT
 
+def convert_json_to_csv(json_path: str) -> str:
+    """
+    Convert a JSON file to CSV format and save it with .csv extension.
+    
+    Args:
+        json_path: Path to the JSON file
+        
+    Returns:
+        Path to the created CSV file
+    """
+    if not json_path.endswith('.json'):
+        return json_path
+    
+    csv_path = json_path.replace('.json', '.csv')
+    
+    try:
+        # Load JSON data
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Convert to DataFrame
+        if isinstance(data, list):
+            df = pd.DataFrame(data)
+        elif isinstance(data, dict):
+            # If dict, try to convert to DataFrame
+            df = pd.DataFrame([data])
+        else:
+            # If other type, wrap in list
+            df = pd.DataFrame([{'data': data}])
+        
+        # Save as CSV
+        df.to_csv(csv_path, index=False, encoding='utf-8')
+        print(f"  ✓ Converted {json_path} to {csv_path}")
+        return csv_path
+        
+    except Exception as e:
+        print(f"  ✗ Failed to convert {json_path} to CSV: {e}")
+        return json_path  # Return original path if conversion fails
+
 def create_sample_medical_transcripts() -> str:
-    """Create sample medical transcripts dataset for testing"""
+    """Create sample medical transcripts dataset for testing. Returns CSV file path."""
     transcripts = [
         {
             "id": 1,
@@ -128,13 +168,16 @@ Doctor: Excellent. Continue both medications and we'll reassess in a month.
         }
     ]
     
-    # Save to JSON file
-    filename = "test_medical_transcripts.json"
-    with open(filename, "w", encoding="utf-8") as f:
+    # Save to JSON file first
+    json_filename = "test_medical_transcripts.json"
+    with open(json_filename, "w", encoding="utf-8") as f:
         json.dump(transcripts, f, indent=2, ensure_ascii=False)
     
-    print(f"Created sample dataset: {filename}")
-    return filename
+    # Convert to CSV for consistent handling
+    csv_filename = convert_json_to_csv(json_filename)
+    
+    print(f"Created sample dataset: {csv_filename}")
+    return csv_filename
 
 def create_initial_messages(instruction_prompt: str, query: str, dataset_samples: Dict[str, Any]) -> List[Dict[str, str]]:
     """
@@ -257,6 +300,7 @@ def clean_and_truncate_value(value: Any, max_string_length: int = 200) -> Any:
 def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_string_length: int = 200) -> Dict[str, Any]:
     """
     Load samples from all dataset files with clean formatting.
+    Converts JSON files to CSV first for consistent handling.
     
     Args:
         dataset_paths: List of dataset file paths
@@ -268,46 +312,46 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
     """
     dataset_samples = {}
     
-    for file_path in dataset_paths:
+    # Convert JSON files to CSV first
+    converted_paths = []
+    for path in dataset_paths:
+        if path.endswith('.json'):
+            csv_path = convert_json_to_csv(path)
+            converted_paths.append(csv_path)
+        else:
+            converted_paths.append(path)
+    
+    for file_path in converted_paths:
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                if file_path.endswith('.json'):
-                    data = json.load(f)
-                    # Take first 2 items if it's a list, otherwise take the whole thing
-                    if isinstance(data, list):
-                        sample_data = data[:2] if len(data) > 2 else data
-                    else:
-                        sample_data = data
-                elif file_path.endswith('.csv'):
-                    import pandas as pd
-                    data = pd.read_csv(file_path)
-                    # Take first 2 rows
-                    sample_data = data.head(2).to_dict('records')
-                else:
-                    # For other file types, try to read as text
-                    with open(file_path, 'r', encoding='utf-8') as txt_f:
-                        content = txt_f.read()
-                        # Clean up the content
-                        content = ' '.join(content.split())
-                        sample_data = content[:max_length] + ("..." if len(content) > max_length else "")
+            if file_path.endswith('.csv'):
+                data = pd.read_csv(file_path)
+                # Take first 2 rows
+                sample_data = data.head(2).to_dict('records')
+            else:
+                # For other file types, try to read as text
+                with open(file_path, 'r', encoding='utf-8') as txt_f:
+                    content = txt_f.read()
+                    # Clean up the content
+                    content = ' '.join(content.split())
+                    sample_data = content[:max_length] + ("..." if len(content) > max_length else "")
+            
+            # Clean and truncate all string values in the sample data
+            cleaned_sample_data = clean_and_truncate_value(sample_data, max_string_length)
+            
+            # Check total length and truncate if necessary
+            sample_str = json.dumps(cleaned_sample_data, ensure_ascii=False, separators=(',', ':'))
+            if len(sample_str) > max_length:
+                # If still too long, reduce the number of items or truncate further
+                if isinstance(cleaned_sample_data, list) and len(cleaned_sample_data) > 1:
+                    # Try with just 1 item
+                    cleaned_sample_data = cleaned_sample_data[:1]
+                    sample_str = json.dumps(cleaned_sample_data, ensure_ascii=False, separators=(',', ':'))
                 
-                # Clean and truncate all string values in the sample data
-                cleaned_sample_data = clean_and_truncate_value(sample_data, max_string_length)
-                
-                # Check total length and truncate if necessary
-                sample_str = json.dumps(cleaned_sample_data, ensure_ascii=False, separators=(',', ':'))
-                if len(sample_str) > max_length:
-                    # If still too long, reduce the number of items or truncate further
-                    if isinstance(cleaned_sample_data, list) and len(cleaned_sample_data) > 1:
-                        # Try with just 1 item
-                        cleaned_sample_data = cleaned_sample_data[:1]
-                        sample_str = json.dumps(cleaned_sample_data, ensure_ascii=False, separators=(',', ':'))
-                    
-                    # If still too long after reducing items, we'll keep the data structure
-                    # and let the JSON formatting happen in the prompt creation
-                
-                dataset_samples[file_path] = cleaned_sample_data
-                
+                # If still too long after reducing items, we'll keep the data structure
+                # and let the JSON formatting happen in the prompt creation
+            
+            dataset_samples[file_path] = cleaned_sample_data
+            
         except Exception as e:
             print(f"  Warning: Could not load data from {file_path}: {e}")
             dataset_samples[file_path] = f"Error loading file: {str(e)}"
@@ -317,6 +361,7 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
 def execute_single_pipeline(pipeline_file: str, dataset_paths: List[str]) -> tuple:
     """
     Execute a single LOTUS pipeline and return success status with error details.
+    Converts JSON files to CSV before execution for consistent DataFrame handling.
     
     Args:
         pipeline_file: Path to the pipeline Python file
@@ -332,6 +377,15 @@ def execute_single_pipeline(pipeline_file: str, dataset_paths: List[str]) -> tup
         if os.path.exists(env_file):
             load_dotenv(env_file)
         
+        # Convert JSON files to CSV for consistent handling
+        converted_paths = []
+        for path in dataset_paths:
+            if path.endswith('.json'):
+                csv_path = convert_json_to_csv(path)
+                converted_paths.append(csv_path)
+            else:
+                converted_paths.append(path)
+        
         # Define output file path
         output_file = "pipeline_output.json"
         
@@ -339,8 +393,8 @@ def execute_single_pipeline(pipeline_file: str, dataset_paths: List[str]) -> tup
         if os.path.exists(output_file):
             os.remove(output_file)
         
-        # Execute the pipeline Python file with all dataset paths
-        input_data_str = ','.join(dataset_paths)
+        # Execute the pipeline Python file with all dataset paths (now CSV files)
+        input_data_str = ','.join(converted_paths)
         result = subprocess.run(
             [sys.executable, pipeline_file],
             capture_output=True,
@@ -547,6 +601,67 @@ def extract_python_from_response(response: str) -> Optional[str]:
     
     return None
 
+def create_wrapped_pipeline_code(pipeline_code: str, dataset_paths: List[str], output_file: str = "pipeline_output.json") -> str:
+    """
+    Create wrapped pipeline code for execution.
+    
+    Args:
+        pipeline_code: The core pipeline code to wrap
+        dataset_paths: List of dataset file paths
+        output_file: Path for output file
+        
+    Returns:
+        Wrapped executable pipeline code
+    """
+    input_data_str = ','.join(dataset_paths)
+    
+    wrapped_code = f"""#!/usr/bin/env python3
+import os
+import sys
+import json
+import pandas as pd
+
+# Get input data paths from environment or command line
+input_data_paths = os.environ.get('INPUT_DATA', '{input_data_str}').split(',')
+output_file = os.environ.get('OUTPUT_FILE', '{output_file}')
+
+data_dict = {{}}
+for path in input_data_paths:
+    path = path.strip()
+    if os.path.exists(path):
+        # Use filename as key in data_dict
+        dataset_name = os.path.basename(path)
+        
+        # Load based on file extension
+        if path.endswith('.csv'):
+            # CSV files are loaded as pandas DataFrame
+            data_dict[dataset_name] = pd.read_csv(path)
+        else:
+            # Raise error for unsupported file types
+            raise ValueError(f"Unsupported file type: {{path}}")
+
+{pipeline_code}
+
+# Save the result to a file
+if 'result' in locals():
+    if isinstance(result, pd.DataFrame):
+        # Convert DataFrame to dict for JSON serialization
+        output_data = result.to_dict(orient='records')
+    else:
+        output_data = result
+    
+    # Save to output file
+    with open(output_file, 'w') as f:
+        json.dump(output_data, f, indent=2)
+    
+    print(f"✓ Pipeline executed successfully. Output saved to {{output_file}}")
+    print(f"✓ Output contains {{len(output_data) if isinstance(output_data, list) else 1}} records")
+else:
+    print("✗ Error: Pipeline must produce a variable named 'result' containing a pandas DataFrame")
+    sys.exit(1)
+"""
+    return wrapped_code
+
 def validate_generated_pipeline(pipeline_code: str) -> None:
     """
     Validate the basic structure of generated pipeline Python code.
@@ -582,11 +697,12 @@ def generate_and_execute_pipeline_with_messages(
 ) -> bool:
     """
     Generate and execute pipeline using message-based conversation history.
+    Converts JSON files to CSV for consistent DataFrame handling.
     
     Args:
         instruction_prompt: Base instruction for pipeline generation
         query: Natural language query
-        dataset_paths: List of dataset file paths
+        dataset_paths: List of dataset file paths (will be converted to CSV if JSON)
         pipeline_file: Path to save the pipeline Python file
         max_attempts: Maximum total attempts (generation + retry)
         validate_answer: Whether to validate the answer
@@ -594,6 +710,18 @@ def generate_and_execute_pipeline_with_messages(
     Returns:
         True if successful, False otherwise
     """
+    # Convert JSON files to CSV for consistent handling
+    converted_paths = []
+    for path in dataset_paths:
+        if path.endswith('.json'):
+            csv_path = convert_json_to_csv(path)
+            converted_paths.append(csv_path)
+        else:
+            converted_paths.append(path)
+    
+    # Use converted paths from now on
+    dataset_paths = converted_paths
+    
     # Load dataset samples for all files
     dataset_samples = load_sample_data(dataset_paths, max_length=1500, max_string_length=200)
     
@@ -627,52 +755,7 @@ def generate_and_execute_pipeline_with_messages(
             
             # Add necessary imports and wrapper code if not present
             if "__name__" not in pipeline_code:
-                # Wrap the pipeline code to make it executable
-                wrapped_code = f"""#!/usr/bin/env python3
-import os
-import sys
-import json
-import pandas as pd
-
-# Get input data paths from environment or command line
-input_data_paths = os.environ.get('INPUT_DATA', 'test_medical_transcripts.json').split(',')
-output_file = os.environ.get('OUTPUT_FILE', 'pipeline_output.json')
-
-# Load input data - handle multiple files
-data_dict = {{}}
-for path in input_data_paths:
-    path = path.strip()
-    if os.path.exists(path):
-        with open(path, 'r') as f:
-            if path.endswith('.json'):
-                file_data = json.load(f)
-            elif path.endswith('.csv'):
-                file_data = pd.read_csv(path).to_dict('records')
-            else:
-                file_data = f.read()
-            data_dict[path] = file_data
-
-{pipeline_code}
-
-# Save the result to a file
-if 'result' in locals():
-    if isinstance(result, pd.DataFrame):
-        # Convert DataFrame to dict for JSON serialization
-        output_data = result.to_dict(orient='records')
-    else:
-        output_data = result
-    
-    # Save to output file
-    with open(output_file, 'w') as f:
-        json.dump(output_data, f, indent=2)
-    
-    print(f"✓ Pipeline executed successfully. Output saved to {{output_file}}")
-    print(f"✓ Output contains {{len(output_data) if isinstance(output_data, list) else 1}} records")
-else:
-    print("✗ Error: Pipeline must produce a variable named 'result' containing a pandas DataFrame")
-    sys.exit(1)
-"""
-                pipeline_code = wrapped_code
+                pipeline_code = create_wrapped_pipeline_code(pipeline_code, dataset_paths)
             
             # Save pipeline to file
             with open(pipeline_file, "w") as f:
