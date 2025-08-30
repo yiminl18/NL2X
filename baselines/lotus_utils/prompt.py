@@ -118,58 +118,11 @@ LOTUS has two broad operator categories:
 
 ### Advanced Usage
 
-Sure! I'll gather and synthesize information on CascadeArgs usage from the LOTUS documentation to create a concise yet informative section under "Advanced Usage." I'll present this as a subsection in the requested format.
-
-
-#### Using `CascadeArgs` for approximation cascades
-
-LOTUS uses *cascades* to speed up expensive operators (all semantic operators) by first applying a lightweight “helper” model and only sending uncertain cases to the full model.  This trade‑off is controlled via a `CascadeArgs` object, which sets performance targets:
-
-* **Recall target & precision target** – desired recall and precision for the cascade.
-* **Sampling percentage** – fraction of the data used to estimate decision thresholds.
-* **Failure probability** – probability that the accuracy targets will not be met.
-
-To use cascades, configure both the main and helper language models and then pass `cascade_args` when calling the operator:
-
-```python
-import pandas as pd
-import lotus
-from lotus.models import LM
-from lotus.types import CascadeArgs
-
-# 1. Configure a large LM and a cheap helper LM
-gpt_4o = LM("gpt-4o")
-gpt_4o_mini = LM("gpt-4o-mini")
-lotus.settings.configure(lm=gpt_4o, helper_lm=gpt_4o_mini):contentReference[oaicite:2]{index=2}
-
-# 2. Define cascade parameters: 90% recall and precision,
-#    sample 50% of the data to estimate thresholds, 20% failure probability
-cascade_args = CascadeArgs(
-    recall_target=0.9,
-    precision_target=0.9,
-    sampling_percentage=0.5,
-    failure_probability=0.2
-):contentReference[oaicite:3]{index=3}
-
-# 3. Apply a semantic operator with cascades; return_stats outputs the cascade thresholds
-df = pd.DataFrame({"text": ["...", "..."]})
-df, stats = df.sem_filter(
-    "{text} indicates some condition",
-    cascade_args=cascade_args,
-    return_stats=True
-):contentReference[oaicite:4]{index=4}
-
-print(stats)  # contains pos/neg thresholds and counts processed by each model:contentReference[oaicite:5]{index=5}
-```
-
-The `stats` dictionary includes `pos_cascade_threshold` and `neg_cascade_threshold`, which determine when the helper model accepts or rejects records, and counts showing how many items each model processed.  Adjusting the `CascadeArgs` parameters allows you to balance speed and accuracy across large datasets.
-
-
 #### Optimized Processing with Approximations (Cascades)
 
 LOTUS can reduce latency and cost by using approximation cascades: a lightweight “helper” model performs cheaper but less accurate opertions, only sending uncertain cases to a more expensive “oracle” model.  
 
-To use cascades, configure both models and pass a `CascadeArgs` object when calling the operator (all semantic operators):  
+To use cascades, configure both models and pass a `CascadeArgs` object when calling the operator:  
 
 ```python
 # Omit other imports for brevity
@@ -202,6 +155,8 @@ filtered_df, stats = df.sem_filter(
     return_stats=True
 )
 ```
+
+Semantic operators that support cascades include `sem_filter`, `sem_join`, `sem_topk`.
 
 #### Prompt Strategies
 
@@ -731,30 +686,47 @@ When generating a pipeline, the model must follow these rules:
         - Synonyms (e.g., `review_text` vs. `text`)
         - Different casing (e.g., `Text` vs. `text`)
 
-4. **Operator Correctness**
+4. **Data Passing**
+    * Files needed to be loaded are stored in a dict called `data_dict`.
+        * This dict is prepared by other components and passed to the pipeline code. Do not reload or redefine it.
+        * The structure of `data_dict` is {<dataset_name>: <pandas.DataFrame>/Json}. The specific type of each dataset is according to the suffix of the dataset name.
+        * For example, if a dataset is named `users.csv`, it is loaded as a pandas DataFrame. Similarly, if a dataset is named `config.json`, it is loaded as a Json object.
+
+5. **Operator Correctness**
 
     * All semantic operators must have a `prompt`.
     * Combine pandas + LOTUS operators without breaking typing.
 
-5. **Optimization**
+6. **Optimization**
 
    * Use `CascadeArgs` for semantic operators on too large datasets.
+        * `CascadeArgs` are valid for `sem_filter`, `sem_join`, and `sem_topk`.
+        * Helper model should be included in the configuration if `CascadeArgs` are used.
+    * Use indexing (`sem_index`) before `sem_search` or `sem_sim_join`.
 
-6. **Output format**
+7. **Output format**
 
    * Produce a single Python code string only.
    * No markdown fencing, comments, or prose.
    * Python must be well-formed and valid.
-
-7. **Chain of Thought (CoT)**
+   * Break down pipeline code into the following three stages: 
+        1. Imports and configuration
+        2. Pipeline body
+        3. Finally, put the final result pd.DataFrame in a variable named `result`. Do not print or return it.
+   * Only print necessary code snippets, the handling of `result` is owned by other components.
+        
+8. **Chain of Thought (CoT)**
    Think step by step internally:
 
    1. Inspect dataset fields and formats
    2. Define the flat and minimal schema
    3. Apply safe defaults
    4. Assemble the final Python code
+   5. Generate comments for each step (not in the code output) to improve interpretability
 
    Do not expose reasoning in the output.
+
+
 """
 
 
