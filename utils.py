@@ -52,6 +52,20 @@ def parse_args():
         help="Enable verbose logging"
     )
     
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=3,
+        help="Maximum number of attempts for pipeline generation (default: 3)"
+    )
+    
+    parser.add_argument(
+        "--validate-answer",
+        type=lambda x: x.lower() in ['true', '1', 'yes'],
+        default=True,
+        help="Whether to validate generated answers (default: True)"
+    )
+    
     args = parser.parse_args()
     
     # Validate arguments

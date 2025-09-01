@@ -288,7 +288,11 @@ def clean_and_truncate_value(value: Any, max_string_length: int = 200) -> Any:
         # Clean up excessive whitespace and newlines
         cleaned = ' '.join(value.split())  # Replace all whitespace with single spaces
         if len(cleaned) > max_string_length:
-            return cleaned[:max_string_length] + "..."
+            # Preserve both beginning and end of the string
+            half_length = (max_string_length - 5) // 2  # Reserve 5 chars for " ... "
+            beginning = cleaned[:half_length]
+            end = cleaned[-half_length:]
+            return beginning + " ... " + end
         return cleaned
     elif isinstance(value, dict):
         return {k: clean_and_truncate_value(v, max_string_length) for k, v in value.items()}
@@ -333,7 +337,12 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
                     content = txt_f.read()
                     # Clean up the content
                     content = ' '.join(content.split())
-                    sample_data = content[:max_length] + ("..." if len(content) > max_length else "")
+                    if len(content) > max_length:
+                        # Preserve both beginning and end
+                        half_length = (max_length - 5) // 2
+                        sample_data = content[:half_length] + " ... " + content[-half_length:]
+                    else:
+                        sample_data = content
             
             # Clean and truncate all string values in the sample data
             cleaned_sample_data = clean_and_truncate_value(sample_data, max_string_length)

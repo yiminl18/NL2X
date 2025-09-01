@@ -10,7 +10,6 @@ class BaselineConfig:
     name: str
     model_config: Optional[Dict[str, Any]] = None
     seed: int = 42
-    max_retries: int = 3
     timeout: int = 60
     cache_dir: Optional[str] = None
     verbose: bool = False

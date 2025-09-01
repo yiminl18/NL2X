@@ -69,7 +69,7 @@ class DocETLBaseline(BaselineInterface):
                     file_type = 'json'  # Default to JSON
                 
                 # Get content or path
-                if hasattr(value, 'content'):
+                if hasattr(value, 'content') and value.content is not None:
                     content = value.content
                     
                     # Create temporary file for the content
@@ -102,9 +102,24 @@ class DocETLBaseline(BaselineInterface):
                         dataset_paths.append(temp_file)
                 
                 elif hasattr(value, 'path') and value.path:
-                    # Use existing file path
+                    # Handle file based on type
                     if os.path.exists(value.path):
-                        dataset_paths.append(value.path)
+                        # Check if it's a text file that needs conversion to JSON
+                        if hasattr(value, 'type') and value.type == 'text':
+                            # Read text file and convert to JSON format
+                            temp_file = os.path.join(self.temp_dir, f"{key}.json")
+                            with open(value.path, 'r', encoding='utf-8') as f:
+                                text_content = f.read()
+                            
+                            # Save as JSON with text content as single entry
+                            with open(temp_file, 'w', encoding='utf-8') as f:
+                                # Keep entire text file as single document
+                                json.dump([{"text": text_content}], f, indent=2, ensure_ascii=False)
+                            
+                            dataset_paths.append(temp_file)
+                        else:
+                            # For other file types (JSON, CSV, etc.), use the file directly
+                            dataset_paths.append(value.path)
                     else:
                         if self.config.verbose:
                             self.logger.warning(f"File not found: {value.path}")

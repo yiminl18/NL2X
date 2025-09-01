@@ -70,7 +70,7 @@ class LOTUSBaseline(BaselineInterface):
                     file_type = 'json'  # Default to JSON
                 
                 # Get content or path
-                if hasattr(value, 'content'):
+                if hasattr(value, 'content') and value.content is not None:
                     content = value.content
                     
                     # Create temporary JSON file first, then convert to CSV
@@ -113,12 +113,21 @@ class LOTUSBaseline(BaselineInterface):
                         elif value.path.endswith('.csv'):
                             dataset_paths.append(value.path)
                         else:
-                            # For other file types, create a temporary CSV
+                            # For text files and other types, create a temporary CSV
                             temp_json_file = os.path.join(self.temp_dir, f"{key}.json")
                             with open(value.path, 'r', encoding='utf-8') as src:
                                 content = src.read()
+                            
+                            # Handle text files - keep entire file as single entry
+                            if hasattr(value, 'type') and value.type == 'text':
+                                # Keep entire text file as single document
+                                json_data = [{"text": content}]
+                            else:
+                                # For other types, keep as single document
+                                json_data = [{"text": content}]
+                            
                             with open(temp_json_file, 'w', encoding='utf-8') as dst:
-                                json.dump([{"text": content}], dst, indent=2, ensure_ascii=False)
+                                json.dump(json_data, dst, indent=2, ensure_ascii=False)
                             csv_path = convert_json_to_csv(temp_json_file)
                             dataset_paths.append(csv_path)
                     else:

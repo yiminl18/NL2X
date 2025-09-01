@@ -125,6 +125,7 @@ class EvaluationFramework:
         self,
         baselines: List[str],
         benchmark: str,
+        baseline_config: Optional[Dict[str, Any]] = None,
         benchmark_config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         comparison_results = {}
@@ -134,6 +135,7 @@ class EvaluationFramework:
             results = self.evaluate(
                 baseline_name=baseline,
                 benchmark_name=benchmark,
+                baseline_config=baseline_config,
                 benchmark_config=benchmark_config
             )
             comparison_results[baseline] = results
@@ -259,7 +261,9 @@ def main():
     
     baseline_config = {
         "seed": args.seed,
-        "verbose": args.verbose
+        "verbose": args.verbose,
+        "max_attempts": args.max_attempts,
+        "validate_answer": args.validate_answer
     }
     
     benchmark_config = {
@@ -273,6 +277,7 @@ def main():
         results = framework.compare_baselines(
             baselines=list_baselines(),
             benchmark=args.benchmark,
+            baseline_config=baseline_config,
             benchmark_config=benchmark_config
         )
         
