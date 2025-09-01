@@ -36,9 +36,9 @@ class DocETLBaseline(BaselineInterface):
         self.successful_pipelines = 0
         self.failed_pipelines = []
         
-        # Default configuration
-        self.max_attempts = self.config.get('max_attempts', 3)
-        self.validate_answer = self.config.get('validate_answer', True)
+        # Use configuration from BaselineConfig
+        self.max_attempts = self.config.max_attempts
+        self.validate_answer = self.config.validate_answer
         self.temp_dir = tempfile.mkdtemp(prefix="docetl_baseline_")
         
         if self.config.verbose:

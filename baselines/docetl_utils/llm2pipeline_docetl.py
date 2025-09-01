@@ -26,7 +26,7 @@ class FailedPipeline(NamedTuple):
 # Add parent directory to path to import azuregpt4o
 sys.path.append('/Users/chiyuh/Workspace/NL2X/model')
 from azuregpt4o import gpt_4o_azure
-from prompt import INSTRUCTION_PROMPT, PIPELINE_GENERATION_PROMPT
+from .prompt import INSTRUCTION_PROMPT, PIPELINE_GENERATION_PROMPT
 from docetl.api import Pipeline
 
 def create_sample_medical_transcripts() -> str:

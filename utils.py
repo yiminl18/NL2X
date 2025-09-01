@@ -59,6 +59,3 @@ def parse_args():
         parser.error("--baseline is required when not using --compare")
     
     return args
-
-
-

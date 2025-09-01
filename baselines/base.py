@@ -14,6 +14,8 @@ class BaselineConfig:
     timeout: int = 60
     cache_dir: Optional[str] = None
     verbose: bool = False
+    max_attempts: int = 3
+    validate_answer: bool = True
 
 @dataclass
 class BaselineResult:
