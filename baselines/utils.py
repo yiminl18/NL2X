@@ -7,6 +7,7 @@ import os
 import base64
 import json
 import pandas as pd
+import re
 from typing import Any, Dict, List, Optional
 
 
@@ -283,3 +284,247 @@ def read_txt(file_path: str) -> str:
     """
     with open(file_path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+class DataTruncator:
+    """Intelligent data truncator for handling large JSON and text data."""
+    
+    def __init__(self, 
+                 max_total_length: int = 2000,
+                 max_string_length: int = 200,
+                 max_plain_text_length: int = 5000,
+                 max_array_items: int = 3,
+                 max_dict_keys: int = 10,
+                 preserve_head_tail_ratio: float = 0.3):
+        """
+        Initialize the data truncator.
+        
+        Args:
+            max_total_length: Maximum total length for serialized data
+            max_string_length: Maximum length for individual string fields
+            max_plain_text_length: Maximum length for plain text content
+            max_array_items: Maximum number of array items to keep
+            max_dict_keys: Maximum number of dictionary keys to keep
+            preserve_head_tail_ratio: Ratio of head/tail content to preserve in long texts
+        """
+        self.max_total_length = max_total_length
+        self.max_string_length = max_string_length
+        self.max_plain_text_length = max_plain_text_length
+        self.max_array_items = max_array_items
+        self.max_dict_keys = max_dict_keys
+        self.preserve_head_tail_ratio = preserve_head_tail_ratio
+    
+    def truncate_text(self, text: str, max_length: Optional[int] = None, is_plain_text: bool = False) -> str:
+        """
+        Intelligently truncate long text while preserving important head and tail content.
+        
+        Args:
+            text: Input text to truncate
+            max_length: Maximum length, uses default if not specified
+            is_plain_text: Whether this is plain text content (uses longer limit)
+            
+        Returns:
+            Truncated text with preserved structure
+        """
+        if max_length is None:
+            max_length = self.max_plain_text_length if is_plain_text else self.max_string_length
+        
+        if len(text) <= max_length:
+            return text
+        
+        # Calculate head and tail preservation length
+        preserve_length = int(max_length * self.preserve_head_tail_ratio)
+        middle_space = max_length - 2 * preserve_length - 30  # 30 chars for truncation markers
+        
+        if middle_space < 0:
+            # If not enough space, only preserve the beginning
+            return text[:max_length-3] + "..."
+        
+        # Try to break at appropriate positions (periods, newlines, etc.)
+        head_text = text[:preserve_length]
+        tail_text = text[-preserve_length:]
+        
+        # Find suitable break points
+        head_break_points = [m.start() for m in re.finditer(r'[.!?\n]', head_text)]
+        if head_break_points:
+            head_end = head_break_points[-1] + 1
+            head_text = head_text[:head_end]
+        
+        tail_break_points = [m.start() for m in re.finditer(r'[.!?\n]', tail_text)]
+        if tail_break_points:
+            tail_start = tail_break_points[0]
+            tail_text = tail_text[tail_start:]
+        
+        # Calculate number of truncated characters
+        truncated_chars = len(text) - len(head_text) - len(tail_text)
+        
+        return f"{head_text}...[truncated {truncated_chars} chars]...{tail_text}"
+    
+    def truncate_list(self, data_list: List[Any]) -> List[Any]:
+        """
+        Intelligently truncate lists by preserving representative samples from head, middle, and tail.
+        
+        Args:
+            data_list: Input list to truncate
+            
+        Returns:
+            Truncated list with representative items
+        """
+        if len(data_list) <= self.max_array_items:
+            return [self._truncate_value(item) for item in data_list]
+        
+        # Select representative samples: head, middle, tail
+        if self.max_array_items >= 3:
+            indices = [
+                0,  # Head
+                len(data_list) // 2,  # Middle
+                -1  # Tail
+            ]
+            # If more samples allowed, add more representative positions
+            if self.max_array_items > 3:
+                additional_count = self.max_array_items - 3
+                step = len(data_list) // (additional_count + 1)
+                for i in range(1, additional_count + 1):
+                    indices.append(i * step)
+            
+            # Remove duplicates and sort
+            indices = sorted(list(set(indices)))[:self.max_array_items-1]
+            
+            result = [self._truncate_value(data_list[i]) for i in indices]
+            
+            # Add truncation marker
+            truncated_count = len(data_list) - len(result)
+            result.append(f"...[{truncated_count} more items truncated]...")
+            
+        else:
+            # If only few items allowed, prioritize head items
+            result = [self._truncate_value(data_list[i]) for i in range(self.max_array_items)]
+        
+        return result
+    
+    def truncate_dict(self, data_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Intelligently truncate dictionary by preserving keys based on length and alphabetical order.
+        
+        Args:
+            data_dict: Input dictionary to truncate
+            
+        Returns:
+            Truncated dictionary
+        """
+        if len(data_dict) <= self.max_dict_keys:
+            return {k: self._truncate_value(v) for k, v in data_dict.items()}
+        
+        # Sort by key name length and alphabetical order (prioritize shorter keys for readability)
+        keys = list(data_dict.keys())
+        sorted_keys = sorted(keys, key=lambda x: (len(x), x.lower()))
+        
+        # Select keys to preserve
+        selected_keys = sorted_keys[:self.max_dict_keys-1]
+        result = {k: self._truncate_value(data_dict[k]) for k in selected_keys}
+        
+        # Add truncation information
+        if len(keys) > len(selected_keys):
+            truncated_count = len(keys) - len(selected_keys)
+            remaining_keys = [k for k in keys if k not in selected_keys]
+            # Show first 3 truncated keys as sample
+            truncated_keys_sample = remaining_keys[:3]
+            result['__truncated__'] = f"Truncated {truncated_count} keys: {truncated_keys_sample}..."
+        
+        return result
+    
+    def _truncate_value(self, value: Any) -> Any:
+        """
+        Recursively truncate a single value.
+        
+        Args:
+            value: Input value to truncate
+            
+        Returns:
+            Truncated value
+        """
+        if isinstance(value, str):
+            return self.truncate_text(value)
+        elif isinstance(value, list):
+            return self.truncate_list(value)
+        elif isinstance(value, dict):
+            return self.truncate_dict(value)
+        else:
+            # Numbers, booleans, etc. remain unchanged
+            return value
+    
+    def truncate_data(self, data: Any) -> Any:
+        """
+        Main truncation method for intelligently truncating any type of data.
+        
+        Args:
+            data: Input data to truncate
+            
+        Returns:
+            Truncated data
+        """
+        truncated = self._truncate_value(data)
+        
+        # Check if total length exceeds limit
+        serialized = json.dumps(truncated, ensure_ascii=False, separators=(',', ':'))
+        if len(serialized) > self.max_total_length:
+            # If still too long, perform more aggressive truncation
+            return self._aggressive_truncate(truncated)
+        
+        return truncated
+    
+    def _aggressive_truncate(self, data: Any) -> Any:
+        """
+        Aggressive truncation: further reduce data volume.
+        
+        Args:
+            data: Input data to truncate
+            
+        Returns:
+            Aggressively truncated data
+        """
+        # Store original parameters
+        old_max_string = self.max_string_length
+        old_max_array = self.max_array_items
+        old_max_dict = self.max_dict_keys
+        
+        # Temporarily adjust parameters to be more aggressive
+        self.max_string_length = min(100, self.max_string_length // 2)
+        self.max_array_items = max(2, self.max_array_items // 2)
+        self.max_dict_keys = max(3, self.max_dict_keys // 2)
+        
+        result = self._truncate_value(data)
+        
+        # Restore original parameters
+        self.max_string_length = old_max_string
+        self.max_array_items = old_max_array
+        self.max_dict_keys = old_max_dict
+        
+        return result
+
+
+def smart_truncate_json(data: Any, 
+                       max_total_length: int = 2000,
+                       max_string_length: int = 200,
+                       max_plain_text_length: int = 5000,
+                       max_array_items: int = 3) -> Any:
+    """
+    Convenient JSON intelligent truncation function.
+    
+    Args:
+        data: Data to truncate
+        max_total_length: Maximum total length
+        max_string_length: Maximum length for individual strings
+        max_plain_text_length: Maximum length for plain text content
+        max_array_items: Maximum number of array items
+        
+    Returns:
+        Truncated data
+    """
+    truncator = DataTruncator(
+        max_total_length=max_total_length,
+        max_string_length=max_string_length,
+        max_plain_text_length=max_plain_text_length,
+        max_array_items=max_array_items
+    )
+    return truncator.truncate_data(data)

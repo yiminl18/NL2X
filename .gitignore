@@ -13,3 +13,4 @@ generated_pipelines/
 generated_prompts/
 validations/
 messages/
+intermediates/

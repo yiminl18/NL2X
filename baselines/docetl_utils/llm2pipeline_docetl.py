@@ -29,6 +29,9 @@ from azuregpt4o import gpt_4o_azure
 from .prompt import INSTRUCTION_PROMPT, PIPELINE_GENERATION_PROMPT
 from docetl.api import Pipeline
 
+# Import smart truncation utility
+from ..utils import DataTruncator
+
 def create_sample_medical_transcripts() -> str:
     """Create sample medical transcripts dataset for testing"""
     transcripts = [
@@ -234,35 +237,9 @@ def llm_call_wrapper(prompt: str) -> str:
     ]
     return llm_call_with_messages(messages)
 
-def clean_and_truncate_value(value: Any, max_string_length: int = 200) -> Any:
-    """
-    Clean and truncate values to make them more readable.
-    
-    Args:
-        value: The value to clean
-        max_string_length: Maximum length for string values
-        
-    Returns:
-        Cleaned value
-    """
-    if isinstance(value, str):
-        # Clean up excessive whitespace and newlines
-        cleaned = ' '.join(value.split())  # Replace all whitespace with single spaces
-        if len(cleaned) > max_string_length:
-            # Preserve both beginning and end of the string
-            half_length = (max_string_length - 5) // 2  # Reserve 5 chars for " ... "
-            beginning = cleaned[:half_length]
-            end = cleaned[-half_length:]
-            return beginning + " ... " + end
-        return cleaned
-    elif isinstance(value, dict):
-        return {k: clean_and_truncate_value(v, max_string_length) for k, v in value.items()}
-    elif isinstance(value, list):
-        return [clean_and_truncate_value(item, max_string_length) for item in value]
-    else:
-        return value
+# Removed old clean_and_truncate_value function - replaced with intelligent DataTruncator
 
-def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_string_length: int = 200) -> Dict[str, Any]:
+def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_string_length: int = 200, max_plain_text_length: int = 5000) -> Dict[str, Any]:
     """
     Load samples from all dataset files with clean formatting.
     
@@ -270,56 +247,47 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
         dataset_paths: List of dataset file paths
         max_length: Maximum total length for each file's sample
         max_string_length: Maximum length for individual string fields
+        max_plain_text_length: Maximum length for plain text content
         
     Returns:
         Dictionary with {file_path: sample_data} format
     """
     dataset_samples = {}
     
+    # Initialize intelligent truncator
+    truncator = DataTruncator(
+        max_total_length=max_length,
+        max_string_length=max_string_length,
+        max_plain_text_length=max_plain_text_length,
+        max_array_items=3,
+        max_dict_keys=8
+    )
+    
     for file_path in dataset_paths:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 if file_path.endswith('.json'):
                     data = json.load(f)
-                    # Take first 2 items if it's a list, otherwise take the whole thing
-                    if isinstance(data, list):
-                        sample_data = data[:2] if len(data) > 2 else data
-                    else:
-                        sample_data = data
                 elif file_path.endswith('.csv'):
                     import pandas as pd
                     data = pd.read_csv(file_path)
-                    # Take first 2 rows
-                    sample_data = data.head(2).to_dict('records')
+                    # Convert to list of dictionaries for consistent handling
+                    data = data.to_dict('records')
                 else:
                     # For other file types, try to read as text
-                    with open(file_path, 'r', encoding='utf-8') as txt_f:
-                        content = txt_f.read()
-                        # Clean up the content
-                        content = ' '.join(content.split())
-                        if len(content) > max_length:
-                            # Preserve both beginning and end
-                            half_length = (max_length - 5) // 2
-                            sample_data = content[:half_length] + " ... " + content[-half_length:]
-                        else:
-                            sample_data = content
+                    content = f.read()
+                    # Clean up the content and treat as plain text
+                    content = ' '.join(content.split())
+                    # Use plain text truncation for text files
+                    truncated_content = truncator.truncate_text(content, is_plain_text=True)
+                    data = [{"text": truncated_content}]
                 
-                # Clean and truncate all string values in the sample data
-                cleaned_sample_data = clean_and_truncate_value(sample_data, max_string_length)
-                
-                # Check total length and truncate if necessary
-                sample_str = json.dumps(cleaned_sample_data, ensure_ascii=False, separators=(',', ':'))
-                if len(sample_str) > max_length:
-                    # If still too long, reduce the number of items or truncate further
-                    if isinstance(cleaned_sample_data, list) and len(cleaned_sample_data) > 1:
-                        # Try with just 1 item
-                        cleaned_sample_data = cleaned_sample_data[:1]
-                        sample_str = json.dumps(cleaned_sample_data, ensure_ascii=False, separators=(',', ':'))
-                    
-                    # If still too long after reducing items, we'll keep the data structure
-                    # and let the JSON formatting happen in the prompt creation
-                
-                dataset_samples[file_path] = cleaned_sample_data
+                # Apply intelligent truncation (except for plain text which was already handled)
+                if not file_path.endswith(('.txt', '.md', '.html')):
+                    truncated_data = truncator.truncate_data(data)
+                    dataset_samples[file_path] = truncated_data
+                else:
+                    dataset_samples[file_path] = data
                 
         except Exception as e:
             # print(f"  Warning: Could not load data from {file_path}: {e}")
