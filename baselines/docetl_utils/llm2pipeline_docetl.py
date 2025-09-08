@@ -137,10 +137,10 @@ Doctor: Excellent. Continue both medications and we'll reassess in a month.
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(transcripts, f, indent=2, ensure_ascii=False)
     
-    print(f"Created sample dataset: {filename}")
+    # Dataset created: {filename}
     return filename
 
-def create_initial_messages(instruction_prompt: str, query: str, dataset_samples: Dict[str, Any]) -> List[Dict[str, str]]:
+def create_initial_messages(instruction_prompt: str, query: str, dataset_samples: Dict[str, Any]) -> tuple:
     """
     Create initial message list for pipeline generation using PIPELINE_GENERATION_PROMPT.
     
@@ -163,10 +163,10 @@ def create_initial_messages(instruction_prompt: str, query: str, dataset_samples
         query=query,
         profiles_str=profiles_str
     )
-    print ("  Initial prompt for pipeline generation:")
-    print(instruction_prompt + user_content)
+    # Return messages with the initial prompt
+    initial_prompt = instruction_prompt + user_content
     
-    return [
+    return initial_prompt, [
         {
             "role": "user",
             "content": instruction_prompt + user_content
@@ -223,7 +223,7 @@ def llm_call_with_messages(messages: List[Dict[str, str]]) -> str:
         )
         return response
     except Exception as e:
-        print(f"Error calling Azure GPT-4o: {e}")
+        # Error calling Azure GPT-4o: {e}
         raise
 
 def llm_call_wrapper(prompt: str) -> str:
@@ -322,7 +322,7 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
                 dataset_samples[file_path] = cleaned_sample_data
                 
         except Exception as e:
-            print(f"  Warning: Could not load data from {file_path}: {e}")
+            # print(f"  Warning: Could not load data from {file_path}: {e}")
             dataset_samples[file_path] = f"Error loading file: {str(e)}"
     
     return dataset_samples
@@ -383,7 +383,7 @@ def load_output_data(pipeline_file: str, max_length: int = 2000) -> str:
             output_str = json.dumps(sample_json, indent=2)
             return output_str[:max_length] + "..." if len(output_str) > max_length else output_str
     except Exception as e:
-        print(f"  Warning: Could not load output data for validation: {e}")
+        # print(f"  Warning: Could not load output data for validation: {e}")
         return None
 
 def validate_answer_with_llm(
@@ -432,8 +432,8 @@ Format your response as:
 ASSESSMENT: [VALID/INVALID]
 EXPLANATION: [Your explanation here]
 """
-    print ("  Validation prompt for LLM:")
-    print(validation_prompt)
+    # print ("  Validation prompt for LLM:")
+    # print(validation_prompt)
     try:
         response = llm_call(validation_prompt)
         
@@ -462,7 +462,7 @@ EXPLANATION: [Your explanation here]
         return is_valid, explanation
         
     except Exception as e:
-        print(f"Error during answer validation: {e}")
+        # print(f"Error during answer validation: {e}")
         return False, f"Validation failed due to error: {str(e)}"
 
 def execute_single_pipeline(pipeline_file: str) -> tuple:
@@ -489,7 +489,7 @@ def execute_single_pipeline(pipeline_file: str) -> tuple:
         
     except Exception as e:
         error_msg = f"Pipeline execution error: {str(e)}\n{traceback.format_exc()}"
-        print(f"  ✗ Pipeline execution failed: {str(e)}")
+        # print(f"  ✗ Pipeline execution failed: {str(e)}")
         return False, error_msg
 
 def validate_pipeline_output(
@@ -510,7 +510,7 @@ def validate_pipeline_output(
     Returns:
         Tuple of (is_valid: bool, validation_message: str, sample_output: str)
     """
-    print("  Validating answer with LLM...")
+    # print("  Validating answer with LLM...")
     
     # Load data for validation
     original_data_dict = load_sample_data(dataset_paths, max_length=1500, max_string_length=200)
@@ -521,8 +521,8 @@ def validate_pipeline_output(
     # If we couldn't load output, treat as validation failure
     if sample_output is None:
         validation_message = "Could not load pipeline output for validation. The pipeline may not have produced output."
-        print(f"  Validation result: ✗ INVALID")
-        print(f"  Validation explanation: {validation_message}")
+        # print(f"  Validation result: ✗ INVALID")
+        # print(f"  Validation explanation: {validation_message}")
         return False, validation_message, "No output produced"
     
     # Validate the answer
@@ -534,8 +534,8 @@ def validate_pipeline_output(
     )
     
     status_text = '✓ VALID' if is_valid else '✗ INVALID'
-    print(f"  Validation result: {status_text}")
-    print(f"  Validation explanation: {validation_message}")
+    # print(f"  Validation result: {status_text}")
+    # print(f"  Validation explanation: {validation_message}")
     
     # Return with sample output for use in error messages
     return is_valid, validation_message, sample_output
@@ -591,11 +591,11 @@ def generate_and_execute_pipeline_with_messages(
     pipeline_history = []
     
     for attempt in range(max_attempts):
-        print(f"\n  Attempt {attempt + 1}/{max_attempts}...")
+        # print(f"\n  Attempt {attempt + 1}/{max_attempts}...")
         
         try:
             # Step 1: Generate pipeline
-            print("  Generating pipeline...")
+            # print("  Generating pipeline...")
             response = llm_call_with_messages(messages)
             
             # Add assistant's response to history
@@ -612,15 +612,15 @@ def generate_and_execute_pipeline_with_messages(
             # Save pipeline to file
             with open(pipeline_file, "w") as f:
                 f.write(pipeline_yaml)
-            print("  ✓ Pipeline generated successfully")
+            # print("  ✓ Pipeline generated successfully")
             
             # Step 2: Execute pipeline
-            print("  Executing pipeline...")
+            # print("  Executing pipeline...")
             success, error_msg = execute_single_pipeline(pipeline_file)
             
             if not success:
                 # Execution failed - add error feedback
-                print(f"  ✗ Execution failed: {error_msg.split(chr(10))[0]}")
+                # print(f"  ✗ Execution failed: {error_msg.split(chr(10))[0]}")
                 messages = add_error_message(messages, "execution", error_msg)
                 pipeline_history.append(FailedPipeline(
                     pipeline_yaml=pipeline_yaml,
@@ -629,11 +629,11 @@ def generate_and_execute_pipeline_with_messages(
                 ))
                 continue
             
-            print("  ✓ Pipeline executed successfully")
+            # print("  ✓ Pipeline executed successfully")
             
             # Step 3: Validate answer (if enabled)
             if validate_answer:
-                print("  Validating answer...")
+                # print("  Validating answer...")
                 is_valid, validation_msg, sample_output = validate_pipeline_output(
                     pipeline_file, query, dataset_paths, llm_call_with_messages
                 )
@@ -654,7 +654,7 @@ def generate_and_execute_pipeline_with_messages(
                     ))
                     continue
                 
-                print("  ✓ Answer validation passed!")
+                # print("  ✓ Answer validation passed!")
             
             # Success!
             return True
@@ -672,7 +672,7 @@ def generate_and_execute_pipeline_with_messages(
             ))
     
     # All attempts failed
-    print(f"\n  Failed after {max_attempts} attempts")
+    # print(f"\n  Failed after {max_attempts} attempts")
     _print_conversation_summary(messages, pipeline_history)
     return False
 
@@ -710,16 +710,16 @@ def extract_yaml_from_response(response: str) -> Optional[str]:
 
 def _print_conversation_summary(messages: List[Dict[str, str]], pipeline_history: List[FailedPipeline]):
     """Print a summary of the conversation and failed attempts"""
-    print("\n  Conversation Summary:")
-    print("  " + "-" * 50)
-    print(f"  Total messages: {len(messages)}")
-    print(f"  Failed pipelines: {len(pipeline_history)}")
+    # print("\n  Conversation Summary:")
+    # print("  " + "-" * 50)
+    # print(f"  Total messages: {len(messages)}")
+    # print(f"  Failed pipelines: {len(pipeline_history)}")
     
     if pipeline_history:
-        print("\n  Failed attempts:")
+        # print("\n  Failed attempts:")
         for i, failed in enumerate(pipeline_history, 1):
             error_summary = failed.error_message.split('\n')[0] if failed.error_message else "Unknown"
-            print(f"    {i}. {failed.error_type}: {error_summary[:80]}...")
+            # print(f"    {i}. {failed.error_type}: {error_summary[:80]}...")
 
 def test_llm2pipeline_with_messages(max_attempts: int = 3):
     """
@@ -728,13 +728,13 @@ def test_llm2pipeline_with_messages(max_attempts: int = 3):
     Args:
         max_attempts: Maximum total attempts for generation and retry
     """
-    print("=" * 60)
-    print("LLM2Pipeline4DocETL Test - Medical Transcript Analysis")
-    print(f"(Message-based approach with {max_attempts} max attempts)")
-    print("=" * 60)
+    # print("=" * 60)
+    # print("LLM2Pipeline4DocETL Test - Medical Transcript Analysis")
+    # print(f"(Message-based approach with {max_attempts} max attempts)")
+    # print("=" * 60)
     
     # Step 1: Create sample dataset
-    print("\n1. Creating sample medical transcripts dataset...")
+    # print("\n1. Creating sample medical transcripts dataset...")
     dataset_path = create_sample_medical_transcripts()
     
     # Step 2: Define natural language query
@@ -742,13 +742,13 @@ def test_llm2pipeline_with_messages(max_attempts: int = 3):
     Fine all unique medications prescribed across all patients, along with their dosages and frequencies. 
     """
     
-    print("\n2. Natural Language Query:")
-    print("-" * 40)
-    print(query)
-    print("-" * 40)
+    # print("\n2. Natural Language Query:")
+    # print("-" * 40)
+    # print(query)
+    # print("-" * 40)
     
     # Step 3 & 4: Generate and execute pipeline with integrated retry
-    print("\n3. Generating and executing pipeline with message-based retry...")
+    # print("\n3. Generating and executing pipeline with message-based retry...")
     
     pipeline_file = "generated_medical_pipeline.yaml"
     success = generate_and_execute_pipeline_with_messages(
@@ -761,16 +761,17 @@ def test_llm2pipeline_with_messages(max_attempts: int = 3):
     )
     
     if success:
-        print("\n✓ Pipeline successfully generated, executed and validated!")
-        print(f"\nPipeline saved to: {pipeline_file}")
-        print("Results have been saved to the output directory.")
+        # print("\n✓ Pipeline successfully generated, executed and validated!")
+        # print(f"\nPipeline saved to: {pipeline_file}")
+        # print("Results have been saved to the output directory.")
+        pass
     else:
-        print("\n✗ Failed to generate a working pipeline after all attempts.")
+        # print("\n✗ Failed to generate a working pipeline after all attempts.")
         exit(1)
     
-    print("\n" + "=" * 60)
-    print("Test completed!")
-    print("=" * 60)
+    # print("\n" + "=" * 60)
+    # print("Test completed!")
+    # print("=" * 60)
 
 if __name__ == "__main__":
     test_llm2pipeline_with_messages()

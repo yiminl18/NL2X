@@ -44,9 +44,16 @@ class DocETLBaseline(BaselineInterface):
         self.validate_answer = self.config.validate_answer
         self.temp_dir = tempfile.mkdtemp(prefix="docetl_baseline_")
         
-        # Create persistent directory for saving generated pipelines
+        # Create persistent directories for saving outputs
         self.pipeline_output_dir = os.path.join(os.getcwd(), "generated_pipelines", "docetl")
+        self.prompts_output_dir = os.path.join(os.getcwd(), "generated_prompts", "docetl")
+        self.validations_output_dir = os.path.join(os.getcwd(), "validations", "docetl")
+        self.messages_output_dir = os.path.join(os.getcwd(), "messages", "docetl")
+        
         os.makedirs(self.pipeline_output_dir, exist_ok=True)
+        os.makedirs(self.prompts_output_dir, exist_ok=True)
+        os.makedirs(self.validations_output_dir, exist_ok=True)
+        os.makedirs(self.messages_output_dir, exist_ok=True)
         
         if self.config.verbose:
             self.logger.info(f"Initialized DocETL baseline with config: {self.config}")
@@ -268,6 +275,72 @@ class DocETLBaseline(BaselineInterface):
         
         return dataset_paths
     
+    def _create_base_filename(self, query: str, suffix: str = "") -> str:
+        """Create a base filename with timestamp and query snippet."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        query_snippet = query[:50].replace(" ", "_").replace("/", "_").replace("\\", "_")
+        query_snippet = "".join(c for c in query_snippet if c.isalnum() or c in "_-")
+        if suffix:
+            return f"{timestamp}_{suffix}_{query_snippet}"
+        return f"{timestamp}_{query_snippet}"
+    
+    def _save_prompt(self, prompt: str, query: str, attempt: int = 0) -> str:
+        """Save prompt to persistent directory."""
+        filename = f"{self._create_base_filename(query, f'attempt{attempt}')}.txt"
+        filepath = os.path.join(self.prompts_output_dir, filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"Query: {query}\n")
+            f.write(f"Attempt: {attempt}\n")
+            f.write(f"Generated at: {datetime.now().isoformat()}\n")
+            f.write("="*50 + "\n\n")
+            f.write(prompt)
+        
+        return filepath
+    
+    def _save_validation(self, validation_prompt: str, validation_result: dict, query: str) -> str:
+        """Save validation prompt and result."""
+        filename = f"{self._create_base_filename(query, 'validation')}.json"
+        filepath = os.path.join(self.validations_output_dir, filename)
+        
+        validation_data = {
+            "query": query,
+            "timestamp": datetime.now().isoformat(),
+            "validation_prompt": validation_prompt,
+            "validation_result": validation_result
+        }
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(validation_data, f, indent=2, ensure_ascii=False)
+        
+        return filepath
+    
+    def _save_messages(self, messages: list, query: str, pipeline_history: list = None) -> str:
+        """Save complete message history."""
+        filename = f"{self._create_base_filename(query, 'messages')}.json"
+        filepath = os.path.join(self.messages_output_dir, filename)
+        
+        messages_data = {
+            "query": query,
+            "timestamp": datetime.now().isoformat(),
+            "total_messages": len(messages),
+            "messages": messages,
+            "pipeline_history": []
+        }
+        
+        if pipeline_history:
+            for failed in pipeline_history:
+                messages_data["pipeline_history"].append({
+                    "error_type": failed.error_type,
+                    "error_message": failed.error_message,
+                    "pipeline_yaml": failed.pipeline_yaml
+                })
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(messages_data, f, indent=2, ensure_ascii=False)
+        
+        return filepath
+    
     def _save_pipeline_to_persistent_dir(self, pipeline_content: str, query: str, success: bool = True) -> str:
         """
         Save pipeline to persistent directory for manual inspection.
@@ -319,7 +392,7 @@ class DocETLBaseline(BaselineInterface):
         dataset_samples = load_sample_data(dataset_paths, max_length=1500, max_string_length=200)
         
         # Initialize conversation with initial messages
-        messages = create_initial_messages(INSTRUCTION_PROMPT, query, dataset_samples)
+        initial_prompt, messages = create_initial_messages(INSTRUCTION_PROMPT, query, dataset_samples)
         
         # Track pipeline generation history
         pipeline_history = []
@@ -329,6 +402,10 @@ class DocETLBaseline(BaselineInterface):
             
             if self.config.verbose:
                 self.logger.info(f"Pipeline generation attempt {attempt + 1}/{self.max_attempts}")
+            
+            # Save initial prompt on first attempt
+            if attempt == 0:
+                self._save_prompt(initial_prompt, query, attempt)
             
             try:
                 # Generate pipeline
@@ -399,6 +476,9 @@ class DocETLBaseline(BaselineInterface):
                 # Save successful pipeline to persistent directory
                 self._save_pipeline_to_persistent_dir(pipeline_yaml, query, success=True)
                 
+                # Save complete message history for successful run
+                self._save_messages(messages, query, pipeline_history)
+                
                 execution_time = time.time() - start_time
                 self.successful_pipelines += 1
                 
@@ -424,6 +504,9 @@ class DocETLBaseline(BaselineInterface):
             'attempts': len(pipeline_history),
             'history': pipeline_history
         })
+        
+        # Save message history for failed run
+        self._save_messages(messages, query, pipeline_history)
         
         return False, {"error": "Failed to generate working pipeline after all attempts"}, execution_time
     

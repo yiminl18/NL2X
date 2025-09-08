@@ -10,3 +10,6 @@ azuregpt4o.txt
 test.py
 results/
 generated_pipelines/
+generated_prompts/
+validations/
+messages/

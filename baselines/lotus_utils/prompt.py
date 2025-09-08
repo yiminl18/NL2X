@@ -73,11 +73,11 @@ next_topics = df.sem_map(
     suffix="Next Topics"
 )
 
-print("Study plan:", tips)
-print("Top two hardest courses:\n", top_2_hardest)
-print("Courses to improve skills:\n", classes_for_skills)
-print("Class most relevant to CNNs:\n", top_conv_class)
-print("Suggested next topics:\n", next_topics)
+# print("Study plan:", tips)
+# print("Top two hardest courses:\n", top_2_hardest)
+# print("Courses to improve skills:\n", classes_for_skills)
+# print("Class most relevant to CNNs:\n", top_conv_class)
+# print("Suggested next topics:\n", next_topics)
 ```
 
 ---
@@ -578,7 +578,7 @@ recs_df = classified_df.sem_agg(
 # The recs_df DataFrame contains benchmark‑specific recommendations in its _output column
 for i in range(len(recs_df)):
     benchmark = recs_df.iloc[i].benchmark_name
-    print(f"\nRecommendations for {benchmark}:\n{recs_df.iloc[i]._output}")
+    # print(f"\nRecommendations for {benchmark}:\n{recs_df.iloc[i]._output}")
 ```
 
 ---
@@ -660,7 +660,7 @@ refined_summary = draft_summary.sem_map(
     suffix="final_summary"
 )
 
-print(refined_summary.iloc[0].final_summary)
+# print(refined_summary.iloc[0].final_summary)
 ```
 
 ---
