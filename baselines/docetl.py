@@ -5,7 +5,10 @@ import json
 import yaml
 import tempfile
 import traceback
+import shutil
 from pathlib import Path
+from datetime import datetime
+from bs4 import BeautifulSoup
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
@@ -41,9 +44,114 @@ class DocETLBaseline(BaselineInterface):
         self.validate_answer = self.config.validate_answer
         self.temp_dir = tempfile.mkdtemp(prefix="docetl_baseline_")
         
+        # Create persistent directory for saving generated pipelines
+        self.pipeline_output_dir = os.path.join(os.getcwd(), "generated_pipelines", "docetl")
+        os.makedirs(self.pipeline_output_dir, exist_ok=True)
+        
         if self.config.verbose:
             self.logger.info(f"Initialized DocETL baseline with config: {self.config}")
             self.logger.info(f"Temporary directory: {self.temp_dir}")
+            self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
+    
+    def _parse_html_to_dict(self, html_content: str) -> Dict[str, Any]:
+        """
+        Parse HTML content into a structured dictionary.
+        
+        Args:
+            html_content: HTML string content
+            
+        Returns:
+            Dictionary with parsed HTML structure
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Extract metadata
+        metadata = {}
+        if soup.title:
+            metadata['title'] = soup.title.string
+        
+        # Extract meta tags
+        meta_tags = {}
+        for meta in soup.find_all('meta'):
+            if meta.get('name'):
+                meta_tags[meta.get('name')] = meta.get('content', '')
+            elif meta.get('property'):
+                meta_tags[meta.get('property')] = meta.get('content', '')
+        if meta_tags:
+            metadata['meta'] = meta_tags
+        
+        # Extract main content
+        result = {
+            'metadata': metadata,
+            'text': soup.get_text(separator=' ', strip=True),
+            'structure': {}
+        }
+        
+        # Extract structured content
+        # Headers
+        headers = []
+        for i in range(1, 7):
+            for header in soup.find_all(f'h{i}'):
+                headers.append({
+                    'level': i,
+                    'text': header.get_text(strip=True)
+                })
+        if headers:
+            result['structure']['headers'] = headers
+        
+        # Links
+        links = []
+        for link in soup.find_all('a', href=True):
+            links.append({
+                'text': link.get_text(strip=True),
+                'href': link['href']
+            })
+        if links:
+            result['structure']['links'] = links
+        
+        # Images
+        images = []
+        for img in soup.find_all('img'):
+            img_info = {
+                'src': img.get('src', ''),
+                'alt': img.get('alt', '')
+            }
+            if img.get('title'):
+                img_info['title'] = img['title']
+            images.append(img_info)
+        if images:
+            result['structure']['images'] = images
+        
+        # Tables
+        tables = []
+        for table in soup.find_all('table'):
+            table_data = []
+            for row in table.find_all('tr'):
+                row_data = []
+                for cell in row.find_all(['td', 'th']):
+                    row_data.append(cell.get_text(strip=True))
+                if row_data:
+                    table_data.append(row_data)
+            if table_data:
+                tables.append(table_data)
+        if tables:
+            result['structure']['tables'] = tables
+        
+        # Lists
+        lists = []
+        for list_elem in soup.find_all(['ul', 'ol']):
+            list_items = []
+            for li in list_elem.find_all('li'):
+                list_items.append(li.get_text(strip=True))
+            if list_items:
+                lists.append({
+                    'type': list_elem.name,
+                    'items': list_items
+                })
+        if lists:
+            result['structure']['lists'] = lists
+        
+        return result
     
     def _prepare_dataset_files(self, context: Dict[str, Any]) -> List[str]:
         """
@@ -73,7 +181,15 @@ class DocETLBaseline(BaselineInterface):
                     content = value.content
                     
                     # Create temporary file for the content
-                    if file_type in ['json', 'text']:
+                    if file_type == 'html':
+                        # Parse HTML content into structured dictionary
+                        temp_file = os.path.join(self.temp_dir, f"{key}.json")
+                        parsed_html = self._parse_html_to_dict(content)
+                        with open(temp_file, 'w', encoding='utf-8') as f:
+                            json.dump([parsed_html], f, indent=2, ensure_ascii=False)
+                        dataset_paths.append(temp_file)
+                    
+                    elif file_type in ['json', 'text']:
                         # Save as JSON if it's structured data
                         temp_file = os.path.join(self.temp_dir, f"{key}.json")
                         
@@ -104,8 +220,30 @@ class DocETLBaseline(BaselineInterface):
                 elif hasattr(value, 'path') and value.path:
                     # Handle file based on type
                     if os.path.exists(value.path):
-                        # Check if it's a text file that needs conversion to JSON
-                        if hasattr(value, 'type') and value.type == 'text':
+                        # Check if it's an HTML file
+                        if hasattr(value, 'type') and value.type == 'html':
+                            # Read HTML file and parse to structured format
+                            temp_file = os.path.join(self.temp_dir, f"{key}.json")
+                            with open(value.path, 'r', encoding='utf-8') as f:
+                                html_content = f.read()
+                            
+                            parsed_html = self._parse_html_to_dict(html_content)
+                            with open(temp_file, 'w', encoding='utf-8') as f:
+                                json.dump([parsed_html], f, indent=2, ensure_ascii=False)
+                            
+                            dataset_paths.append(temp_file)
+                        elif value.path.endswith('.html') or value.path.endswith('.htm'):
+                            # Auto-detect HTML files by extension
+                            temp_file = os.path.join(self.temp_dir, f"{key}.json")
+                            with open(value.path, 'r', encoding='utf-8') as f:
+                                html_content = f.read()
+                            
+                            parsed_html = self._parse_html_to_dict(html_content)
+                            with open(temp_file, 'w', encoding='utf-8') as f:
+                                json.dump([parsed_html], f, indent=2, ensure_ascii=False)
+                            
+                            dataset_paths.append(temp_file)
+                        elif hasattr(value, 'type') and value.type == 'text':
                             # Read text file and convert to JSON format
                             temp_file = os.path.join(self.temp_dir, f"{key}.json")
                             with open(value.path, 'r', encoding='utf-8') as f:
@@ -129,6 +267,39 @@ class DocETLBaseline(BaselineInterface):
                     self.logger.warning(f"Failed to prepare dataset {key}: {e}")
         
         return dataset_paths
+    
+    def _save_pipeline_to_persistent_dir(self, pipeline_content: str, query: str, success: bool = True) -> str:
+        """
+        Save pipeline to persistent directory for manual inspection.
+        
+        Args:
+            pipeline_content: The pipeline YAML content
+            query: The original query
+            success: Whether the pipeline was successful
+            
+        Returns:
+            Path to saved pipeline file
+        """
+        # Create filename with timestamp and query snippet
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        query_snippet = query[:50].replace(" ", "_").replace("/", "_").replace("\\", "_")
+        status = "success" if success else "failed"
+        filename = f"{timestamp}_{status}_{query_snippet}.yaml"
+        
+        filepath = os.path.join(self.pipeline_output_dir, filename)
+        
+        # Save pipeline with metadata
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"# Query: {query}\n")
+            f.write(f"# Generated at: {datetime.now().isoformat()}\n")
+            f.write(f"# Status: {status}\n")
+            f.write("#" + "="*50 + "\n\n")
+            f.write(pipeline_content)
+        
+        if self.config.verbose:
+            self.logger.info(f"Saved pipeline to: {filepath}")
+        
+        return filepath
     
     def _generate_and_execute_pipeline(self, query: str, dataset_paths: List[str]) -> tuple:
         """
@@ -184,6 +355,10 @@ class DocETLBaseline(BaselineInterface):
                     if self.config.verbose:
                         self.logger.warning(f"Pipeline execution failed: {error_msg}")
                     
+                    # Save failed pipeline for inspection (only on last attempt)
+                    if attempt == self.max_attempts - 1:
+                        self._save_pipeline_to_persistent_dir(pipeline_yaml, query, success=False)
+                    
                     messages = add_error_message(messages, "execution", error_msg)
                     pipeline_history.append(FailedPipeline(
                         pipeline_yaml=pipeline_yaml,
@@ -220,6 +395,9 @@ class DocETLBaseline(BaselineInterface):
                 # Success! Load the output
                 output_path = self._find_output_path(pipeline_file)
                 result = self._load_pipeline_output(output_path)
+                
+                # Save successful pipeline to persistent directory
+                self._save_pipeline_to_persistent_dir(pipeline_yaml, query, success=True)
                 
                 execution_time = time.time() - start_time
                 self.successful_pipelines += 1

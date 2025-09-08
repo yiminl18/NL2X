@@ -9,3 +9,4 @@ __pycache__/
 azuregpt4o.txt
 test.py
 results/
+generated_pipelines/

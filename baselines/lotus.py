@@ -4,6 +4,9 @@ import os
 import json
 import tempfile
 import traceback
+import shutil
+from datetime import datetime
+from bs4 import BeautifulSoup
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
@@ -41,9 +44,39 @@ class LOTUSBaseline(BaselineInterface):
         self.validate_answer = self.config.validate_answer
         self.temp_dir = tempfile.mkdtemp(prefix="lotus_baseline_")
         
+        # Create persistent directory for saving generated pipelines
+        self.pipeline_output_dir = os.path.join(os.getcwd(), "generated_pipelines", "lotus")
+        os.makedirs(self.pipeline_output_dir, exist_ok=True)
+        
         if self.config.verbose:
             self.logger.info(f"Initialized LOTUS baseline with config: {self.config}")
             self.logger.info(f"Temporary directory: {self.temp_dir}")
+            self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
+    
+    def _extract_text_from_html(self, html_content: str) -> str:
+        """
+        Extract plain text from HTML content.
+        
+        Args:
+            html_content: HTML string content
+            
+        Returns:
+            Plain text extracted from HTML
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+        
+        # Get text with proper spacing
+        text = soup.get_text(separator=' ', strip=True)
+        
+        # Clean up extra whitespace
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = ' '.join(chunk for chunk in chunks if chunk)
+        
+        return text
     
     def _prepare_dataset_files(self, context: Dict[str, Any]) -> List[str]:
         """
@@ -76,7 +109,17 @@ class LOTUSBaseline(BaselineInterface):
                     # Create temporary JSON file first, then convert to CSV
                     temp_json_file = os.path.join(self.temp_dir, f"{key}.json")
                     
-                    if file_type in ['json', 'text']:
+                    if file_type == 'html':
+                        # Extract text from HTML and save as JSON
+                        text_content = self._extract_text_from_html(content)
+                        with open(temp_json_file, 'w', encoding='utf-8') as f:
+                            json.dump([{"text": text_content}], f, indent=2, ensure_ascii=False)
+                        
+                        # Convert JSON to CSV for LOTUS processing
+                        csv_file = convert_json_to_csv(temp_json_file)
+                        dataset_paths.append(csv_file)
+                    
+                    elif file_type in ['json', 'text']:
                         # Save as JSON if it's structured data
                         if isinstance(content, (list, dict)):
                             with open(temp_json_file, 'w', encoding='utf-8') as f:
@@ -112,6 +155,20 @@ class LOTUSBaseline(BaselineInterface):
                             dataset_paths.append(csv_path)
                         elif value.path.endswith('.csv'):
                             dataset_paths.append(value.path)
+                        elif (hasattr(value, 'type') and value.type == 'html') or value.path.endswith('.html') or value.path.endswith('.htm'):
+                            # Handle HTML files - extract text
+                            temp_json_file = os.path.join(self.temp_dir, f"{key}.json")
+                            with open(value.path, 'r', encoding='utf-8') as src:
+                                html_content = src.read()
+                            
+                            # Extract text from HTML
+                            text_content = self._extract_text_from_html(html_content)
+                            json_data = [{"text": text_content}]
+                            
+                            with open(temp_json_file, 'w', encoding='utf-8') as dst:
+                                json.dump(json_data, dst, indent=2, ensure_ascii=False)
+                            csv_path = convert_json_to_csv(temp_json_file)
+                            dataset_paths.append(csv_path)
                         else:
                             # For text files and other types, create a temporary CSV
                             temp_json_file = os.path.join(self.temp_dir, f"{key}.json")
@@ -139,6 +196,39 @@ class LOTUSBaseline(BaselineInterface):
                     self.logger.warning(f"Failed to prepare dataset {key}: {e}")
         
         return dataset_paths
+    
+    def _save_pipeline_to_persistent_dir(self, pipeline_content: str, query: str, success: bool = True) -> str:
+        """
+        Save pipeline to persistent directory for manual inspection.
+        
+        Args:
+            pipeline_content: The pipeline Python code
+            query: The original query
+            success: Whether the pipeline was successful
+            
+        Returns:
+            Path to saved pipeline file
+        """
+        # Create filename with timestamp and query snippet
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        query_snippet = query[:50].replace(" ", "_").replace("/", "_").replace("\\", "_")
+        status = "success" if success else "failed"
+        filename = f"{timestamp}_{status}_{query_snippet}.py"
+        
+        filepath = os.path.join(self.pipeline_output_dir, filename)
+        
+        # Save pipeline with metadata
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"# Query: {query}\n")
+            f.write(f"# Generated at: {datetime.now().isoformat()}\n")
+            f.write(f"# Status: {status}\n")
+            f.write("#" + "="*50 + "\n\n")
+            f.write(pipeline_content)
+        
+        if self.config.verbose:
+            self.logger.info(f"Saved pipeline to: {filepath}")
+        
+        return filepath
     
     def _generate_and_execute_pipeline(self, query: str, dataset_paths: List[str]) -> tuple:
         """
@@ -200,6 +290,10 @@ class LOTUSBaseline(BaselineInterface):
                     if self.config.verbose:
                         self.logger.warning(f"Pipeline execution failed: {error_msg}")
                     
+                    # Save failed pipeline for inspection (only on last attempt)
+                    if attempt == self.max_attempts - 1:
+                        self._save_pipeline_to_persistent_dir(pipeline_code, query, success=False)
+                    
                     messages = add_error_message(messages, "execution", error_msg)
                     pipeline_history.append(FailedPipeline(
                         pipeline_code=pipeline_code,
@@ -234,6 +328,9 @@ class LOTUSBaseline(BaselineInterface):
                         continue
                 
                 # Success!
+                # Save successful pipeline to persistent directory
+                self._save_pipeline_to_persistent_dir(pipeline_code, query, success=True)
+                
                 execution_time = time.time() - start_time
                 self.successful_pipelines += 1
                 

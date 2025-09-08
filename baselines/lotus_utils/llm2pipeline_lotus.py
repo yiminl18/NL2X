@@ -669,6 +669,7 @@ else:
     print("✗ Error: Pipeline must produce a variable named 'result' containing a pandas DataFrame")
     sys.exit(1)
 """
+    print(wrapped_code)
     return wrapped_code
 
 def validate_generated_pipeline(pipeline_code: str) -> None:

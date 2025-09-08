@@ -832,7 +832,7 @@ When generating a pipeline, the model must follow these rules:
 
 11. **Best Practices**
 
-1. Use `Rank` -> `code_filter` to select top-k items if possible, rather than `Filter` to improve efficiency. `Reduce` and `TopK` operators cannot be used in this way.
+1. Use `Rank` -> `Filter`/`code_filter` to select top-k items. `Reduce` and `TopK` operators cannot be used in this way.
 
 2. Use `resolve` to deduplicate or standardize entities before aggregation to improve quality.
 
