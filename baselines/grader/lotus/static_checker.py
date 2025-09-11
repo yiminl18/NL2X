@@ -15,10 +15,8 @@ Usage:
 """
 
 import ast
-import json
-import re
 import sys
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any
 
 
 # LOTUS semantic operators
@@ -205,8 +203,67 @@ class LotusStaticChecker:
                         self._validate_operator_args(node.func.attr, node)
                 
                 self.generic_visit(node)
-            
+
             def _validate_operator_args(self, op_name: str, node):
+                """Validate arguments for specific operators against LOTUS docs."""
+                def has_kw(*names):
+                    return any(kw.arg in names for kw in node.keywords)
+
+                def has_pos(i: int):
+                    return len(node.args) > i
+
+                def present(name: str, pos_index: int | None = None, alt_names: list[str] | None = None):
+                    names = {name}
+                    if alt_names:
+                        names.update(alt_names)
+                    return (pos_index is not None and has_pos(pos_index)) or has_kw(*names)
+
+                def require(params: list[tuple[str, int | None, list[str] | None]], msg_hint: str):
+                    missing = []
+                    for name, pos_index, alt in params:
+                        if not present(name, pos_index, alt):
+                            missing.append(name if not alt else f"{name} ({'/'.join([name]+alt)})")
+                    if missing:
+                        self.checker.errors.append({
+                            "type": "OPERATOR_ERROR",
+                            "line": getattr(node, "lineno", None),
+                            "message": f"{op_name} requires {', '.join(missing)}{msg_hint}"
+                        })
+
+                # Validate by ops
+                if op_name == 'sem_map':
+                    # Need: user_instruction
+                    require([('user_instruction', 0, None)], " argument")
+                elif op_name == 'sem_filter':
+                    # Need: user_instruction
+                    require([('user_instruction', 0, None)], " argument")
+                elif op_name == 'sem_extract':
+                    # Need: input_cols, output_cols
+                    require([('input_cols', 0, None), ('output_cols', 1, None)], " arguments")
+                elif op_name == 'sem_agg':
+                    # Need: user_instructions
+                    require([('user_instructions', 0, ['user_instruction'])], " argument")
+                elif op_name == 'sem_join':
+                    # Need: other, join_instruction
+                    require([('other', 0, None), ('join_instruction', 1, None)], " arguments")
+                elif op_name == 'sem_topk':
+                    # Need: user_instruction, K
+                    require([('user_instruction', 0, None), ('K', 1, None)], " arguments")
+                elif op_name == 'sem_sim_join':
+                    # Need: other, left_on, right_on, K
+                    require([('other', 0, None), ('left_on', None, None), ('right_on', None, None), ('K', None, None)], " arguments")
+                elif op_name == 'sem_search':
+                    # Need: col_name, query
+                    require([('col_name', 0, None), ('query', 1, None)], " arguments")
+                elif op_name == 'sem_partition_by':
+                    # Need: partition_fn
+                    require([('partition_fn', 0, None)], " argument")
+                elif op_name == 'sem_index':
+                    # Need: col_name, index_dir
+                    require([('col_name', 0, None), ('index_dir', 1, None)], " arguments")
+                elif op_name == 'sem_dedup':
+                    # Need: col_name, threshold
+                    require([('col_name', 0, None), ('threshold', None, None)], " arguments")
                 """Validate arguments for specific operators."""
                 # Check for required arguments based on operator
                 if op_name == 'sem_filter':

@@ -224,7 +224,7 @@ class AzureGPT4Client:
         """
         try:
             completion = self.client.chat.completions.create(
-                model=os.getenv("DEPLOYMENT_NAME", self.model_name),
+                model=self.model_name,
                 messages=messages,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
