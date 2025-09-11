@@ -9,24 +9,38 @@ Implements a 3-step methodology with separation of concerns:
 Final score: S_Sem = w_intent * S_IntentAlign + w_constraint * S_ConstraintAdherence
 
 Usage:
-    from dynamic_checker import check_pipeline_dynamic
+    from dynamic_checker import check_pipeline_dynamic, create_azure_gpt4_client
     
+    # With mock LLM (for testing)
     result = check_pipeline_dynamic(
         question="Report the average number of reported identity thefts...",
         pipeline_path="pipeline.yaml"
     )
     
-    # Or with YAML string
+    # With Azure GPT-4o
     result = check_pipeline_dynamic(
-        question="...",
-        pipeline_yaml="default_model: gpt-4o-mini\n..."
+        question="Report the average number of reported identity thefts...",
+        pipeline_path="pipeline.yaml",
+        use_azure_gpt4=True
     )
+    
+    # Or with YAML string and custom Azure settings
+    azure_client = create_azure_gpt4_client(max_tokens=2000, temperature=0.1)
+    checker = DocETLDynamicChecker(azure_client, intent_weight=0.7)
+    result = checker.check(question="...", pipeline_yaml="default_model: gpt-4o-mini\n...")
 """
 
 import json
 import sys
-import yaml
+import os
 from typing import Dict, Any, Optional
+
+# Import Azure OpenAI if available
+try:
+    from openai import AzureOpenAI
+    AZURE_OPENAI_AVAILABLE = True
+except ImportError:
+    AZURE_OPENAI_AVAILABLE = False
 
 # Prompt templates
 PIPELINE_TO_QUESTION_PROMPT = """
@@ -152,6 +166,89 @@ Produce a JSON object with the following structure. Do not add any extra comment
 # Default weights for combining scores
 DEFAULT_INTENT_WEIGHT = 0.6  # Strategic alignment weight
 DEFAULT_CONSTRAINT_WEIGHT = 0.4  # Tactical constraint weight
+
+
+class AzureGPT4Client:
+    """Azure OpenAI GPT-4o client for LLM calls."""
+    
+    def __init__(self, api_key_path: str = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt',
+                 endpoint_url: str = 'https://text-db.openai.azure.com/',
+                 api_version: str = '2025-01-01-preview',
+                 model_name: str = 'gpt-4o',
+                 max_tokens: int = 2000,
+                 temperature: float = 0.0):
+        """
+        Initialize Azure GPT-4o client.
+        
+        Args:
+            api_key_path: Path to API key file
+            endpoint_url: Azure OpenAI endpoint URL
+            api_version: API version
+            model_name: Model deployment name
+            max_tokens: Maximum tokens for response
+            temperature: Response randomness (0-1)
+        """
+        if not AZURE_OPENAI_AVAILABLE:
+            raise ImportError("Azure OpenAI library not available. Install with: pip install openai")
+            
+        self.api_key_path = api_key_path
+        self.endpoint_url = endpoint_url
+        self.api_version = api_version
+        self.model_name = model_name
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        
+        # Read API key
+        try:
+            with open(api_key_path, 'r') as f:
+                self.api_key = f.read().strip()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"API key file not found at {api_key_path}")
+        
+        # Initialize client
+        self.client = AzureOpenAI(
+            azure_endpoint=os.getenv("ENDPOINT_URL", self.endpoint_url),
+            api_key=self.api_key,
+            api_version=self.api_version,
+        )
+    
+    def chat(self, messages):
+        """
+        Chat completion method compatible with dynamic checker.
+        
+        Args:
+            messages: List of message dictionaries with 'role' and 'content'
+            
+        Returns:
+            str: Response content
+        """
+        try:
+            completion = self.client.chat.completions.create(
+                model=os.getenv("DEPLOYMENT_NAME", self.model_name),
+                messages=messages,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                top_p=1,
+                frequency_penalty=0,
+                presence_penalty=0,
+                stream=False
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            raise RuntimeError(f"Azure OpenAI API call failed: {str(e)}")
+    
+    def complete(self, prompt: str):
+        """
+        Completion method compatible with dynamic checker.
+        
+        Args:
+            prompt: Text prompt string
+            
+        Returns:
+            str: Response content
+        """
+        messages = [{"role": "user", "content": prompt}]
+        return self.chat(messages)
 
 
 class DocETLDynamicChecker:
@@ -318,8 +415,55 @@ class DocETLDynamicChecker:
     def _call_llm(self, prompt: str) -> str:
         """Call LLM with the given prompt."""
         if self.llm_client is None:
-            # Return mock response for testing
-            return "Mock inferred query from pipeline analysis"
+            # Return mock JSON responses for testing
+            if "Pipeline Definition to Analyze" in prompt or "Here is the pipeline:" in prompt:
+                # Mock response for Step 1 (Pipeline -> Question)
+                return '''{
+                    "inferred_query": "What is the average number of reported identity thefts for metropolitan areas with population over one million?",
+                    "analysis_components": {
+                        "main_goal": "Calculate average identity thefts for large metropolitan areas",
+                        "data_sources_used": ["identity_theft_data"],
+                        "key_processing_steps": [
+                            "Extract metropolitan area statistics from input data",
+                            "Filter areas with population over 1 million",
+                            "Calculate average identity thefts"
+                        ]
+                    }
+                }'''
+            elif "Original Query (Q):" in prompt and "Inferred Query (Q'):" in prompt:
+                # Mock response for Step 2 (Intent Alignment)
+                return '''{
+                    "evaluation_summary": {
+                        "core_task_domain": {"score": 0.9, "rationale": "Both queries focus on identity theft statistics for metropolitan areas"},
+                        "filtering_selection": {"score": 0.85, "rationale": "Both specify population threshold of one million"},
+                        "transformation_calculation": {"score": 0.8, "rationale": "Both require averaging calculation"},
+                        "output_format_constraints": {"score": 0.7, "rationale": "Output format generally aligned"}
+                    },
+                    "intent_alignment_score": 0.83
+                }'''
+            elif "constraint_verification_list" in prompt or "Pipeline Definition (P):" in prompt:
+                # Mock response for Step 3 (Constraint Check)
+                return '''{
+                    "constraint_verification_list": [
+                        {
+                            "constraint_description": "Metropolitan areas must be larger than one million in population",
+                            "verification_status": "VERIFIED",
+                            "evidence": "code_filter: return doc['population_2023'] > 1_000_000",
+                            "rationale": "Code correctly implements > 1 million population filter",
+                            "score": 1.0
+                        },
+                        {
+                            "constraint_description": "Calculate average identity thefts",
+                            "verification_status": "VERIFIED", 
+                            "evidence": "reduce operation with averaging prompt",
+                            "rationale": "Reduce operation correctly calculates average",
+                            "score": 1.0
+                        }
+                    ],
+                    "constraint_adherence_score": 1.0
+                }'''
+            else:
+                return '{"mock_response": "Unable to determine prompt type"}'
         
         # Try different client methods
         if hasattr(self.llm_client, 'complete'):
@@ -331,10 +475,27 @@ class DocETLDynamicChecker:
             raise ValueError("LLM client must have either 'complete' or 'chat' method")
 
 
+def create_azure_gpt4_client(api_key_path: str = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt',
+                            **kwargs):
+    """
+    Create an Azure GPT-4o client for use with the dynamic checker.
+    
+    Args:
+        api_key_path: Path to API key file
+        **kwargs: Additional arguments for AzureGPT4Client
+        
+    Returns:
+        AzureGPT4Client instance
+    """
+    return AzureGPT4Client(api_key_path=api_key_path, **kwargs)
+
+
 def check_pipeline_dynamic(question: str, 
                          pipeline_path: str = None,
                          pipeline_yaml: str = None,
                          llm_client=None,
+                         use_azure_gpt4: bool = False,
+                         api_key_path: str = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt',
                          intent_weight: float = DEFAULT_INTENT_WEIGHT,
                          constraint_weight: float = DEFAULT_CONSTRAINT_WEIGHT) -> Dict[str, Any]:
     """
@@ -344,13 +505,19 @@ def check_pipeline_dynamic(question: str,
         question: Natural language query to evaluate against
         pipeline_path: Path to pipeline YAML file
         pipeline_yaml: Pipeline YAML content as string
-        llm_client: LLM client for API calls (optional)
+        llm_client: LLM client for API calls (optional, overrides use_azure_gpt4)
+        use_azure_gpt4: Whether to use Azure GPT-4o client (default: False)
+        api_key_path: Path to Azure API key file (only used if use_azure_gpt4=True)
         intent_weight: Weight for strategic alignment (default: 0.6)
         constraint_weight: Weight for constraint adherence (default: 0.4)
     
     Returns:
         Dict with semantic_score and detailed results
     """
+    # Create LLM client if needed
+    if llm_client is None and use_azure_gpt4:
+        llm_client = create_azure_gpt4_client(api_key_path)
+    
     checker = DocETLDynamicChecker(llm_client, intent_weight, constraint_weight)
     return checker.check(question, pipeline_yaml, pipeline_path)
 
@@ -358,27 +525,60 @@ def check_pipeline_dynamic(question: str,
 def main():
     """Command-line interface for the dynamic checker."""
     if len(sys.argv) < 3:
-        print("Usage: python3 dynamic_checker.py <question> <pipeline_yaml_path> [intent_weight]")
+        print("Usage: python3 dynamic_checker.py <question> <pipeline_yaml_path> [intent_weight] [--use-azure-gpt4] [--api-key-path <path>]")
         print("Example: python3 dynamic_checker.py 'What is the average?' pipeline.yaml 0.8")
+        print("Example with Azure: python3 dynamic_checker.py 'What is the average?' pipeline.yaml 0.8 --use-azure-gpt4")
         sys.exit(1)
     
     question = sys.argv[1]
     pipeline_path = sys.argv[2]
-    intent_weight = float(sys.argv[3]) if len(sys.argv) > 3 else DEFAULT_INTENT_WEIGHT
+    intent_weight = DEFAULT_INTENT_WEIGHT
+    use_azure_gpt4 = False
+    api_key_path = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt'
+    
+    # Parse arguments
+    i = 3
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg == '--use-azure-gpt4':
+            use_azure_gpt4 = True
+        elif arg == '--api-key-path':
+            if i + 1 < len(sys.argv):
+                api_key_path = sys.argv[i + 1]
+                i += 1
+            else:
+                print("Error: --api-key-path requires a path argument")
+                sys.exit(1)
+        elif not arg.startswith('--'):
+            # Assume it's the intent weight
+            try:
+                intent_weight = float(arg)
+            except ValueError:
+                print(f"Error: Invalid intent weight '{arg}'. Must be a float.")
+                sys.exit(1)
+        i += 1
+    
     constraint_weight = 1.0 - intent_weight
     
-    result = check_pipeline_dynamic(
-        question=question,
-        pipeline_path=pipeline_path,
-        intent_weight=intent_weight,
-        constraint_weight=constraint_weight
-    )
-    
-    print(json.dumps(result, indent=2))
-    
-    # Exit with appropriate code
-    semantic_score = result.get("semantic_score", 0.0)
-    sys.exit(0 if semantic_score > 0.5 else 1)
+    try:
+        result = check_pipeline_dynamic(
+            question=question,
+            pipeline_path=pipeline_path,
+            use_azure_gpt4=use_azure_gpt4,
+            api_key_path=api_key_path,
+            intent_weight=intent_weight,
+            constraint_weight=constraint_weight
+        )
+        
+        print(json.dumps(result, indent=2))
+        
+        # Exit with appropriate code
+        semantic_score = result.get("semantic_score", 0.0)
+        sys.exit(0 if semantic_score > 0.5 else 1)
+        
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
