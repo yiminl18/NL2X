@@ -26,6 +26,15 @@ import re
 import json
 from typing import Dict, Set, Any
 
+try:
+    from .pipeline_obfuscator import PipelineObfuscator
+except ImportError:
+    # Handle case when running as standalone script
+    try:
+        from pipeline_obfuscator import PipelineObfuscator
+    except ImportError:
+        PipelineObfuscator = None
+
 
 def parse_yaml_simple(content: str) -> dict:
     """Simple YAML parser for basic DocETL pipeline files."""
@@ -94,61 +103,160 @@ class DocETLStaticChecker:
     
     # Define valid operator types based on the prompt.py documentation
     VALID_OPERATORS = {
-        'map', 'filter', 'reduce', 'resolve', 'rank', 'extract', 
+        'map', 'filter', 'reduce', 'resolve', 'order', 'extract', 
         'cluster', 'split', 'gather', 'unnest', 'sample', 'topk',
         'code_map', 'code_filter', 'code_reduce', 'equijoin', 'scan',
         'parallel_map', 'link_resolve', 'add_uuid'
     }
     
+    # Universal required fields that must appear in all operators
+    UNIVERSAL_REQUIRED_FIELDS = {'name', 'type'}
+    
     # Required fields for each operator type
     OPERATOR_REQUIREMENTS = {
-        'map': {'prompt', 'output'},
-        'filter': {'prompt', 'output'},
-        'reduce': {'prompt', 'output', 'reduce_key'},
-        'resolve': {'comparison_prompt', 'resolution_prompt', 'output'},
-        'rank': {'prompt'},
-        'extract': {'prompt', 'document_keys'},
-        'cluster': {'embedding_keys'},
-        'split': {'split_key', 'method'},
-        'gather': {'content_key', 'doc_id_key', 'order_key'},
-        'unnest': {'unnest_key'},
-        'sample': {'method', 'samples'},
-        'topk': {'method', 'k'},
-        'code_map': {'code'},
-        'code_filter': {'code'},
-        'code_reduce': {'code', 'reduce_key'},
-        'equijoin': {'left_key', 'right_key'},
-        'scan': {'prompt', 'output'},
-        'parallel_map': {'prompt', 'output'},
-        'link_resolve': {'comparison_prompt', 'resolution_prompt', 'output'},
-        'add_uuid': set()
+        # LLM-powered operations
+        'map': set(),  # Only needs name/type (universal); prompt/output conditional based on drop_keys
+        'filter': {'prompt', 'output'},  # Always required
+        'reduce': {'reduce_key', 'prompt', 'output'},
+        'resolve': {'comparison_prompt'},  # resolution_prompt is optional, output is optional
+        'order': {'prompt', 'input_keys', 'direction'},  # Based on rank.py schema
+        'extract': {'prompt', 'document_keys'},  # Based on extract.py schema
+        'cluster': {'embedding_keys', 'summary_prompt', 'summary_schema'},  # Based on cluster.py syntax_check
+        'parallel_map': {'prompts', 'output'},  # Based on usage patterns
+        'equijoin': {'comparison_prompt'},  # Based on equijoin.py schema
+        # Auxiliary operations
+        'split': {'split_key', 'method', 'method_kwargs'},  # Based on split.py schema
+        'gather': {'content_key', 'doc_id_key', 'order_key'},  # Based on gather.py schema
+        'unnest': {'unnest_key'},  # Based on unnest.py schema
+        'sample': {'method'},  # samples can be optional with defaults in some cases
+        'topk': {'method', 'k', 'keys', 'query'},  # Based on topk.py schema
+        # Code operations
+        'code_map': {'code'},  # Based on code_operations.py schema
+        'code_filter': {'code'},  # Based on code_operations.py - inherits from code_map but needs code
+        'code_reduce': {'code'},  # Based on code_operations.py schema
+        # Special operations
+        'scan': {'dataset_name'},  # Based on scan.py schema - not prompt/output
+        'link_resolve': {'comparison_prompt'},  # Based on link_resolve.py - resolution_prompt/output optional
+        'add_uuid': set()  # Based on add_uuid.py schema - no required fields beyond universal
     }
-    
-    # Optional fields that can appear in operators
-    OPTIONAL_FIELDS = {
-        'name', 'type', 'model', 'optimize', 'recursively_optimize',
-        'sample_size', 'tools', 'validate', 'validation_rules',
-        'num_retries_on_validate_failure', 'drop_keys', 'timeout',
-        'enable_observability', 'batch_size', 'clustering_method',
-        'batch_prompt', 'litellm_completion_kwargs', 'pdf_url_key',
-        'flush_partial_result', 'calibrate', 'num_calibration_docs',
-        'method_kwargs', 'recursive', 'depth', 'pass_through',
-        'associative', 'synthesize_resolve', 'random_state',
-        'stratify_key', 'direction', 'rerank_call_budget',
-        'initial_ordering_method', 'input_keys', 'output_key',
-        'summary_schema', 'summary_prompt', 'max_batch_size',
-        'peripheral_chunks', 'doc_header_key', 'query',
-        'embedding_model', 'keys', 'blocking_keys', 'blocking_threshold',
-        'blocking_conditions', 'limit_comparisons', 'code',
-        'combine_prompt', 'extraction_model', 'initial_state',
-        'update_prompt', 'state_schema', 'on', 'conditions'
+
+    # Universal optional fields that can appear in any operator 
+    UNIVERSAL_OPTIONAL_FIELDS = {
+        'gleaning',         # per-operator validation hooks where supported
+        'skip_on_error'     # commonly supported fallback behavior
     }
-    
-    def __init__(self):
+
+    # Operator-specific optional fields
+    OPERATOR_OPTIONAL_FIELDS = {
+        'map': {
+            # Based on map.py schema
+            'output', 'prompt', 'model', 'optimize', 'recursively_optimize', 'sample_size',
+            'tools', 'validation_rules', 'num_retries_on_validate_failure',
+            'drop_keys', 'timeout', 'enable_observability', 'batch_size', 'clustering_method',
+            'batch_prompt', 'litellm_completion_kwargs', 'pdf_url_key', 'flush_partial_result',
+            'calibrate', 'num_calibration_docs'
+        },
+        'filter': {
+            # Inherits from map.py schema but prompt/output are required
+            'model', 'optimize', 'recursively_optimize', 'sample_size',
+            'tools', 'validation_rules', 'num_retries_on_validate_failure',
+            'drop_keys', 'timeout', 'enable_observability', 'batch_size', 'clustering_method',
+            'batch_prompt', 'litellm_completion_kwargs', 'pdf_url_key', 'flush_partial_result',
+            'calibrate', 'num_calibration_docs'
+        },
+        'reduce': {
+            # Based on reduce.py schema
+            'optimize', 'synthesize_resolve', 'model', 'input', 'pass_through',
+            'associative', 'fold_prompt', 'fold_batch_size', 'merge_prompt',
+            'merge_batch_size', 'value_sampling', 'verbose', 'timeout',
+            'litellm_completion_kwargs', 'enable_observability'
+        },
+        'resolve': {
+            # Based on resolve.py schema
+            'resolution_prompt', 'output', 'embedding_model', 'resolution_model', 'comparison_model',
+            'blocking_keys', 'blocking_threshold', 'blocking_conditions',
+            'input', 'embedding_batch_size', 'compare_batch_size',
+            'limit_comparisons', 'optimize', 'timeout', 'litellm_completion_kwargs',
+            'enable_observability'
+        },
+        'extract': {
+            # Based on extract.py schema
+            'model', 'format_extraction', 'extraction_key_suffix', 'extraction_method',
+            'timeout', 'litellm_completion_kwargs'
+        },
+        'cluster': {
+            # Based on cluster.py syntax check
+            'output_key', 'max_batch_size', 'embedding_model', 'model',
+            'timeout', 'litellm_completion_kwargs'
+        },
+        'gather': {
+            # Based on gather.py schema
+            'peripheral_chunks', 'doc_header_key', 'main_chunk_start', 'main_chunk_end'
+        },
+        'split': {
+            # Based on split.py schema
+            'model'  # method_kwargs is required, not optional
+        },
+        'unnest': {
+            # Based on unnest.py schema
+            'keep_empty', 'expand_fields', 'recursive', 'depth'
+        },
+        'sample': {
+            # Based on sample.py schema
+            'samples', 'stratify_key', 'samples_per_group', 'method_kwargs', 'random_state'
+        },
+        'topk': {
+            # Based on topk.py schema
+            'stratify_key', 'embedding_model', 'model', 'batch_size'
+        },
+        'order': {
+            # Based on rank.py schema
+            'model', 'embedding_model', 'batch_size', 'initial_ordering_method', 'k',
+            'rerank_call_budget', 'num_top_items_per_window', 'overlap_fraction',
+            'timeout', 'num_calibration_docs', 'verbose', 'litellm_completion_kwargs'
+        },
+        'equijoin': {
+            # Based on equijoin.py schema
+            'output', 'blocking_threshold', 'blocking_conditions', 'limits',
+            'comparison_model', 'optimize', 'embedding_model', 'embedding_batch_size',
+            'compare_batch_size', 'limit_comparisons', 'blocking_keys', 'timeout',
+            'litellm_completion_kwargs'
+        },
+        'parallel_map': {
+            # Based on parallel_map usage patterns
+            'model', 'optimize', 'recursively_optimize', 'timeout', 'litellm_completion_kwargs'
+        },
+        'code_map': {
+            # Based on code_operations.py schema
+            'concurrent_thread_count', 'drop_keys'
+        },
+        'code_filter': {
+            # Based on code_operations.py - inherits from code_map
+            'concurrent_thread_count', 'drop_keys'
+        },
+        'code_reduce': {
+            # Based on code_operations.py schema
+            'concurrent_thread_count', 'reduce_key', 'pass_through'
+        },
+        'scan': set(),  # Based on scan.py schema - dataset_name is required, not optional
+        'link_resolve': {
+            # Based on link_resolve.py implementation
+            'id_key', 'link_key', 'blocking_threshold', 'blocking_conditions',
+            'embedding_model', 'comparison_model', 'compare_batch_size', 'timeout',
+            'validation_rules', 'verbose', 'litellm_completion_kwargs', 'resolution_prompt', 'output'
+        },
+        'add_uuid': {
+            # Based on add_uuid.py schema
+            'id_key'
+        }
+    }
+
+    def __init__(self, enable_obfuscation: bool = False):
         self.errors = []
         self.warnings = []
         self.pipeline = None
         self.field_tracker = {}  # Track fields created/used by operations
+        self.enable_obfuscation = enable_obfuscation
         
     def check(self, pipeline_path: str) -> dict:
         """
@@ -173,6 +281,10 @@ class DocETLStaticChecker:
         Main checking function that accepts YAML content as string.
         Returns dict with score and errors for machine parsing.
         """
+        # Apply obfuscation if enabled
+        if self.enable_obfuscation:
+            yaml_content = self._obfuscate_pipeline_content(yaml_content)
+        
         # Step 1: Check YAML validity - if this fails, we can't continue
         if not self._check_yaml_validity_from_string(yaml_content):
             return self._format_result()
@@ -185,6 +297,33 @@ class DocETLStaticChecker:
         
         # Return formatted result
         return self._format_result()
+    
+    def _obfuscate_pipeline_content(self, yaml_content: str) -> str:
+        """
+        Obfuscate pipeline content using PipelineObfuscator.
+        
+        Args:
+            yaml_content: Original YAML content
+            
+        Returns:
+            str: Obfuscated YAML content, or original content if obfuscation fails
+        """
+        if PipelineObfuscator is None:
+            self.warnings.append({
+                "type": "obfuscation_unavailable",
+                "message": "Pipeline obfuscation requested but PipelineObfuscator not available"
+            })
+            return yaml_content
+            
+        try:
+            obfuscator = PipelineObfuscator()
+            return obfuscator.obfuscate(yaml_content)
+        except Exception as e:
+            self.warnings.append({
+                "type": "obfuscation_failed",
+                "message": f"Pipeline obfuscation failed: {str(e)}"
+            })
+            return yaml_content
     
     def _check_yaml_validity_from_path(self, pipeline_path: str) -> bool:
         """Check if the YAML file is valid by reading from file path."""
@@ -305,8 +444,10 @@ class DocETLStaticChecker:
                 has_errors = True
                 continue
             
-            # Check required fields for operator type
-            required_fields = self.OPERATOR_REQUIREMENTS.get(op_type, set())
+            # Check required fields for operator type (universal + operator-specific)
+            universal_required_fields = self.UNIVERSAL_REQUIRED_FIELDS
+            operator_required_fields = self.OPERATOR_REQUIREMENTS.get(op_type, set())
+            required_fields = universal_required_fields | operator_required_fields
             missing_fields = required_fields - set(op.keys())
             if missing_fields:
                 for missing_field in missing_fields:
@@ -319,8 +460,9 @@ class DocETLStaticChecker:
                     })
                 has_errors = True
             
-            # Check for unknown fields
-            all_valid_fields = required_fields | self.OPTIONAL_FIELDS | {'name', 'type'}
+            # Check for unknown fields using operator-specific optional fields
+            operator_optional_fields = self.OPERATOR_OPTIONAL_FIELDS.get(op_type, set())
+            all_valid_fields = required_fields | operator_optional_fields | self.UNIVERSAL_OPTIONAL_FIELDS
             unknown_fields = set(op.keys()) - all_valid_fields
             if unknown_fields:
                 for unknown_field in unknown_fields:
@@ -786,12 +928,32 @@ class DocETLStaticChecker:
                 print(f"WARNING: {warning}", file=sys.stderr)
 
 
-def check_pipeline_file(pipeline_path: str) -> dict:
-    checker = DocETLStaticChecker()
+def check_pipeline_file(pipeline_path: str, enable_obfuscation: bool = False) -> dict:
+    """
+    Check a DocETL pipeline file.
+    
+    Args:
+        pipeline_path: Path to the pipeline YAML file
+        enable_obfuscation: Whether to enable operator name obfuscation (default: False)
+    
+    Returns:
+        dict: Result with score and errors
+    """
+    checker = DocETLStaticChecker(enable_obfuscation=enable_obfuscation)
     return checker.check(pipeline_path)
 
-def check_pipeline_string(yaml_content: str) -> dict:
-    checker = DocETLStaticChecker()
+def check_pipeline_string(yaml_content: str, enable_obfuscation: bool = False) -> dict:
+    """
+    Check a DocETL pipeline from YAML string.
+    
+    Args:
+        yaml_content: Pipeline YAML content as string
+        enable_obfuscation: Whether to enable operator name obfuscation (default: False)
+    
+    Returns:
+        dict: Result with score and errors
+    """
+    checker = DocETLStaticChecker(enable_obfuscation=enable_obfuscation)
     return checker.check_string(yaml_content)
 
 def main():
