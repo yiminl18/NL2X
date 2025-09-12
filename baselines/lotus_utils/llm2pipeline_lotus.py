@@ -388,7 +388,9 @@ def execute_single_pipeline(pipeline_file: str, dataset_paths: List[str]) -> tup
         
         if result.returncode != 0:
             error_msg = f"Pipeline execution error:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
-            # print(f"  ✗ Pipeline execution failed: {result.stderr.split(chr(10))[0] if result.stderr else 'Unknown error'}")
+            print(f"  ✗ Pipeline execution failed: {result.stderr.split(chr(10))[0] if result.stderr else 'Unknown error'}")
+            print(f"  STDOUT: {result.stdout}")
+            print(f"  STDERR: {result.stderr}")
             return False, error_msg, None
         
         # Load output data from the saved file
@@ -409,11 +411,12 @@ def execute_single_pipeline(pipeline_file: str, dataset_paths: List[str]) -> tup
         
     except subprocess.TimeoutExpired:
         error_msg = "Pipeline execution timeout (exceeded 120 seconds)"
-        # print(f"  ✗ {error_msg}")
+        print(f"  ✗ {error_msg}")
         return False, error_msg, None
     except Exception as e:
         error_msg = f"Pipeline execution error: {str(e)}\n{traceback.format_exc()}"
-        # print(f"  ✗ Pipeline execution failed: {str(e)}")
+        print(f"  ✗ Pipeline execution failed: {str(e)}")
+        print(f"  Full traceback:\n{traceback.format_exc()}")
         return False, error_msg, None
 
 def validate_answer_with_llm(

@@ -782,6 +782,15 @@ When generating a pipeline, the model must follow these rules:
    * Keep schemas flat and simple.
    * Use lists or dict only when explicitly required.
    * Use `enum[...]` only if all possible values are enumerated in the prompt.
+   * Make sure that you put the type in quotation marks, if it references an object type (i.e., has curly braces)! Otherwise the yaml won't compile! Example:
+
+   ```yaml
+   output:
+     schema:
+       people_and_involvements: "list[string]"
+       my_dict: "{{year: integer, event: string, location: string}}"
+   ```
+   * Nested list[dict] is not allowed, such as "list[{city: string, population: list[{year: integer}]}]"
    * For vague tasks, default to:
 
      ```yaml
@@ -832,7 +841,7 @@ When generating a pipeline, the model must follow these rules:
 
 11. **Best Practices**
 
-1. Use `Rank` -> `Filter`/`code_filter` to select top-k items. `Reduce` and `TopK` operators cannot be used in this way.
+1. Use `Rank` -> `Filter` to select top-k items. `Reduce` and `TopK` operators cannot be used in this way.
 
 2. Use `resolve` to deduplicate or standardize entities before aggregation to improve quality.
 

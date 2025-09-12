@@ -49,11 +49,13 @@ class DocETLBaseline(BaselineInterface):
         self.prompts_output_dir = os.path.join(os.getcwd(), "generated_prompts", "docetl")
         self.validations_output_dir = os.path.join(os.getcwd(), "validations", "docetl")
         self.messages_output_dir = os.path.join(os.getcwd(), "messages", "docetl")
+        self.converted_data_dir = os.path.join(os.getcwd(), "converted_data", "docetl")
         
         os.makedirs(self.pipeline_output_dir, exist_ok=True)
         os.makedirs(self.prompts_output_dir, exist_ok=True)
         os.makedirs(self.validations_output_dir, exist_ok=True)
         os.makedirs(self.messages_output_dir, exist_ok=True)
+        os.makedirs(self.converted_data_dir, exist_ok=True)
         
         if self.config.verbose:
             self.logger.info(f"Initialized DocETL baseline with config: {self.config}")
@@ -187,14 +189,29 @@ class DocETLBaseline(BaselineInterface):
                 if hasattr(value, 'content') and value.content is not None:
                     content = value.content
                     
-                    # Create temporary file for the content
+                    # Create persistent file for HTML content
                     if file_type == 'html':
                         # Parse HTML content into structured dictionary
+                        # Save in both temp_dir (for processing) and converted_data_dir (for persistence)
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}_html_to_json.json")
                         temp_file = os.path.join(self.temp_dir, f"{key}.json")
+                        
                         parsed_html = self._parse_html_to_dict(content)
+                        
+                        # Save to persistent directory
+                        with open(persistent_file, 'w', encoding='utf-8') as f:
+                            json.dump([parsed_html], f, indent=2, ensure_ascii=False)
+                        
+                        # Also save to temp directory for processing
                         with open(temp_file, 'w', encoding='utf-8') as f:
                             json.dump([parsed_html], f, indent=2, ensure_ascii=False)
-                        dataset_paths.append(temp_file)
+                        
+                        # Use persistent file path instead of temp file
+                        dataset_paths.append(persistent_file)
+                        
+                        if self.config.verbose:
+                            self.logger.info(f"Saved HTML-to-JSON conversion to: {persistent_file}")
                     
                     elif file_type in ['json', 'text']:
                         # Save as JSON if it's structured data
@@ -230,26 +247,53 @@ class DocETLBaseline(BaselineInterface):
                         # Check if it's an HTML file
                         if hasattr(value, 'type') and value.type == 'html':
                             # Read HTML file and parse to structured format
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}_html_to_json.json")
                             temp_file = os.path.join(self.temp_dir, f"{key}.json")
+                            
                             with open(value.path, 'r', encoding='utf-8') as f:
                                 html_content = f.read()
                             
                             parsed_html = self._parse_html_to_dict(html_content)
+                            
+                            # Save to persistent directory
+                            with open(persistent_file, 'w', encoding='utf-8') as f:
+                                json.dump([parsed_html], f, indent=2, ensure_ascii=False)
+                            
+                            # Also save to temp directory for processing
                             with open(temp_file, 'w', encoding='utf-8') as f:
                                 json.dump([parsed_html], f, indent=2, ensure_ascii=False)
                             
-                            dataset_paths.append(temp_file)
+                            # Use persistent file path instead of temp file
+                            dataset_paths.append(persistent_file)
+                            
+                            if self.config.verbose:
+                                self.logger.info(f"Saved HTML-to-JSON conversion to: {persistent_file}")
+                                
                         elif value.path.endswith('.html') or value.path.endswith('.htm'):
                             # Auto-detect HTML files by extension
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}_html_to_json.json")
                             temp_file = os.path.join(self.temp_dir, f"{key}.json")
+                            
                             with open(value.path, 'r', encoding='utf-8') as f:
                                 html_content = f.read()
                             
                             parsed_html = self._parse_html_to_dict(html_content)
+                            
+                            # Save to persistent directory
+                            with open(persistent_file, 'w', encoding='utf-8') as f:
+                                json.dump([parsed_html], f, indent=2, ensure_ascii=False)
+                            
+                            # Also save to temp directory for processing
                             with open(temp_file, 'w', encoding='utf-8') as f:
                                 json.dump([parsed_html], f, indent=2, ensure_ascii=False)
                             
-                            dataset_paths.append(temp_file)
+                            # Use persistent file path instead of temp file
+                            dataset_paths.append(persistent_file)
+                            
+                            if self.config.verbose:
+                                self.logger.info(f"Saved HTML-to-JSON conversion to: {persistent_file}")
                         elif hasattr(value, 'type') and value.type == 'text':
                             # Read text file and convert to JSON format
                             temp_file = os.path.join(self.temp_dir, f"{key}.json")

@@ -457,7 +457,8 @@ def execute_single_pipeline(pipeline_file: str) -> tuple:
         
     except Exception as e:
         error_msg = f"Pipeline execution error: {str(e)}\n{traceback.format_exc()}"
-        # print(f"  ✗ Pipeline execution failed: {str(e)}")
+        print(f"  ✗ Pipeline execution failed: {str(e)}")
+        print(f"  Full traceback:\n{traceback.format_exc()}")
         return False, error_msg
 
 def validate_pipeline_output(
