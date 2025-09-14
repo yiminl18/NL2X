@@ -8,7 +8,9 @@ import base64
 import json
 import pandas as pd
 import re
+import tempfile
 from typing import Any, Dict, List, Optional
+from bs4 import BeautifulSoup
 
 
 def encode_image(image_path: str) -> str:
@@ -275,15 +277,285 @@ def find_excel_files(directory: str) -> Optional[List[str]]:
 def read_txt(file_path: str) -> str:
     """
     Simple text file reader (kept for backward compatibility).
-    
+
     Args:
         file_path: Path to the text file
-        
+
     Returns:
         Content of the file
     """
     with open(file_path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+def parse_html_to_dict(html_content: str) -> Dict[str, Any]:
+    """
+    Parse HTML content into a structured dictionary.
+
+    Args:
+        html_content: HTML string content
+
+    Returns:
+        Dictionary with parsed HTML structure
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # Extract metadata
+    metadata = {}
+    if soup.title:
+        metadata['title'] = soup.title.string
+
+    # Extract meta tags
+    meta_tags = {}
+    for meta in soup.find_all('meta'):
+        if meta.get('name'):
+            meta_tags[meta.get('name')] = meta.get('content', '')
+        elif meta.get('property'):
+            meta_tags[meta.get('property')] = meta.get('content', '')
+    if meta_tags:
+        metadata['meta'] = meta_tags
+
+    # Extract main content
+    result = {
+        'metadata': metadata,
+        'text': soup.get_text(separator=' ', strip=True),
+        'structure': {}
+    }
+
+    # Extract structured content
+    # Headers
+    headers = []
+    for i in range(1, 7):
+        for header in soup.find_all(f'h{i}'):
+            headers.append({
+                'level': i,
+                'text': header.get_text(strip=True)
+            })
+    if headers:
+        result['structure']['headers'] = headers
+
+    # Links
+    links = []
+    for link in soup.find_all('a', href=True):
+        links.append({
+            'text': link.get_text(strip=True),
+            'href': link['href']
+        })
+    if links:
+        result['structure']['links'] = links
+
+    # Images
+    images = []
+    for img in soup.find_all('img'):
+        img_info = {
+            'src': img.get('src', ''),
+            'alt': img.get('alt', '')
+        }
+        if img.get('title'):
+            img_info['title'] = img['title']
+        images.append(img_info)
+    if images:
+        result['structure']['images'] = images
+
+    # Tables
+    tables = []
+    for table in soup.find_all('table'):
+        table_data = []
+        for row in table.find_all('tr'):
+            row_data = []
+            for cell in row.find_all(['td', 'th']):
+                row_data.append(cell.get_text(strip=True))
+            if row_data:
+                table_data.append(row_data)
+        if table_data:
+            tables.append(table_data)
+    if tables:
+        result['structure']['tables'] = tables
+
+    # Lists
+    lists = []
+    for list_elem in soup.find_all(['ul', 'ol']):
+        list_items = []
+        for li in list_elem.find_all('li'):
+            list_items.append(li.get_text(strip=True))
+        if list_items:
+            lists.append({
+                'type': list_elem.name,
+                'items': list_items
+            })
+    if lists:
+        result['structure']['lists'] = lists
+
+    return result
+
+
+def convert_txt_to_json(txt_content: str, filename: str = "text_file",
+                       head_chars: int = 2500, tail_chars: int = 2500) -> Dict[str, Any]:
+    """
+    Convert text content to JSON format with optional head/tail preservation.
+
+    Args:
+        txt_content: Text file content
+        filename: Name of the original file
+        head_chars: Number of characters to keep from beginning (default 2500, None = all)
+        tail_chars: Number of characters to keep from end (default 2500, None = all)
+
+    Returns:
+        Dictionary with file_name and content
+    """
+    original_length = len(txt_content)
+
+    # Apply character limits (both head_chars and tail_chars default to 2500, totaling 5000)
+    if head_chars is None and tail_chars is None:
+        # Keep all content if both are explicitly set to None
+        content = txt_content
+    elif head_chars is not None and tail_chars is not None:
+        # Both limits specified
+        total_chars = head_chars + tail_chars
+        if original_length > total_chars:
+            # Keep head and tail characters
+            content = txt_content[:head_chars] + "\n...\n" + txt_content[-tail_chars:]
+        else:
+            content = txt_content
+    elif head_chars is not None:
+        # Only head limit specified
+        if original_length > head_chars:
+            content = txt_content[:head_chars] + "\n..."
+        else:
+            content = txt_content
+    elif tail_chars is not None:
+        # Only tail limit specified
+        if original_length > tail_chars:
+            content = "...\n" + txt_content[-tail_chars:]
+        else:
+            content = txt_content
+    else:
+        # Shouldn't reach here given defaults, but keep for safety
+        content = txt_content
+
+    return {
+        "file_name": filename,
+        "content": content,
+        "original_character_count": original_length
+    }
+
+
+def convert_xlsx_to_csv(xlsx_path: str, output_dir: str = None,
+                        sheet_name: str = None) -> List[str]:
+    """
+    Convert XLSX file to CSV format.
+
+    Args:
+        xlsx_path: Path to the XLSX file
+        output_dir: Directory to save CSV files (defaults to temp directory)
+        sheet_name: Specific sheet to convert (None = all sheets)
+
+    Returns:
+        List of paths to generated CSV files
+
+    Note:
+        Requires 'openpyxl' package for Excel file handling.
+        Install with: pip install openpyxl
+    """
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp(prefix="xlsx_to_csv_")
+
+    csv_paths = []
+
+    try:
+        # Try to import openpyxl to check if it's available
+        try:
+            import openpyxl
+        except ImportError:
+            raise ImportError(
+                "The 'openpyxl' package is required for Excel file handling. "
+                "Please install it with: pip install openpyxl"
+            )
+
+        # Read Excel file
+        xls = pd.ExcelFile(xlsx_path)
+
+        # Get base filename without extension
+        base_name = os.path.splitext(os.path.basename(xlsx_path))[0]
+
+        # Process specified sheet or all sheets
+        if sheet_name:
+            if sheet_name in xls.sheet_names:
+                df = pd.read_excel(xlsx_path, sheet_name=sheet_name)
+                csv_filename = f"{base_name}_{sheet_name}.csv"
+                csv_path = os.path.join(output_dir, csv_filename)
+                df.to_csv(csv_path, index=False, encoding='utf-8')
+                csv_paths.append(csv_path)
+            else:
+                raise ValueError(f"Sheet '{sheet_name}' not found in {xlsx_path}")
+        else:
+            # Convert all sheets
+            for sheet in xls.sheet_names:
+                df = pd.read_excel(xlsx_path, sheet_name=sheet)
+                # Clean sheet name for filename
+                safe_sheet_name = re.sub(r'[^\w\s-]', '_', sheet)
+                csv_filename = f"{base_name}_{safe_sheet_name}.csv" if len(xls.sheet_names) > 1 else f"{base_name}.csv"
+                csv_path = os.path.join(output_dir, csv_filename)
+                df.to_csv(csv_path, index=False, encoding='utf-8')
+                csv_paths.append(csv_path)
+
+    except Exception as e:
+        raise Exception(f"Failed to convert XLSX to CSV: {str(e)}")
+
+    return csv_paths
+
+
+def xlsx_to_csv_content(xlsx_content: bytes, sheet_name: str = None) -> str:
+    """
+    Convert XLSX content directly to CSV string.
+
+    Args:
+        xlsx_content: XLSX file content as bytes
+        sheet_name: Specific sheet to convert (None = first sheet)
+
+    Returns:
+        CSV content as string
+
+    Note:
+        Requires 'openpyxl' package for Excel file handling.
+        Install with: pip install openpyxl
+    """
+    try:
+        # Try to import openpyxl to check if it's available
+        try:
+            import openpyxl
+        except ImportError:
+            raise ImportError(
+                "The 'openpyxl' package is required for Excel file handling. "
+                "Please install it with: pip install openpyxl"
+            )
+        # Create a temporary file to write the content
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp_file:
+            tmp_file.write(xlsx_content)
+            tmp_path = tmp_file.name
+
+        # Read the Excel file
+        if sheet_name:
+            df = pd.read_excel(tmp_path, sheet_name=sheet_name)
+        else:
+            df = pd.read_excel(tmp_path)
+
+        # Convert to CSV string
+        csv_content = df.to_csv(index=False)
+
+        # Clean up temp file
+        os.unlink(tmp_path)
+
+        return csv_content
+
+    except Exception as e:
+        # Clean up temp file if it exists
+        if 'tmp_path' in locals():
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+        raise Exception(f"Failed to convert XLSX content to CSV: {str(e)}")
 
 
 class DataTruncator:

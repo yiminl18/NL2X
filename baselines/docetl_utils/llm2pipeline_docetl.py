@@ -451,6 +451,7 @@ def execute_single_pipeline(pipeline_file: str) -> tuple:
             load_dotenv(env_file)
         
         # Execute the pipeline
+        print("Reading: ", pipeline_file)
         runner = DSLRunner.from_yaml(str(pipeline_file), max_threads=10)
         runner.load_run_save()
         return True, None

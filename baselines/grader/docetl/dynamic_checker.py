@@ -34,6 +34,9 @@ import json
 import sys
 import os
 from typing import Dict, Any, Optional
+from string import Template
+from pathlib import Path
+from datetime import datetime
 
 # Import Azure OpenAI if available
 try:
@@ -42,8 +45,8 @@ try:
 except ImportError:
     AZURE_OPENAI_AVAILABLE = False
 
-# Prompt templates
-PIPELINE_TO_QUESTION_PROMPT = """
+# Prompt templates using Template strings
+PIPELINE_TO_QUESTION_PROMPT = Template("""
 # [Role]
 You are an expert data scientist and system analyst. Your task is to reverse-engineer a data analysis pipeline written in a declarative format (e.g., YAML) to infer the high-level natural language question it was designed to answer.
 
@@ -74,10 +77,10 @@ Produce a JSON object with the following structure. Do not add any extra comment
 
 # [Pipeline Definition to Analyze]
 Here is the pipeline:
-{pipeline_yaml_definition}
-"""
+$pipeline_yaml_definition
+""")
 
-INTENT_ALIGNMENT_CHECK_PROMPT = """
+INTENT_ALIGNMENT_CHECK_PROMPT = Template("""
 # [Role]
 You are a meticulous and impartial evaluator. Your task is to assess the high-level semantic alignment between an Original Query (Q) and an Inferred Query (Q') that represents a pipeline's strategic goal.
 
@@ -120,13 +123,13 @@ Produce a JSON object with the following structure. Do not add any extra comment
 ```
 # [Queries to Compare]
 ## Original Query (Q):
-{original_query}
+$original_query
 
 ## Inferred Query (Q'):
-{inferred_query_from_prompt_1}
-"""
+$inferred_query_from_prompt_1
+""")
 
-CONSTRAINT_CHECK_PROMPT = """
+CONSTRAINT_CHECK_PROMPT = Template("""
 # [Role]
 You are a meticulous Quality Assurance (QA) analyst and code reviewer. Your sole task is to verify if a given data analysis pipeline correctly implements all the constraints specified in a natural language query.
 
@@ -157,11 +160,11 @@ Produce a JSON object with the following structure. Do not add any extra comment
 
 # [Inputs]
 ## Original Query (Q):
-{original_query}
+$original_query
 
 ## Pipeline Definition (P):
-{pipeline_yaml_definition}
-"""
+$pipeline_yaml_definition
+""")
 
 # Default weights for combining scores
 DEFAULT_INTENT_WEIGHT = 0.6  # Strategic alignment weight
@@ -255,7 +258,7 @@ class DocETLDynamicChecker:
     """Dynamic checker using LLM-based evaluation for DocETL pipelines."""
     
     def __init__(self, llm_client=None, intent_weight: float = DEFAULT_INTENT_WEIGHT, 
-                 constraint_weight: float = DEFAULT_CONSTRAINT_WEIGHT):
+                 constraint_weight: float = DEFAULT_CONSTRAINT_WEIGHT, save_intermediate: bool = True):
         """
         Initialize the dynamic checker.
         
@@ -263,14 +266,54 @@ class DocETLDynamicChecker:
             llm_client: LLM client for making API calls (if None, will use mock responses)
             intent_weight: Weight for intent alignment score (0.0-1.0)
             constraint_weight: Weight for constraint adherence score (0.0-1.0)
+            save_intermediate: Whether to save intermediate responses to files
         """
         self.llm_client = llm_client
         self.intent_weight = intent_weight
         self.constraint_weight = constraint_weight
+        self.save_intermediate = save_intermediate
+        self.intermediate_dir = None
+        
+        if self.save_intermediate:
+            # Create checker_intermediate directory if it doesn't exist
+            self.intermediate_base_dir = Path("checker_intermediate")
+            self.intermediate_base_dir.mkdir(exist_ok=True)
         
         # Validate weights
         if abs(intent_weight + constraint_weight - 1.0) > 1e-6:
             raise ValueError("Intent weight and constraint weight must sum to 1.0")
+    
+    def _save_intermediate(self, filename: str, content: Any):
+        """Save intermediate content to file."""
+        if not self.save_intermediate or not self.intermediate_dir:
+            return
+        
+        file_path = self.intermediate_dir / filename
+        
+        # Handle different content types
+        if isinstance(content, (dict, list)):
+            content_str = json.dumps(content, indent=2, ensure_ascii=False)
+        else:
+            content_str = str(content)
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content_str)
+        
+        print(f"  Saved intermediate: {file_path}")
+    
+    def _trim_json_response(self, response: str) -> str:
+        """Trim response to extract only the JSON content between first { and last }."""
+        if not response:
+            return response
+        
+        # Find the first { and last }
+        first_brace = response.find('{')
+        last_brace = response.rfind('}')
+        
+        if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+            return response[first_brace:last_brace + 1]
+        
+        return response
     
     def check(self, question: str, pipeline_yaml: str = None, pipeline_path: str = None) -> Dict[str, Any]:
         """
@@ -285,6 +328,15 @@ class DocETLDynamicChecker:
             Dict containing semantic score and detailed step results
         """
         try:
+            # Create session-specific intermediate directory
+            if self.save_intermediate:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.intermediate_dir = self.intermediate_base_dir / timestamp
+                self.intermediate_dir.mkdir(exist_ok=True)
+                
+                # Save the question
+                self._save_intermediate("question.txt", question)
+            
             # Load pipeline content
             if pipeline_yaml is not None:
                 pipeline_content = pipeline_yaml
@@ -293,6 +345,10 @@ class DocETLDynamicChecker:
                     pipeline_content = f.read()
             else:
                 raise ValueError("Either pipeline_yaml or pipeline_path must be provided")
+            
+            # Save pipeline content
+            if self.save_intermediate:
+                self._save_intermediate("pipeline.yaml", pipeline_content)
             
             # Step 1: Pipeline -> Question (P -> Q')
             step1_result = self._pipeline_to_question(pipeline_content)
@@ -339,7 +395,7 @@ class DocETLDynamicChecker:
             constraint_score = step3_result["constraint_adherence_score"]
             semantic_score = self.intent_weight * intent_score + self.constraint_weight * constraint_score
             
-            return {
+            final_result = {
                 "semantic_score": semantic_score,
                 "intent_alignment_score": intent_score,
                 "constraint_adherence_score": constraint_score,
@@ -354,6 +410,13 @@ class DocETLDynamicChecker:
                 }
             }
             
+            # Save final result
+            if self.save_intermediate:
+                self._save_intermediate("final_result.json", final_result)
+                print(f"\nAll intermediate files saved to: {self.intermediate_dir}")
+            
+            return final_result
+            
         except Exception as e:
             return {
                 "semantic_score": 0.0,
@@ -363,54 +426,138 @@ class DocETLDynamicChecker:
     
     def _pipeline_to_question(self, pipeline_content: str) -> Dict[str, Any]:
         """Step 1: Reverse-engineer pipeline to infer intended question."""
+        print("Step 1: Pipeline -> Question (P -> Q')")
         try:
-            prompt = PIPELINE_TO_QUESTION_PROMPT.format(pipeline_yaml_definition=pipeline_content)
+            prompt = PIPELINE_TO_QUESTION_PROMPT.substitute(pipeline_yaml_definition=pipeline_content)
+            
+            # Save prompt
+            if self.save_intermediate:
+                self._save_intermediate("step1_prompt.txt", prompt)
+            
             response = self._call_llm(prompt)
             
+            # Save raw response
+            if self.save_intermediate:
+                self._save_intermediate("step1_response_raw.txt", response)
+            
+            # Trim response to JSON content
+            trimmed_response = self._trim_json_response(response)
+            
+            # Save trimmed response
+            if self.save_intermediate:
+                self._save_intermediate("step1_response_trimmed.txt", trimmed_response)
+            
             # Parse JSON response
-            result = json.loads(response)
+            result = json.loads(trimmed_response)
+            
+            # Save parsed result
+            if self.save_intermediate:
+                self._save_intermediate("step1_result.json", result)
+            
             return result
             
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse LLM response as JSON: {str(e)}"}
+            error_result = {"error": f"Failed to parse LLM response as JSON: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step1_error.json", error_result)
+            return error_result
         except Exception as e:
-            return {"error": f"Step 1 error: {str(e)}"}
+            error_result = {"error": f"Step 1 error: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step1_error.json", error_result)
+            return error_result
     
     def _intent_alignment_check(self, original_query: str, inferred_query: str) -> Dict[str, Any]:
         """Step 2: Check alignment between original and inferred queries."""
+        print("Step 2: Intent Alignment (Q vs Q' -> S_IntentAlign)")
         try:
-            prompt = INTENT_ALIGNMENT_CHECK_PROMPT.format(
+            prompt = INTENT_ALIGNMENT_CHECK_PROMPT.substitute(
                 original_query=original_query,
                 inferred_query_from_prompt_1=inferred_query
             )
+            
+            # Save prompt
+            if self.save_intermediate:
+                self._save_intermediate("step2_prompt.txt", prompt)
+            
             response = self._call_llm(prompt)
             
+            # Save raw response
+            if self.save_intermediate:
+                self._save_intermediate("step2_response_raw.txt", response)
+            
+            # Trim response to JSON content
+            trimmed_response = self._trim_json_response(response)
+            
+            # Save trimmed response
+            if self.save_intermediate:
+                self._save_intermediate("step2_response_trimmed.txt", trimmed_response)
+            
             # Parse JSON response
-            result = json.loads(response)
+            result = json.loads(trimmed_response)
+            
+            # Save parsed result
+            if self.save_intermediate:
+                self._save_intermediate("step2_result.json", result)
+            
             return result
             
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse LLM response as JSON: {str(e)}"}
+            error_result = {"error": f"Failed to parse LLM response as JSON: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step2_error.json", error_result)
+            return error_result
         except Exception as e:
-            return {"error": f"Step 2 error: {str(e)}"}
+            error_result = {"error": f"Step 2 error: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step2_error.json", error_result)
+            return error_result
     
     def _constraint_check(self, original_query: str, pipeline_content: str) -> Dict[str, Any]:
         """Step 3: Check if pipeline correctly implements all constraints."""
+        print("Step 3: Constraint Adherence (Q vs P -> S_ConstraintAdherence)")
         try:
-            prompt = CONSTRAINT_CHECK_PROMPT.format(
+            prompt = CONSTRAINT_CHECK_PROMPT.substitute(
                 original_query=original_query,
                 pipeline_yaml_definition=pipeline_content
             )
+            
+            # Save prompt
+            if self.save_intermediate:
+                self._save_intermediate("step3_prompt.txt", prompt)
+            
             response = self._call_llm(prompt)
             
+            # Save raw response
+            if self.save_intermediate:
+                self._save_intermediate("step3_response_raw.txt", response)
+            
+            # Trim response to JSON content
+            trimmed_response = self._trim_json_response(response)
+            
+            # Save trimmed response
+            if self.save_intermediate:
+                self._save_intermediate("step3_response_trimmed.txt", trimmed_response)
+            
             # Parse JSON response
-            result = json.loads(response)
+            result = json.loads(trimmed_response)
+            
+            # Save parsed result
+            if self.save_intermediate:
+                self._save_intermediate("step3_result.json", result)
+            
             return result
             
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse LLM response as JSON: {str(e)}"}
+            error_result = {"error": f"Failed to parse LLM response as JSON: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step3_error.json", error_result)
+            return error_result
         except Exception as e:
-            return {"error": f"Step 3 error: {str(e)}"}
+            error_result = {"error": f"Step 3 error: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step3_error.json", error_result)
+            return error_result
     
     def _call_llm(self, prompt: str) -> str:
         """Call LLM with the given prompt."""
@@ -497,7 +644,8 @@ def check_pipeline_dynamic(question: str,
                          use_azure_gpt4: bool = False,
                          api_key_path: str = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt',
                          intent_weight: float = DEFAULT_INTENT_WEIGHT,
-                         constraint_weight: float = DEFAULT_CONSTRAINT_WEIGHT) -> Dict[str, Any]:
+                         constraint_weight: float = DEFAULT_CONSTRAINT_WEIGHT,
+                         save_intermediate: bool = True) -> Dict[str, Any]:
     """
     Convenience function to check pipeline semantics against a question.
     
@@ -510,6 +658,7 @@ def check_pipeline_dynamic(question: str,
         api_key_path: Path to Azure API key file (only used if use_azure_gpt4=True)
         intent_weight: Weight for strategic alignment (default: 0.6)
         constraint_weight: Weight for constraint adherence (default: 0.4)
+        save_intermediate: Whether to save intermediate responses to files
     
     Returns:
         Dict with semantic_score and detailed results
@@ -518,14 +667,14 @@ def check_pipeline_dynamic(question: str,
     if llm_client is None and use_azure_gpt4:
         llm_client = create_azure_gpt4_client(api_key_path)
     
-    checker = DocETLDynamicChecker(llm_client, intent_weight, constraint_weight)
+    checker = DocETLDynamicChecker(llm_client, intent_weight, constraint_weight, save_intermediate)
     return checker.check(question, pipeline_yaml, pipeline_path)
 
 
 def main():
     """Command-line interface for the dynamic checker."""
     if len(sys.argv) < 3:
-        print("Usage: python3 dynamic_checker.py <question> <pipeline_yaml_path> [intent_weight] [--use-azure-gpt4] [--api-key-path <path>]")
+        print("Usage: python3 dynamic_checker.py <question> <pipeline_yaml_path> [intent_weight] [--use-azure-gpt4] [--api-key-path <path>] [--no-save-intermediate]")
         print("Example: python3 dynamic_checker.py 'What is the average?' pipeline.yaml 0.8")
         print("Example with Azure: python3 dynamic_checker.py 'What is the average?' pipeline.yaml 0.8 --use-azure-gpt4")
         sys.exit(1)
@@ -533,8 +682,9 @@ def main():
     question = sys.argv[1]
     pipeline_path = sys.argv[2]
     intent_weight = DEFAULT_INTENT_WEIGHT
-    use_azure_gpt4 = False
+    use_azure_gpt4 = True
     api_key_path = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt'
+    save_intermediate = True
     
     # Parse arguments
     i = 3
@@ -542,6 +692,8 @@ def main():
         arg = sys.argv[i]
         if arg == '--use-azure-gpt4':
             use_azure_gpt4 = True
+        elif arg == '--no-save-intermediate':
+            save_intermediate = False
         elif arg == '--api-key-path':
             if i + 1 < len(sys.argv):
                 api_key_path = sys.argv[i + 1]
@@ -567,7 +719,8 @@ def main():
             use_azure_gpt4=use_azure_gpt4,
             api_key_path=api_key_path,
             intent_weight=intent_weight,
-            constraint_weight=constraint_weight
+            constraint_weight=constraint_weight,
+            save_intermediate=save_intermediate
         )
         
         print(json.dumps(result, indent=2))

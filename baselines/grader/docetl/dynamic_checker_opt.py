@@ -23,6 +23,9 @@ import yaml
 import sys
 import os
 from typing import Dict, Any, List, Optional
+from string import Template
+from pathlib import Path
+from datetime import datetime
 
 # Import Azure OpenAI if available
 try:
@@ -32,7 +35,7 @@ except ImportError:
     AZURE_OPENAI_AVAILABLE = False
 
 # ===== Step 1: Query to Requirement Specification Graph =====
-REQUIREMENT_SPECIFICATION_PROMPT = """
+REQUIREMENT_SPECIFICATION_PROMPT = Template("""
 # [Role]
 You are a senior data scientist and requirements analyst. Your task is to analyze a natural language query and generate a structured Requirement Specification Graph that captures tasks, constraints, and dataflow dependencies.
 
@@ -51,7 +54,7 @@ Convert the natural language query into a structured graph representation that c
 # [Output Format]
 Produce a JSON object with the following structure. Do not add any extra commentary outside of the JSON object.
 
-```json
+
 {
   "tasks": [
     {
@@ -83,14 +86,14 @@ Produce a JSON object with the following structure. Do not add any extra comment
     "format": "Expected format or structure"
   }
 }
-```
+
 
 # [Query to Analyze]
-{query}
-"""
+$query
+""")
 
 # ===== Step 2: Operator Implementation Specification =====
-OPERATOR_SPECIFICATION_PROMPT = """
+OPERATOR_SPECIFICATION_PROMPT = Template("""
 # [Role]
 You are an expert code reviewer and pipeline analyst. Your task is to analyze a single operator from a data pipeline and extract its implementation specification.
 
@@ -98,12 +101,12 @@ You are an expert code reviewer and pipeline analyst. Your task is to analyze a 
 Analyze the provided operator and create a detailed specification that captures its primary function, side effects, inputs, outputs, and constraints handled.
 
 # [Operator Information]
-Operator Name: {operator_name}
-Operator Type: {operator_type}
-Original Query: {original_query}
+Operator Name: $operator_name
+Operator Type: $operator_type
+Original Query: $original_query
 
 # [Operator Definition]
-{operator_definition}
+$operator_definition
 
 # [Analysis Instructions]
 1. **Primary Function**: The main purpose of this operator
@@ -114,10 +117,10 @@ Original Query: {original_query}
 # [Output Format]
 Produce a JSON object with the following structure. Do not add any extra commentary outside of the JSON object.
 
-```json
+
 {
-  "operator_name": "{operator_name}",
-  "operator_type": "{operator_type}",
+  "operator_name": "$operator_name",
+  "operator_type": "$operator_type",
   "primary_function": "Main purpose of this operator in one sentence",
   "side_effects": [
     "List of any additional operations performed"
@@ -140,11 +143,11 @@ Produce a JSON object with the following structure. Do not add any extra comment
   ],
   "logic_description": "Detailed description of the operator's logic, especially for complex operations"
 }
-```
-"""
+
+""")
 
 # ===== Step 3: Task Coverage Matching =====
-TASK_COVERAGE_MATCHING_PROMPT = """
+TASK_COVERAGE_MATCHING_PROMPT = Template("""
 # [Role]
 You are a verification specialist. Your task is to match requirement tasks with operator implementations.
 
@@ -152,10 +155,10 @@ You are a verification specialist. Your task is to match requirement tasks with 
 For each task in the requirement specification, identify which operator(s) implement it.
 
 # [Requirement Tasks]
-{requirement_tasks_json}
+$requirement_tasks_json
 
 # [Operator Specifications]
-{operator_specs_json}
+$operator_specs_json
 
 # [Matching Instructions]
 1. For each requirement task, find the operator(s) that implement its functionality
@@ -172,7 +175,7 @@ For each task in the requirement specification, identify which operator(s) imple
 # [Output Format]
 Produce a JSON object with the following structure. Do not add any extra commentary outside of the JSON object.
 
-```json
+
 {
   "task_coverage": [
     {
@@ -189,11 +192,11 @@ Produce a JSON object with the following structure. Do not add any extra comment
   "uncovered_tasks": ["List of task IDs that are not covered"],
   "redundant_operators": ["List of operators that don't match any task"]
 }
-```
-"""
+
+""")
 
 # ===== Step 4: Constraint Fulfillment Verification =====
-CONSTRAINT_FULFILLMENT_PROMPT = """
+CONSTRAINT_FULFILLMENT_PROMPT = Template("""
 # [Role]
 You are a compliance auditor. Your task is to verify that all constraints are properly handled.
 
@@ -201,13 +204,13 @@ You are a compliance auditor. Your task is to verify that all constraints are pr
 Check if each constraint from the requirement specification is correctly implemented in the operators.
 
 # [Requirement Constraints]
-{requirement_constraints_json}
+$requirement_constraints_json
 
 # [Task Coverage Mapping]
-{task_coverage_json}
+$task_coverage_json
 
 # [Operator Specifications]
-{operator_specs_json}
+$operator_specs_json
 
 # [Verification Instructions]
 1. For each constraint, identify which tasks it applies to
@@ -224,7 +227,6 @@ Check if each constraint from the requirement specification is correctly impleme
 # [Output Format]
 Produce a JSON object with the following structure. Do not add any extra commentary outside of the JSON object.
 
-```json
 {
   "constraint_verification": [
     {
@@ -241,11 +243,10 @@ Produce a JSON object with the following structure. Do not add any extra comment
   "fulfillment_score": 0.0,
   "critical_violations": ["List of critical constraints that are not satisfied"]
 }
-```
-"""
+""")
 
 # ===== Step 5: Dataflow Consistency Check =====
-DATAFLOW_CONSISTENCY_PROMPT = """
+DATAFLOW_CONSISTENCY_PROMPT = Template("""
 # [Role]
 You are a data flow analyst. Your task is to verify the consistency of data flow between requirement specification and implementation.
 
@@ -253,13 +254,13 @@ You are a data flow analyst. Your task is to verify the consistency of data flow
 Check if the actual pipeline dataflow matches the required dataflow dependencies.
 
 # [Required Dataflow]
-{required_dataflow_json}
+$required_dataflow_json
 
 # [Task Coverage Mapping]
-{task_coverage_json}
+$task_coverage_json
 
 # [Operator Specifications]
-{operator_specs_json}
+$operator_specs_json
 
 # [Verification Instructions]
 1. Map the required dataflow edges to actual operator connections
@@ -276,7 +277,7 @@ Check if the actual pipeline dataflow matches the required dataflow dependencies
 # [Output Format]
 Produce a JSON object with the following structure. Do not add any extra commentary outside of the JSON object.
 
-```json
+
 {
   "dataflow_verification": [
     {
@@ -293,8 +294,8 @@ Produce a JSON object with the following structure. Do not add any extra comment
   "broken_dependencies": ["List of broken dataflow dependencies"],
   "data_integrity_issues": ["List of potential data integrity problems"]
 }
-```
-"""
+
+""")
 
 
 class AzureGPT4Client:
@@ -353,9 +354,21 @@ class AzureGPT4Client:
 class DocETLDynamicCheckerOpt:
     """Optimized dynamic checker using Requirement Specification Graph methodology."""
     
-    def __init__(self, llm_client=None):
-        """Initialize the checker with an LLM client."""
+    def __init__(self, llm_client=None, save_intermediate=True):
+        """Initialize the checker with an LLM client.
+        
+        Args:
+            llm_client: LLM client for API calls
+            save_intermediate: Whether to save intermediate responses to files
+        """
         self.llm_client = llm_client
+        self.save_intermediate = save_intermediate
+        self.intermediate_dir = None
+        
+        if self.save_intermediate:
+            # Create checker_intermediate directory if it doesn't exist
+            self.intermediate_base_dir = Path("checker_intermediate")
+            self.intermediate_base_dir.mkdir(exist_ok=True)
     
     def check(self, question: str, pipeline_yaml: str = None, pipeline_path: str = None) -> Dict[str, Any]:
         """
@@ -365,6 +378,15 @@ class DocETLDynamicCheckerOpt:
             Dict containing scores and detailed analysis results
         """
         try:
+            # Create session-specific intermediate directory
+            if self.save_intermediate:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.intermediate_dir = self.intermediate_base_dir / timestamp
+                self.intermediate_dir.mkdir(exist_ok=True)
+                
+                # Save the question
+                self._save_intermediate("question.txt", question)
+            
             # Load pipeline content
             if pipeline_yaml is not None:
                 pipeline_content = pipeline_yaml
@@ -377,6 +399,10 @@ class DocETLDynamicCheckerOpt:
             # Parse pipeline YAML
             pipeline_dict = yaml.safe_load(pipeline_content)
             
+            # Save pipeline content
+            if self.save_intermediate:
+                self._save_intermediate("pipeline.yaml", pipeline_content)
+
             # Step 1: Generate Requirement Specification Graph
             requirement_spec = self._generate_requirement_specification(question)
             if "error" in requirement_spec:
@@ -426,7 +452,7 @@ class DocETLDynamicCheckerOpt:
             confidence_summary = self._calculate_confidence_summary(
                 task_coverage, constraint_verification, dataflow_verification)
             
-            return {
+            final_result = {
                 "overall_score": overall_score,
                 "component_scores": {
                     "task_coverage": coverage_score,
@@ -444,6 +470,13 @@ class DocETLDynamicCheckerOpt:
                 "critical_issues": self._extract_critical_issues(
                     task_coverage, constraint_verification, dataflow_verification)
             }
+            
+            # Save final result
+            if self.save_intermediate:
+                self._save_intermediate("final_result.json", final_result)
+                print(f"\nAll intermediate files saved to: {self.intermediate_dir}")
+            
+            return final_result
             
         except Exception as e:
             return {
@@ -556,20 +589,86 @@ class DocETLDynamicCheckerOpt:
         
         return issues
     
+    def _save_intermediate(self, filename: str, content: Any):
+        """Save intermediate content to file."""
+        if not self.save_intermediate or not self.intermediate_dir:
+            return
+        
+        file_path = self.intermediate_dir / filename
+        
+        # Handle different content types
+        if isinstance(content, (dict, list)):
+            content_str = json.dumps(content, indent=2, ensure_ascii=False)
+        else:
+            content_str = str(content)
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content_str)
+        
+        print(f"  Saved intermediate: {file_path}")
+    
+    def _trim_json_response(self, response: str) -> str:
+        """Trim response to extract only the JSON content between first { and last }."""
+        if not response:
+            return response
+        
+        # Find the first { and last }
+        first_brace = response.find('{')
+        last_brace = response.rfind('}')
+        
+        if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+            return response[first_brace:last_brace + 1]
+        
+        return response
+    
     def _generate_requirement_specification(self, query: str) -> Dict[str, Any]:
         """Step 1: Generate Requirement Specification Graph from query."""
+        print("Step 1: Generate Requirement Specification Graph from query.")
         try:
-            prompt = REQUIREMENT_SPECIFICATION_PROMPT.format(query=query)
+            prompt = REQUIREMENT_SPECIFICATION_PROMPT.substitute(query=query)
+            
+            # Save prompt
+            if self.save_intermediate:
+                self._save_intermediate("step1_prompt.txt", prompt)
+            
             response = self._call_llm(prompt)
-            result = json.loads(response)
+            print(f"DEBUG: Response received, length: {len(response) if response else 'None'}")
+            
+            # Save raw response
+            if self.save_intermediate:
+                self._save_intermediate("step1_response_raw.txt", response)
+            
+            # Trim response to JSON content
+            trimmed_response = self._trim_json_response(response)
+            
+            # Save trimmed response
+            if self.save_intermediate:
+                self._save_intermediate("step1_response_trimmed.txt", trimmed_response)
+            
+            result = json.loads(trimmed_response)
+            
+            # Save parsed result
+            if self.save_intermediate:
+                self._save_intermediate("step1_result.json", result)
+            
             return result
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse LLM response as JSON: {str(e)}"}
+            print(f"DEBUG: Raw response was: {response[:100] if response else 'None'}")
+            if 'trimmed_response' in locals():
+                print(f"DEBUG: Trimmed response was: {trimmed_response[:100] if trimmed_response else 'None'}")
+            error_result = {"error": f"Failed to parse LLM response as JSON: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step1_error.json", error_result)
+            return error_result
         except Exception as e:
-            return {"error": f"Step 1 error: {str(e)}"}
+            error_result = {"error": f"Step 1 error: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step1_error.json", error_result)
+            return error_result
     
     def _extract_operator_specifications(self, pipeline_dict: dict, original_query: str) -> Dict[str, Any]:
         """Step 2: Extract implementation specifications for each operator."""
+        print("Step 2: Extract implementation specifications for each operator.")
         try:
             operator_specs = []
             
@@ -584,7 +683,7 @@ class DocETLDynamicCheckerOpt:
                 # Format operator definition based on type
                 if op_type.startswith("code_"):
                     # Code operator - include the code
-                    op_definition = f"Code:\n```python\n{op.get('code', 'No code provided')}\n```"
+                    op_definition = f"Code:\npython\n{op.get('code', 'No code provided')}\n"
                 else:
                     # LLM operator - include the prompt
                     op_definition = f"Prompt:\n{op.get('prompt', 'No prompt provided')}"
@@ -594,29 +693,62 @@ class DocETLDynamicCheckerOpt:
                         op_definition += f"\n\nReduce Key: {op['reduce_key']}"
                 
                 # Extract specification for this operator
-                prompt = OPERATOR_SPECIFICATION_PROMPT.format(
+                prompt = OPERATOR_SPECIFICATION_PROMPT.substitute(
                     operator_name=op_name,
                     operator_type=op_type,
                     original_query=original_query,
                     operator_definition=op_definition
                 )
                 
+                # Save operator prompt
+                if self.save_intermediate:
+                    self._save_intermediate(f"step2_prompt_operator_{op_name}.txt", prompt)
+                
                 response = self._call_llm(prompt)
-                spec = json.loads(response)
+                
+                # Save operator response
+                if self.save_intermediate:
+                    self._save_intermediate(f"step2_response_operator_{op_name}_raw.txt", response)
+                
+                # Trim response to JSON content
+                trimmed_response = self._trim_json_response(response)
+                
+                # Save trimmed response
+                if self.save_intermediate:
+                    self._save_intermediate(f"step2_response_operator_{op_name}_trimmed.txt", trimmed_response)
+                
+                spec = json.loads(trimmed_response)
+                
+                # Save parsed operator spec
+                if self.save_intermediate:
+                    self._save_intermediate(f"step2_result_operator_{op_name}.json", spec)
+                
                 operator_specs.append(spec)
             
             # Also build operator dataflow from pipeline structure
             dataflow = self._extract_pipeline_dataflow(pipeline_dict)
             
-            return {
+            result = {
                 "operator_specifications": operator_specs,
                 "pipeline_dataflow": dataflow
             }
             
+            # Save complete step 2 result
+            if self.save_intermediate:
+                self._save_intermediate("step2_result_complete.json", result)
+            
+            return result
+            
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse operator specification: {str(e)}"}
+            error_result = {"error": f"Failed to parse operator specification: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step2_error.json", error_result)
+            return error_result
         except Exception as e:
-            return {"error": f"Step 2 error: {str(e)}"}
+            error_result = {"error": f"Step 2 error: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step2_error.json", error_result)
+            return error_result
     
     def _extract_pipeline_dataflow(self, pipeline_dict: dict) -> List[Dict[str, str]]:
         """Extract actual dataflow from pipeline structure."""
@@ -634,69 +766,153 @@ class DocETLDynamicCheckerOpt:
     
     def _match_task_coverage(self, requirement_spec: Dict, operator_specs: Dict) -> Dict[str, Any]:
         """Step 3: Match requirement tasks to operator implementations."""
+        print("Step 3: Match requirement tasks to operator implementations.")
         try:
             req_tasks_json = json.dumps(requirement_spec.get("tasks", []), indent=2)
             op_specs_json = json.dumps(operator_specs.get("operator_specifications", []), indent=2)
             
-            prompt = TASK_COVERAGE_MATCHING_PROMPT.format(
+            prompt = TASK_COVERAGE_MATCHING_PROMPT.substitute(
                 requirement_tasks_json=req_tasks_json,
                 operator_specs_json=op_specs_json
             )
             
+            # Save prompt
+            if self.save_intermediate:
+                self._save_intermediate("step3_prompt.txt", prompt)
+            
             response = self._call_llm(prompt)
-            result = json.loads(response)
+            
+            # Save raw response
+            if self.save_intermediate:
+                self._save_intermediate("step3_response_raw.txt", response)
+            
+            # Trim response to JSON content
+            trimmed_response = self._trim_json_response(response)
+            
+            # Save trimmed response
+            if self.save_intermediate:
+                self._save_intermediate("step3_response_trimmed.txt", trimmed_response)
+            
+            result = json.loads(trimmed_response)
+            
+            # Save parsed result
+            if self.save_intermediate:
+                self._save_intermediate("step3_result.json", result)
+            
             return result
             
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse task coverage: {str(e)}"}
+            error_result = {"error": f"Failed to parse task coverage: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step3_error.json", error_result)
+            return error_result
         except Exception as e:
-            return {"error": f"Step 3 error: {str(e)}"}
+            error_result = {"error": f"Step 3 error: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step3_error.json", error_result)
+            return error_result
     
     def _verify_constraint_fulfillment(self, requirement_spec: Dict, task_coverage: Dict, 
                                       operator_specs: Dict) -> Dict[str, Any]:
         """Step 4: Verify all constraints are properly fulfilled."""
+        print("Step 4: Verify all constraints are properly fulfilled.")
         try:
             constraints_json = json.dumps(requirement_spec.get("constraints", []), indent=2)
             coverage_json = json.dumps(task_coverage, indent=2)
             op_specs_json = json.dumps(operator_specs.get("operator_specifications", []), indent=2)
             
-            prompt = CONSTRAINT_FULFILLMENT_PROMPT.format(
+            prompt = CONSTRAINT_FULFILLMENT_PROMPT.substitute(
                 requirement_constraints_json=constraints_json,
                 task_coverage_json=coverage_json,
                 operator_specs_json=op_specs_json
             )
             
+            # Save prompt
+            if self.save_intermediate:
+                self._save_intermediate("step4_prompt.txt", prompt)
+            
             response = self._call_llm(prompt)
-            result = json.loads(response)
+            
+            # Save raw response
+            if self.save_intermediate:
+                self._save_intermediate("step4_response_raw.txt", response)
+            
+            # Trim response to JSON content
+            trimmed_response = self._trim_json_response(response)
+            
+            # Save trimmed response
+            if self.save_intermediate:
+                self._save_intermediate("step4_response_trimmed.txt", trimmed_response)
+            
+            result = json.loads(trimmed_response)
+            
+            # Save parsed result
+            if self.save_intermediate:
+                self._save_intermediate("step4_result.json", result)
+            
             return result
             
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse constraint verification: {str(e)}"}
+            error_result = {"error": f"Failed to parse constraint verification: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step4_error.json", error_result)
+            return error_result
         except Exception as e:
-            return {"error": f"Step 4 error: {str(e)}"}
+            error_result = {"error": f"Step 4 error: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step4_error.json", error_result)
+            return error_result
     
     def _verify_dataflow_consistency(self, requirement_spec: Dict, task_coverage: Dict,
                                     operator_specs: Dict) -> Dict[str, Any]:
         """Step 5: Verify dataflow consistency between requirement and implementation."""
+        print("Step 5: Verify dataflow consistency between requirement and implementation.")
         try:
             required_flow_json = json.dumps(requirement_spec.get("dataflow", []), indent=2)
             coverage_json = json.dumps(task_coverage, indent=2)
             op_specs_json = json.dumps(operator_specs, indent=2)
             
-            prompt = DATAFLOW_CONSISTENCY_PROMPT.format(
+            prompt = DATAFLOW_CONSISTENCY_PROMPT.substitute(
                 required_dataflow_json=required_flow_json,
                 task_coverage_json=coverage_json,
                 operator_specs_json=op_specs_json
             )
             
+            # Save prompt
+            if self.save_intermediate:
+                self._save_intermediate("step5_prompt.txt", prompt)
+            
             response = self._call_llm(prompt)
-            result = json.loads(response)
+            
+            # Save raw response
+            if self.save_intermediate:
+                self._save_intermediate("step5_response_raw.txt", response)
+            
+            # Trim response to JSON content
+            trimmed_response = self._trim_json_response(response)
+            
+            # Save trimmed response
+            if self.save_intermediate:
+                self._save_intermediate("step5_response_trimmed.txt", trimmed_response)
+            
+            result = json.loads(trimmed_response)
+            
+            # Save parsed result
+            if self.save_intermediate:
+                self._save_intermediate("step5_result.json", result)
+            
             return result
             
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse dataflow verification: {str(e)}"}
+            error_result = {"error": f"Failed to parse dataflow verification: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step5_error.json", error_result)
+            return error_result
         except Exception as e:
-            return {"error": f"Step 5 error: {str(e)}"}
+            error_result = {"error": f"Step 5 error: {str(e)}"}
+            if self.save_intermediate:
+                self._save_intermediate("step5_error.json", error_result)
+            return error_result
     
     def _call_llm(self, prompt: str) -> str:
         """Call LLM with the given prompt."""
@@ -820,7 +1036,8 @@ def check_pipeline_dynamic_opt(question: str,
                                pipeline_yaml: str = None,
                                llm_client=None,
                                use_azure_gpt4: bool = False,
-                               api_key_path: str = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt') -> Dict[str, Any]:
+                               api_key_path: str = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt',
+                               save_intermediate: bool = True) -> Dict[str, Any]:
     """
     Convenience function to check pipeline using optimized graph-based methodology.
     
@@ -831,6 +1048,7 @@ def check_pipeline_dynamic_opt(question: str,
         llm_client: LLM client for API calls
         use_azure_gpt4: Whether to use Azure GPT-4o
         api_key_path: Path to Azure API key file
+        save_intermediate: Whether to save intermediate responses to files
     
     Returns:
         Dict with overall_score and detailed results
@@ -838,22 +1056,22 @@ def check_pipeline_dynamic_opt(question: str,
     # Create LLM client if needed
     if llm_client is None and use_azure_gpt4:
         llm_client = AzureGPT4Client(api_key_path)
-    
-    checker = DocETLDynamicCheckerOpt(llm_client)
+    checker = DocETLDynamicCheckerOpt(llm_client, save_intermediate=save_intermediate)
     return checker.check(question, pipeline_yaml, pipeline_path)
 
 
 def main():
     """Command-line interface for the optimized dynamic checker."""
     if len(sys.argv) < 3:
-        print("Usage: python3 dynamic_checker_opt.py <question> <pipeline_yaml_path> [--use-azure-gpt4] [--api-key-path <path>]")
+        print("Usage: python3 dynamic_checker_opt.py <question> <pipeline_yaml_path> [--use-azure-gpt4] [--api-key-path <path>] [--no-save-intermediate]")
         print("Example: python3 dynamic_checker_opt.py 'What is the average?' pipeline.yaml --use-azure-gpt4")
         sys.exit(1)
     
     question = sys.argv[1]
     pipeline_path = sys.argv[2]
-    use_azure_gpt4 = False
+    use_azure_gpt4 = True
     api_key_path = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt'
+    save_intermediate = True
     
     # Parse arguments
     i = 3
@@ -861,6 +1079,8 @@ def main():
         arg = sys.argv[i]
         if arg == '--use-azure-gpt4':
             use_azure_gpt4 = True
+        elif arg == '--no-save-intermediate':
+            save_intermediate = False
         elif arg == '--api-key-path':
             if i + 1 < len(sys.argv):
                 api_key_path = sys.argv[i + 1]
@@ -871,11 +1091,17 @@ def main():
         i += 1
     
     try:
+        # Create appropriate client based on flags
+        if use_azure_gpt4:
+            llm_client = AzureGPT4Client(api_key_path)
+        else:
+            llm_client = None
+        
         result = check_pipeline_dynamic_opt(
             question=question,
             pipeline_path=pipeline_path,
-            use_azure_gpt4=use_azure_gpt4,
-            api_key_path=api_key_path
+            llm_client=llm_client,
+            save_intermediate=save_intermediate
         )
         
         print(json.dumps(result, indent=2))
