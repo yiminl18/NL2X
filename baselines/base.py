@@ -15,6 +15,8 @@ class BaselineConfig:
     verbose: bool = False
     max_attempts: int = 1
     validate_answer: bool = False
+    debug: bool = False
+    confirm: bool = False
 
 @dataclass
 class BaselineResult:

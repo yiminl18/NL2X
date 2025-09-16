@@ -2,7 +2,7 @@
 for BASELINE in "docetl"; do
   for SEED in 42; do
     for BENCHMARK in "dsbench"; do
-        python evaluate.py --baseline $BASELINE --benchmark $BENCHMARK --seed $SEED --validate-answer false
+        python evaluate.py --baseline $BASELINE --benchmark $BENCHMARK --seed $SEED --validate-answer false --confirm --max-attempts 2
     done
   done
 done

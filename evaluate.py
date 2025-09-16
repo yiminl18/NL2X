@@ -57,17 +57,72 @@ class EvaluationFramework:
         for i, sample in enumerate(samples):
             if i % 10 == 0:
                 logger.info(f"Processing sample {i+1}/{len(samples)}")
-            
+
+            # Confirm mode: prompt for confirmation before processing
+            if baseline_cfg.confirm:
+                print("\n" + "="*80)
+                mode_text = "[DEBUG MODE]" if baseline_cfg.debug else "[CONFIRM MODE]"
+                print(f"{mode_text} Sample {i+1}/{len(samples)}")
+                print("="*80)
+                print(f"\n📝 Query:")
+                print("-"*40)
+                print(sample.query)
+                print("-"*40)
+
+                if sample.context:
+                    print(f"\n📂 Data Sources:")
+                    print("-"*40)
+                    for key, value in sample.context.items():
+                        # Display data source information
+                        if hasattr(value, 'path'):
+                            print(f"  • {key}: {value.path}")
+                        elif hasattr(value, 'type'):
+                            print(f"  • {key}: {value.type} (embedded content)")
+                        else:
+                            print(f"  • {key}: {type(value).__name__}")
+
+                        # Show preview of content if available and not too large
+                        if hasattr(value, 'content') and value.content:
+                            content_str = str(value.content)
+                            if len(content_str) > 200:
+                                print(f"    Preview: {content_str[:200]}...")
+                            else:
+                                print(f"    Content: {content_str}")
+                    print("-"*40)
+                else:
+                    print("\n📂 Data Sources: None")
+
+                print("\n⚠️  Continue processing this sample? (Y/n): ", end="")
+                user_input = input().strip().lower()
+
+                if user_input and user_input != 'y':
+                    logger.info("User aborted debug mode execution")
+                    print("\n❌ Execution aborted by user")
+                    return {
+                        "baseline": baseline_name,
+                        "benchmark": benchmark_name,
+                        "status": "aborted",
+                        "aborted_at_sample": i+1,
+                        "total_samples": len(samples),
+                        "message": "User aborted during debug mode"
+                    }
+
             baseline_result = baseline.process(
                 query=sample.query,
                 context=sample.context
             )
-            
+
             eval_result = benchmark.evaluate_sample(
                 sample=sample,
                 prediction=baseline_result.response
             )
             eval_results.append(eval_result)
+
+            # 立即打印当前题目的答案（如果开启了debug或verbose模式）
+            if baseline_cfg.debug or baseline_cfg.verbose:
+                print(f"\n✅ Sample {i+1} Answer:")
+                print(f"{baseline_result.response}")
+                print("-"*40)
         
         total_time = time.time() - start_time
         print(eval_results)
@@ -263,7 +318,9 @@ def main():
         "seed": args.seed,
         "verbose": args.verbose,
         "max_attempts": args.max_attempts,
-        "validate_answer": args.validate_answer
+        "validate_answer": args.validate_answer,
+        "debug": args.debug,
+        "confirm": args.confirm or args.debug  # debug mode automatically enables confirm
     }
     
     benchmark_config = {

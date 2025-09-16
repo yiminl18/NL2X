@@ -1,4 +1,6 @@
-INSTRUCTION_PROMPT = """
+from string import Template
+
+INSTRUCTION_PROMPT_TEMPLATE = Template("""
 **DocETL Pipeline Generation Instructions**
 
 **Purpose & Scope**
@@ -22,10 +24,25 @@ DocETL provides a declarative, YAML-driven interface for defining pipelines that
        path: "data.json"
    ```
 
-3. **Non-Standard Data**
+3. **Merged Datasets**
+   When multiple files are provided, they are merged into a single JSON object with this structure:
+   ```json
+   {
+     "filename1": [list of records or content],
+     "filename2": [list of records or content]
+   }
+   ```
+
+   **Access Syntax**: Use simple key-based access `input.filename` to access all content from filename
+
+   **Example**: If you have data.csv and instructions.txt merged:
+   - Access CSV records: `input.data_csv` (returns list of records)
+   - Access text content: `input.instructions_txt` (returns string content)
+
+4. **Non-Standard Data**
    If the data includes audio, PDFs, or other formats, use parsing tools (e.g., Whisper or OCR) to convert them into structured text fields in an initial code operation.
 
-4. **Consistency**
+5. **Consistency**
    Keep field names consistent across all dataset entries (e.g., always use `text` if multiple names exist, or generate a code operation to extract the primary field).
 
 ---
@@ -255,8 +272,6 @@ Pulls specific sections of text verbatim without summarization, ideal for isolat
   model: gpt-4.1-mini
 ```
 
-
-
 #### Cluster
 
 Groups items into hierarchical clusters based on embeddings, summarizing higher‑level categories for related concepts.
@@ -402,7 +417,7 @@ Executes deterministic Python transformations instead of LLM prompts; this examp
 
 ```yaml
 - name: filter_valid_entries
-  type: code_filter  
+  type: code_filter
   code: |
     def transform(doc) -> bool:
         # Return True to keep the document, False to filter it out
@@ -801,7 +816,7 @@ When generating a pipeline, the model must follow these rules:
      ```
 
 5. **Field consistency**
-   
+
    * Reference only fields present in the dataset or created earlier in the pipeline. If multiple text fields exist, normalize them into a single `text` field via `code_map`.
    * Common field unconsistency errors:
         - Wrong pluralization (e.g., `medications` vs. `medication`)
@@ -821,13 +836,31 @@ When generating a pipeline, the model must follow these rules:
    * Otherwise, omit it.
 
 8. **Validation (optional)**
-   Add minimal validation rules only when they materially improve reliability (0-2). Avoid over-constraining outputs. 
+   Add minimal validation rules only when they materially improve reliability (0-2). Avoid over-constraining outputs.
 
 9. **Output format**
 
    * Produce a single YAML string only.
    * No markdown fencing, comments, or prose.
    * YAML must be well-formed and valid.
+   * The last operator must be a special `code_map`. It maps the final results of the query to the `result` field. For example:
+   ```yaml
+      - name: get_personal_info
+        type: map
+        prompt: [omitted]
+      - output:
+        schema:
+          personal_info: "list[dict]"
+
+      - name: final_transform
+        type: code_map
+        code: |
+          def transform(doc) -> dict:
+              result = doc['personal_info'] # Align with the schema
+              return {
+                  'result': result
+              }
+    ```
 
 10. **Chain of Thought (CoT)**
    Think step by step internally:
@@ -841,25 +874,112 @@ When generating a pipeline, the model must follow these rules:
 
 11. **Best Practices**
 
-1. Use `Rank` -> `Filter` to select top-k items. `Reduce` and `TopK` operators cannot be used in this way.
+    1. Use `Rank` -> `Filter` to select top-k items. `Reduce` and `TopK` operators cannot be used in this way.
+    2. Use `resolve` to deduplicate or standardize entities before aggregation to improve quality.
+    3. Output several fields rather than a single complex dict to improve reliability.
+    4. Use several simple operatiors in sequence rather than one complex operatior, but still need to keep the pipeline correct.
+    5. Use `reduce` to aggregate information to summarize at last if the query needs a conclusion. For example, if you need to summarize or select an option, a `reduce` is required.
+""")
 
-2. Use `resolve` to deduplicate or standardize entities before aggregation to improve quality.
+INSTRUCTION_PROMPT = INSTRUCTION_PROMPT_TEMPLATE.safe_substitute()
 
-3. Output several fields rather than a single complex dict to improve reliability.
-
-4. Use several simple operatiors in sequence rather than one complex operatior, but still need to keep the pipeline correct.
-
-5. Use `reduce` to aggregate information to summarize multiple items.
-"""
-
-
-PIPELINE_GENERATION_PROMPT = """
+PIPELINE_GENERATION_PROMPT_TEMPLATE = Template("""
 Task: Generate a minimal, correct DocETL pipeline YAML for the given query and datasets.
 Query:
-{query}
+$query
 Datasets:
-{profiles_str}
+$profiles_str
+
+Important Notes for Merged Datasets:
+- If the dataset contains multiple sources, access them using filename keys with underscores: `input.filename_ext`
+- CSV files become lists of records: `input.data_csv` (list), access fields with operations
+- Text files become string content: `input.instructions_txt` (string)
+- Consider all provided data sources to answer the query completely.
+
+Example for merged datasets, if the final dataset is generated from `person_table.csv` and `instructions.txt`:
+```yaml
+datasets:
+  merged_data:
+    type: file
+    path: "merged_datasets.json"
+
+operations:
+  - name: process_csv_data
+    type: map
+    prompt: "Process CSV record: {{ input.person_table_csv }}"
+
+  - name: process_csv_data_code
+    type: code_map
+    code: |
+      def transform(doc) -> dict:
+        table = doc['person_table_csv'] # this is the json version of csv
+        # Do something to get birthdays 
+        return {
+            'birthdays': birthdays
+        }
+
+  - name: extract_from_text
+    type: map
+    prompt: "Use instructions: {{ input.instructions_txt }} to process data"
+```
+
 Output:
 - Return only the pipeline YAML.
 - You MUST follow "Final Output Requirements" strictly.
-"""
+- You MUST follow the last-code_map operator rule strictly.
+
+""")
+
+VALIDATION_PROMPT_TEMPLATE = Template("""
+The following pipeline was generated but encountered an error during $error_type.
+
+Pipeline YAML:
+```yaml
+$pipeline_yaml
+```
+
+Error Message:
+$error_message
+
+Failed Pipelines Tried Before:
+$failed_pipelines_summary
+
+Please fix the pipeline to resolve the error.
+Rules:
+1. Return ONLY the corrected pipeline YAML.
+2. Make minimal changes to fix the specific error.
+3. Ensure field names match the dataset exactly.
+4. For merged datasets, use `input.filename` to access data from specific files.
+5. Double-check operator syntax (e.g., reduce needs reduce_key, map needs prompt).
+6. Ensure schemas are properly formatted with correct types.
+7. Do not add markdown fencing or explanations.
+""")
+
+OUTPUT_VALIDATION_PROMPT_TEMPLATE = Template("""
+You are an expert data analyst. Please evaluate whether the provided output looks like correctly answer the given query based on the original data.
+
+ORIGINAL QUERY:
+$query
+
+ORIGINAL DATA (sample):
+$original_data
+
+PIPELINE OUTPUT (sample):
+$output_data
+
+Please analyze and note:
+0. Fields starting with "_" are metadata and can be ignored.
+1. Don't need to verify if every information in the output (it's sample) is from the original data (it's also sample).
+2. Are all required elements from the query addressed in the output? (Fields existing in the query should be reflected in the output, value-missing is acceptable)
+3. Is the output format appropriate and complete?
+
+Respond with:
+- "VALID" if the output looks like correctly answers the query
+- "INVALID" if the output looks like does not answer the query or contains errors
+
+- Provide a 1-2 sentence brief explanation for your assessment.
+
+Format your response as:
+ASSESSMENT: [VALID/INVALID]
+EXPLANATION: [Your explanation here]
+""")

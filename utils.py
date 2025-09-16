@@ -49,14 +49,15 @@ def parse_args():
     parser.add_argument(
         "--verbose",
         action="store_true",
+        default=False,
         help="Enable verbose logging"
     )
     
     parser.add_argument(
         "--max-attempts",
         type=int,
-        default=3,
-        help="Maximum number of attempts for pipeline generation (default: 3)"
+        default=1,
+        help="Maximum number of attempts for pipeline generation (default: 1)"
     )
     
     parser.add_argument(
@@ -65,7 +66,19 @@ def parse_args():
         default=True,
         help="Whether to validate generated answers (default: True)"
     )
-    
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode - prompts for confirmation before sending each query"
+    )
+
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Enable confirmation prompts before processing each sample (Y/n)"
+    )
+
     args = parser.parse_args()
     
     # Validate arguments

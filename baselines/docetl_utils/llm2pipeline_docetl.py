@@ -26,7 +26,12 @@ class FailedPipeline(NamedTuple):
 # Add parent directory to path to import azuregpt4o
 sys.path.append('/Users/chiyuh/Workspace/NL2X/model')
 from azuregpt4o import gpt_4o_azure
-from .prompt import INSTRUCTION_PROMPT, PIPELINE_GENERATION_PROMPT
+from .prompt import (
+    INSTRUCTION_PROMPT,
+    PIPELINE_GENERATION_PROMPT_TEMPLATE,
+    VALIDATION_PROMPT_TEMPLATE,
+    OUTPUT_VALIDATION_PROMPT_TEMPLATE
+)
 from docetl.api import Pipeline
 
 # Import smart truncation utility
@@ -162,7 +167,7 @@ def create_initial_messages(instruction_prompt: str, query: str, dataset_samples
         profiles_str += f"Sample Data:\n{json.dumps(sample_data, indent=2)}\n\n"
     
     # Use PIPELINE_GENERATION_PROMPT template
-    user_content = PIPELINE_GENERATION_PROMPT.format(
+    user_content = PIPELINE_GENERATION_PROMPT_TEMPLATE.safe_substitute(
         query=query,
         profiles_str=profiles_str
     )
@@ -239,21 +244,22 @@ def llm_call_wrapper(prompt: str) -> str:
 
 # Removed old clean_and_truncate_value function - replaced with intelligent DataTruncator
 
-def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_string_length: int = 200, max_plain_text_length: int = 5000) -> Dict[str, Any]:
+def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_string_length: int = 200, max_plain_text_length: int = 5000, csv_sample_rows: int = 5) -> Dict[str, Any]:
     """
     Load samples from all dataset files with clean formatting.
-    
+
     Args:
         dataset_paths: List of dataset file paths
         max_length: Maximum total length for each file's sample
         max_string_length: Maximum length for individual string fields
         max_plain_text_length: Maximum length for plain text content
-        
+        csv_sample_rows: Number of rows to sample from CSV files (default 5)
+
     Returns:
         Dictionary with {file_path: sample_data} format
     """
     dataset_samples = {}
-    
+
     # Initialize intelligent truncator
     truncator = DataTruncator(
         max_total_length=max_length,
@@ -268,11 +274,44 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
             with open(file_path, 'r', encoding='utf-8') as f:
                 if file_path.endswith('.json'):
                     data = json.load(f)
+
+                    # Check if this is a merged dataset (dict with filename keys)
+                    if (isinstance(data, dict) and
+                        'merged_datasets' in os.path.basename(file_path)):
+
+                        # This is a merged dataset, sample from each source
+                        sampled_data = {}
+
+                        for filename, content in data.items():
+                            if isinstance(content, list):
+                                # For list data (like CSV records), sample first N items
+                                sample_size = min(csv_sample_rows, len(content))
+                                sampled_data[filename] = content[:sample_size]
+                            else:
+                                # For other data types (like text), keep as is but truncate if too long
+                                if isinstance(content, str) and len(content) > 2000:
+                                    sampled_data[filename] = content[:2000] + "..."
+                                else:
+                                    sampled_data[filename] = content
+
+                        data = sampled_data
                 elif file_path.endswith('.csv'):
                     import pandas as pd
-                    data = pd.read_csv(file_path)
-                    # Convert to list of dictionaries for consistent handling
-                    data = data.to_dict('records')
+                    df = pd.read_csv(file_path)
+
+                    # For CSV files, sample more rows to show data structure
+                    # Include schema (column names and types) and sample rows
+                    sample_data = {
+                        "schema": {col: str(df[col].dtype) for col in df.columns},
+                        "shape": {"rows": len(df), "columns": len(df.columns)},
+                        "sample_rows": df.head(csv_sample_rows).to_dict('records')
+                    }
+
+                    # If the DataFrame has more rows than sample_rows, add indication
+                    if len(df) > csv_sample_rows:
+                        sample_data["note"] = f"Showing first {csv_sample_rows} rows of {len(df)} total rows"
+
+                    data = sample_data
                 else:
                     # For other file types, try to read as text
                     content = f.read()
@@ -282,8 +321,21 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
                     truncated_content = truncator.truncate_text(content, is_plain_text=True)
                     data = [{"text": truncated_content}]
                 
-                # Apply intelligent truncation (except for plain text which was already handled)
-                if not file_path.endswith(('.txt', '.md', '.html')):
+                # Apply intelligent truncation
+                if file_path.endswith('.csv'):
+                    # CSV files already have controlled sampling, just apply truncation to values
+                    if isinstance(data, dict) and 'sample_rows' in data:
+                        data['sample_rows'] = truncator.truncate_data(data['sample_rows'])
+                    dataset_samples[file_path] = data
+                elif isinstance(data, dict) and 'merged_datasets' in os.path.basename(file_path):
+                    # Handle merged datasets - apply truncation to each file's content
+                    for filename, content in data.items():
+                        if isinstance(content, list):
+                            data[filename] = truncator.truncate_data(content)
+                        elif isinstance(content, str):
+                            data[filename] = truncator.truncate_text(content, is_plain_text=True)
+                    dataset_samples[file_path] = data
+                elif not file_path.endswith(('.txt', '.md', '.html')):
                     truncated_data = truncator.truncate_data(data)
                     dataset_samples[file_path] = truncated_data
                 else:
@@ -372,34 +424,12 @@ def validate_answer_with_llm(
     Returns:
         Tuple of (is_valid, validation_message)
     """
-    validation_prompt = f"""
-You are an expert data analyst. Please evaluate whether the provided output looks like correctly answer the given query based on the original data.
-
-ORIGINAL QUERY:
-{query}
-
-ORIGINAL DATA (sample):
-{original_data}
-
-PIPELINE OUTPUT (sample):
-{output_data}
-
-Please analyze and note:
-0. Fields starting with "_" are metadata and can be ignored.
-1. Don't need to verify if every information in the output (it's sample) is from the original data (it's also sample).
-2. Are all required elements from the query addressed in the output? (Fields existing in the query should be reflected in the output, value-missing is acceptable)
-3. Is the output format appropriate and complete?
-
-Respond with:
-- "VALID" if the output looks like correctly answers the query
-- "INVALID" if the output looks like does not answer the query or contains errors
-
-- Provide a 1-2 sentence brief explanation for your assessment.
-
-Format your response as:
-ASSESSMENT: [VALID/INVALID]
-EXPLANATION: [Your explanation here]
-"""
+    # Create output validation prompt using Template
+    validation_prompt = OUTPUT_VALIDATION_PROMPT_TEMPLATE.safe_substitute(
+        query=query,
+        original_data=original_data,
+        output_data=output_data
+    )
     # print ("  Validation prompt for LLM:")
     # print(validation_prompt)
     try:

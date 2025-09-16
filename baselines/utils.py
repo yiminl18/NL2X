@@ -505,6 +505,40 @@ def convert_xlsx_to_csv(xlsx_path: str, output_dir: str = None,
     return csv_paths
 
 
+def convert_csv_to_json(csv_path: str, output_path: str = None) -> str:
+    """
+    Convert CSV file to JSON format.
+
+    Args:
+        csv_path: Path to the CSV file
+        output_path: Output path for JSON file (optional, defaults to same name with .json extension)
+
+    Returns:
+        Path to the generated JSON file
+    """
+    import pandas as pd
+
+    try:
+        # Read CSV file
+        df = pd.read_csv(csv_path)
+
+        # Convert to list of dictionaries
+        data = df.to_dict('records')
+
+        # Determine output path
+        if output_path is None:
+            output_path = os.path.splitext(csv_path)[0] + '.json'
+
+        # Write JSON file
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return output_path
+
+    except Exception as e:
+        raise Exception(f"Failed to convert CSV to JSON: {str(e)}")
+
+
 def xlsx_to_csv_content(xlsx_content: bytes, sheet_name: str = None) -> str:
     """
     Convert XLSX content directly to CSV string.
