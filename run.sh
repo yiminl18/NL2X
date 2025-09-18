@@ -1,7 +1,7 @@
 #!/bin/bash
-for BASELINE in "docetl"; do
+for BASELINE in "lotus"; do
   for SEED in 42; do
-    for BENCHMARK in "dsbench"; do
+    for BENCHMARK in "kramabench"; do
         python evaluate.py --baseline $BASELINE --benchmark $BENCHMARK --seed $SEED --validate-answer false --confirm --max-attempts 1
     done
   done

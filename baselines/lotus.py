@@ -5,11 +5,14 @@ import json
 import tempfile
 import traceback
 import shutil
+import re
 from datetime import datetime
 from bs4 import BeautifulSoup
+import pandas as pd
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
+from .utils import convert_xlsx_to_csv
 from .lotus_utils.llm2pipeline_lotus import (
     create_initial_messages,
     add_error_message,
@@ -38,28 +41,52 @@ class LOTUSBaseline(BaselineInterface):
         self.total_generation_attempts = 0
         self.successful_pipelines = 0
         self.failed_pipelines = []
-        
+
         # Use configuration from BaselineConfig
         self.max_attempts = self.config.max_attempts
         self.validate_answer = self.config.validate_answer
         self.temp_dir = tempfile.mkdtemp(prefix="lotus_baseline_")
-        
-        # Create persistent directories for saving outputs
-        self.pipeline_output_dir = os.path.join(os.getcwd(), "generated_pipelines", "lotus")
-        self.prompts_output_dir = os.path.join(os.getcwd(), "generated_prompts", "lotus")
-        self.validations_output_dir = os.path.join(os.getcwd(), "validations", "lotus")
-        self.messages_output_dir = os.path.join(os.getcwd(), "messages", "lotus")
-        
-        os.makedirs(self.pipeline_output_dir, exist_ok=True)
-        os.makedirs(self.prompts_output_dir, exist_ok=True)
-        os.makedirs(self.validations_output_dir, exist_ok=True)
-        os.makedirs(self.messages_output_dir, exist_ok=True)
-        
+
+        # Create persistent directories for saving outputs (matching DocETL structure)
+        base_dir = os.getcwd()
+        self.output_dirs = {
+            'pipeline_output_dir': os.path.join(base_dir, "generated_pipelines", "lotus"),
+            'prompts_output_dir': os.path.join(base_dir, "generated_prompts", "lotus"),
+            'validations_output_dir': os.path.join(base_dir, "validations", "lotus"),
+            'messages_output_dir': os.path.join(base_dir, "messages", "lotus"),
+            'converted_data_dir': os.path.join(base_dir, "converted_data", "lotus")
+        }
+
+        # Set instance attributes and create directories
+        for attr_name, dir_path in self.output_dirs.items():
+            setattr(self, attr_name, dir_path)
+            os.makedirs(dir_path, exist_ok=True)
+
         if self.config.verbose:
             self.logger.info(f"Initialized LOTUS baseline with config: {self.config}")
             self.logger.info(f"Temporary directory: {self.temp_dir}")
             self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
-    
+
+    def _get_timestamp(self) -> str:
+        """Get current timestamp in standard format."""
+        return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def _get_char_limits(self, value: Any) -> tuple:
+        """Get head and tail character limits from value object."""
+        head_chars = getattr(value, 'head_chars', 2000) if hasattr(value, 'head_chars') else 2000
+        tail_chars = getattr(value, 'tail_chars', 2000) if hasattr(value, 'tail_chars') else 2000
+        return head_chars, tail_chars
+
+    def _write_json(self, data: Any, filepath: str) -> None:
+        """Write JSON data to file with standard formatting."""
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    def _save_json_to_both_dirs(self, data: Any, persistent_file: str, temp_file: str) -> None:
+        """Save JSON data to both persistent and temp directories."""
+        self._write_json(data, persistent_file)
+        self._write_json(data, temp_file)
+
     def _extract_text_from_html(self, html_content: str) -> str:
         """
         Extract plain text from HTML content.
@@ -84,130 +111,347 @@ class LOTUSBaseline(BaselineInterface):
         text = ' '.join(chunk for chunk in chunks if chunk)
         
         return text
-    
+
+    def _write_single_row_csv(self, file_path: str, file_name: str, content: str) -> str:
+        """Write a single row CSV with (file_name, content) format."""
+        df = pd.DataFrame([{
+            'file_name': file_name,
+            'content': content
+        }])
+        df.to_csv(file_path, index=False, encoding='utf-8')
+        return file_path
+
+    def _write_multi_row_csv(self, file_path: str, data: list) -> str:
+        """Write a multi-row CSV from a list of dictionaries."""
+        df = pd.DataFrame(data)
+        df.to_csv(file_path, index=False, encoding='utf-8')
+        return file_path
+
+    def _clean_csv_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean CSV DataFrame by removing unnamed columns and fixing column names."""
+        # Get original columns
+        original_columns = list(df.columns)
+
+        # Find columns that are unnamed or empty
+        columns_to_drop = []
+        new_column_names = []
+
+        for i, col in enumerate(original_columns):
+            if (isinstance(col, str) and col.startswith('Unnamed:')) or pd.isna(col):
+                # Check if this column has any data
+                if df.iloc[:, i].dropna().empty or df.iloc[:, i].dropna().astype(str).str.strip().eq('').all():
+                    # Column is completely empty, mark for removal
+                    columns_to_drop.append(col)
+                else:
+                    # Column has data but unnamed, give it a meaningful name
+                    new_column_names.append(f'column_{i}')
+            else:
+                new_column_names.append(col)
+
+        # Drop empty columns
+        if columns_to_drop:
+            df = df.drop(columns=columns_to_drop)
+            if self.config.verbose:
+                self.logger.info(f"Removed {len(columns_to_drop)} empty unnamed columns")
+
+        # Rename remaining columns
+        if len(new_column_names) == len(df.columns):
+            df.columns = new_column_names
+
+        return df
+
+    def _clean_csv_file(self, csv_path: str) -> str:
+        """Clean a CSV file by removing unnamed columns and save the cleaned version."""
+        try:
+            # Read the CSV
+            df = pd.read_csv(csv_path)
+
+            # Clean columns
+            df_cleaned = self._clean_csv_columns(df)
+
+            # Save cleaned version back to the same file
+            df_cleaned.to_csv(csv_path, index=False, encoding='utf-8')
+
+            if self.config.verbose:
+                self.logger.info(f"Cleaned CSV: {csv_path} ({df.shape[1]} -> {df_cleaned.shape[1]} columns)")
+
+            return csv_path
+
+        except Exception as e:
+            if self.config.verbose:
+                self.logger.warning(f"Failed to clean CSV {csv_path}: {e}")
+            return csv_path
+
+    def _process_html_content(self, key: str, content: str) -> str:
+        """Process HTML content and save as single-row CSV with (file_name, content)."""
+        # Extract plain text from HTML
+        text_content = self._extract_text_from_html(content)
+
+        # Create CSV file path in persistent directory
+        timestamp = self._get_timestamp()
+        csv_filename = f"{timestamp}_{key}.csv"
+        csv_file = os.path.join(self.converted_data_dir, csv_filename)
+
+        # Write single row CSV
+        self._write_single_row_csv(csv_file, key, text_content)
+
+        if self.config.verbose:
+            self.logger.info(f"Saved HTML as single-row CSV: {csv_file}")
+
+        return csv_file
+
+    def _process_text_content(self, key: str, content: str, value: Any, filename: str = None) -> str:
+        """Process text content and save as single-row CSV with (file_name, content)."""
+        # Apply character limits if specified
+        head_chars, tail_chars = self._get_char_limits(value)
+
+        # Truncate content if needed
+        original_length = len(content)
+        if head_chars is not None and tail_chars is not None:
+            total_chars = head_chars + tail_chars
+            if original_length > total_chars:
+                content = content[:head_chars] + "..." + content[-tail_chars:]
+        elif head_chars is not None:
+            if original_length > head_chars:
+                content = content[:head_chars] + "..."
+        elif tail_chars is not None:
+            if original_length > tail_chars:
+                content = "..." + content[-tail_chars:]
+
+        # Create CSV file path in persistent directory
+        timestamp = self._get_timestamp()
+        csv_filename = f"{timestamp}_{key}.csv"
+        csv_file = os.path.join(self.converted_data_dir, csv_filename)
+
+        # Write single row CSV
+        filename = filename or key
+        self._write_single_row_csv(csv_file, filename, content)
+
+        if self.config.verbose:
+            self.logger.info(f"Saved TXT as single-row CSV: {csv_file}")
+
+        return csv_file
+
+    def _process_json_content(self, key: str, content: Any) -> str:
+        """Process JSON content and save as CSV (multi-row for lists, single-row otherwise)."""
+        timestamp = self._get_timestamp()
+        csv_filename = f"{timestamp}_{key}.csv"
+        csv_file = os.path.join(self.converted_data_dir, csv_filename)
+
+        # Parse content if it's a string
+        if isinstance(content, str):
+            try:
+                data = json.loads(content)
+            except:
+                # If parsing fails, treat as plain text
+                self._write_single_row_csv(csv_file, key, content)
+                return csv_file
+        else:
+            data = content
+
+        # Check if data is a list
+        if isinstance(data, list):
+            # Multi-row CSV for list
+            if len(data) > 0 and isinstance(data[0], dict):
+                # List of dictionaries - write directly as multi-row CSV
+                self._write_multi_row_csv(csv_file, data)
+            else:
+                # List of non-dict items - convert to list of dicts
+                converted_data = [{"value": item} for item in data]
+                self._write_multi_row_csv(csv_file, converted_data)
+        else:
+            # Single-row CSV for non-list (dict or other)
+            if isinstance(data, dict):
+                # Convert dict to JSON string for content field
+                json_str = json.dumps(data, ensure_ascii=False)
+            else:
+                # Other types, convert to string
+                json_str = str(data)
+            self._write_single_row_csv(csv_file, key, json_str)
+
+        if self.config.verbose:
+            self.logger.info(f"Saved JSON as CSV: {csv_file}")
+
+        return csv_file
+
+    def _split_xlsx_by_sheets(self, xlsx_path: str, output_dir: str) -> List[str]:
+        """
+        Split XLSX file by sheets and convert each to cleaned CSV.
+        Following the user's requested flow: XLSX → single sheet XLSX → CSV → clean
+        """
+        csv_paths = []
+
+        try:
+            # Read Excel file to get sheet names
+            xls = pd.ExcelFile(xlsx_path)
+            base_name = os.path.splitext(os.path.basename(xlsx_path))[0]
+
+            for sheet_name in xls.sheet_names:
+                # Read specific sheet
+                df = pd.read_excel(xlsx_path, sheet_name=sheet_name)
+
+                # Clean the DataFrame
+                df_cleaned = self._clean_csv_columns(df)
+
+                # Create CSV filename
+                safe_sheet_name = re.sub(r'[^\w\s-]', '_', sheet_name)
+                csv_filename = f"{base_name}_{safe_sheet_name}.csv"
+                csv_path = os.path.join(output_dir, csv_filename)
+
+                # Save cleaned CSV
+                df_cleaned.to_csv(csv_path, index=False, encoding='utf-8')
+                csv_paths.append(csv_path)
+
+                if self.config.verbose:
+                    self.logger.info(f"Created cleaned CSV: {csv_filename} ({df.shape[1]} -> {df_cleaned.shape[1]} columns)")
+
+        except Exception as e:
+            if self.config.verbose:
+                self.logger.warning(f"Failed to split XLSX by sheets: {e}")
+
+        return csv_paths
+
+    def _process_xlsx_content(self, key: str, content: Any) -> List[str]:
+        """Process XLSX content and convert to cleaned CSV files by sheets."""
+        # Write XLSX content to temp file first
+        temp_xlsx = os.path.join(self.temp_dir, f"{key}_temp.xlsx")
+        if isinstance(content, bytes):
+            with open(temp_xlsx, 'wb') as f:
+                f.write(content)
+        else:
+            # If content is text, write as is (though XLSX should be binary)
+            with open(temp_xlsx, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        # Use new split and clean method
+        csv_files = self._split_xlsx_by_sheets(temp_xlsx, self.converted_data_dir)
+
+        if self.config.verbose:
+            self.logger.info(f"Converted XLSX to {len(csv_files)} cleaned CSV file(s)")
+
+        # Clean up temp file
+        os.unlink(temp_xlsx)
+
+        return csv_files
+
+    def _process_csv_content(self, key: str, content: str) -> str:
+        """Process CSV content and save to file."""
+        timestamp = self._get_timestamp()
+        csv_filename = f"{timestamp}_{key}.csv"
+        csv_file = os.path.join(self.converted_data_dir, csv_filename)
+        with open(csv_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return csv_file
+
+    def _process_html_file(self, key: str, file_path: str) -> str:
+        """Process HTML file and convert to JSON, then CSV."""
+        with open(file_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        return self._process_html_content(key, html_content)
+
+    def _process_text_file(self, key: str, file_path: str, value: Any) -> str:
+        """Process text file and convert to JSON, then CSV."""
+        with open(file_path, 'r', encoding='utf-8') as f:
+            text_content = f.read()
+
+        filename = os.path.basename(file_path)
+        return self._process_text_content(key, text_content, value, filename)
+
+    def _process_xlsx_file(self, file_path: str) -> List[str]:
+        """Process XLSX file and convert to cleaned CSV files by sheets."""
+        csv_files = self._split_xlsx_by_sheets(file_path, self.converted_data_dir)
+
+        if self.config.verbose:
+            self.logger.info(f"Converted {file_path} to {len(csv_files)} cleaned CSV file(s)")
+
+        return csv_files
+
+    def _process_content(self, key: str, content: Any, file_type: str, value: Any) -> List[str]:
+        """Process content based on file type."""
+        paths = []
+
+        if file_type == 'html':
+            paths.append(self._process_html_content(key, content))
+        elif file_type in ['text', 'txt']:
+            paths.append(self._process_text_content(key, content, value))
+        elif file_type == 'json':
+            paths.append(self._process_json_content(key, content))
+        elif file_type in ['xlsx', 'excel']:
+            paths.extend(self._process_xlsx_content(key, content))
+        elif file_type == 'csv':
+            paths.append(self._process_csv_content(key, content))
+
+        return paths
+
+    def _process_file_path(self, key: str, file_path: str, file_type: str, value: Any) -> List[str]:
+        """Process file path based on file type or extension."""
+        paths = []
+
+        # Check explicit type first
+        if file_type == 'html' or file_path.endswith(('.html', '.htm')):
+            paths.append(self._process_html_file(key, file_path))
+        elif file_type == 'text' or file_path.endswith('.txt'):
+            paths.append(self._process_text_file(key, file_path, value))
+        elif file_type in ['xlsx', 'excel'] or file_path.endswith(('.xlsx', '.xls', '.xlsm')):
+            paths.extend(self._process_xlsx_file(file_path))
+        elif file_path.endswith('.json'):
+            # Convert JSON file to CSV for LOTUS compatibility
+            csv_path = convert_json_to_csv(file_path)
+            paths.append(csv_path)
+        elif file_path.endswith('.csv'):
+            paths.append(file_path)
+        else:
+            # For other file types, treat as text
+            paths.append(self._process_text_file(key, file_path, value))
+
+        return paths
+
     def _prepare_dataset_files(self, context: Dict[str, Any]) -> List[str]:
         """
         Prepare dataset files from context for LOTUS pipeline.
         Converts all data to CSV format for consistent DataFrame handling.
-        
+
         Args:
             context: Context dictionary with data
-            
+
         Returns:
             List of dataset file paths (CSV files)
         """
         dataset_paths = []
-        
+
         if not context:
             return dataset_paths
-        
+
         for key, value in context.items():
             try:
-                # Determine the file type and content
-                if hasattr(value, 'type'):
-                    file_type = value.type
-                else:
-                    file_type = 'json'  # Default to JSON
-                
-                # Get content or path
+                # Determine the file type
+                file_type = getattr(value, 'type', 'json')  # Default to JSON
+
+                # Process based on content or path
                 if hasattr(value, 'content') and value.content is not None:
-                    content = value.content
-                    
-                    # Create temporary JSON file first, then convert to CSV
-                    temp_json_file = os.path.join(self.temp_dir, f"{key}.json")
-                    
-                    if file_type == 'html':
-                        # Extract text from HTML and save as JSON
-                        text_content = self._extract_text_from_html(content)
-                        with open(temp_json_file, 'w', encoding='utf-8') as f:
-                            json.dump([{"text": text_content}], f, indent=2, ensure_ascii=False)
-                        
-                        # Convert JSON to CSV for LOTUS processing
-                        csv_file = convert_json_to_csv(temp_json_file)
-                        dataset_paths.append(csv_file)
-                    
-                    elif file_type in ['json', 'text']:
-                        # Save as JSON if it's structured data
-                        if isinstance(content, (list, dict)):
-                            with open(temp_json_file, 'w', encoding='utf-8') as f:
-                                json.dump(content, f, indent=2, ensure_ascii=False)
-                        else:
-                            # Try to parse as JSON first
-                            try:
-                                parsed_content = json.loads(content)
-                                with open(temp_json_file, 'w', encoding='utf-8') as f:
-                                    json.dump(parsed_content, f, indent=2, ensure_ascii=False)
-                            except:
-                                # Save as list with single text item
-                                with open(temp_json_file, 'w', encoding='utf-8') as f:
-                                    json.dump([{"text": content}], f, indent=2, ensure_ascii=False)
-                        
-                        # Convert JSON to CSV for LOTUS processing
-                        csv_file = convert_json_to_csv(temp_json_file)
-                        dataset_paths.append(csv_file)
-                    
-                    elif file_type == 'csv':
-                        # Save CSV content directly
-                        temp_csv_file = os.path.join(self.temp_dir, f"{key}.csv")
-                        with open(temp_csv_file, 'w', encoding='utf-8') as f:
-                            f.write(content)
-                        dataset_paths.append(temp_csv_file)
-                
+                    # Handle content directly
+                    dataset_paths.extend(self._process_content(key, value.content, file_type, value))
+
                 elif hasattr(value, 'path') and value.path:
-                    # Use existing file path, convert to CSV if needed
+                    # Handle file path
                     if os.path.exists(value.path):
-                        if value.path.endswith('.json'):
-                            # Convert JSON file to CSV
-                            csv_path = convert_json_to_csv(value.path)
-                            dataset_paths.append(csv_path)
-                        elif value.path.endswith('.csv'):
-                            dataset_paths.append(value.path)
-                        elif (hasattr(value, 'type') and value.type == 'html') or value.path.endswith('.html') or value.path.endswith('.htm'):
-                            # Handle HTML files - extract text
-                            temp_json_file = os.path.join(self.temp_dir, f"{key}.json")
-                            with open(value.path, 'r', encoding='utf-8') as src:
-                                html_content = src.read()
-                            
-                            # Extract text from HTML
-                            text_content = self._extract_text_from_html(html_content)
-                            json_data = [{"text": text_content}]
-                            
-                            with open(temp_json_file, 'w', encoding='utf-8') as dst:
-                                json.dump(json_data, dst, indent=2, ensure_ascii=False)
-                            csv_path = convert_json_to_csv(temp_json_file)
-                            dataset_paths.append(csv_path)
-                        else:
-                            # For text files and other types, create a temporary CSV
-                            temp_json_file = os.path.join(self.temp_dir, f"{key}.json")
-                            with open(value.path, 'r', encoding='utf-8') as src:
-                                content = src.read()
-                            
-                            # Handle text files - keep entire file as single entry
-                            if hasattr(value, 'type') and value.type == 'text':
-                                # Keep entire text file as single document
-                                json_data = [{"text": content}]
-                            else:
-                                # For other types, keep as single document
-                                json_data = [{"text": content}]
-                            
-                            with open(temp_json_file, 'w', encoding='utf-8') as dst:
-                                json.dump(json_data, dst, indent=2, ensure_ascii=False)
-                            csv_path = convert_json_to_csv(temp_json_file)
-                            dataset_paths.append(csv_path)
+                        dataset_paths.extend(self._process_file_path(key, value.path, file_type, value))
                     else:
                         if self.config.verbose:
                             self.logger.warning(f"File not found: {value.path}")
-                
+
             except Exception as e:
                 if self.config.verbose:
                     self.logger.warning(f"Failed to prepare dataset {key}: {e}")
-        
+
         return dataset_paths
     
     def _create_base_filename(self, query: str, suffix: str = "") -> str:
         """Create a base filename with timestamp and query snippet."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        query_snippet = query[:50].replace(" ", "_").replace("/", "_").replace("\\", "_")
+        timestamp = self._get_timestamp()
+        # Clean query: remove newlines, replace special chars, keep only safe characters
+        query_snippet = query.strip().replace("\n", " ").replace("\r", " ")[:50]
+        query_snippet = query_snippet.replace(" ", "_").replace("/", "_").replace("\\", "_")
         query_snippet = "".join(c for c in query_snippet if c.isalnum() or c in "_-")
         if suffix:
             return f"{timestamp}_{suffix}_{query_snippet}"
@@ -270,39 +514,7 @@ class LOTUSBaseline(BaselineInterface):
         
         return filepath
     
-    def _save_pipeline_to_persistent_dir(self, pipeline_content: str, query: str, success: bool = True) -> str:
-        """
-        Save pipeline to persistent directory for manual inspection.
-        
-        Args:
-            pipeline_content: The pipeline Python code
-            query: The original query
-            success: Whether the pipeline was successful
-            
-        Returns:
-            Path to saved pipeline file
-        """
-        # Create filename with timestamp and query snippet
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        query_snippet = query[:50].replace(" ", "_").replace("/", "_").replace("\\", "_")
-        status = "success" if success else "failed"
-        filename = f"{timestamp}_{status}_{query_snippet}.py"
-        
-        filepath = os.path.join(self.pipeline_output_dir, filename)
-        
-        # Save pipeline with metadata
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(f"# Query: {query}\n")
-            f.write(f"# Generated at: {datetime.now().isoformat()}\n")
-            f.write(f"# Status: {status}\n")
-            f.write("#" + "="*50 + "\n\n")
-            f.write(pipeline_content)
-        
-        if self.config.verbose:
-            self.logger.info(f"Saved pipeline to: {filepath}")
-        
-        return filepath
-    
+
     def _generate_and_execute_pipeline(self, query: str, dataset_paths: List[str]) -> tuple:
         """
         Generate and execute LOTUS pipeline for the query.
@@ -315,10 +527,18 @@ class LOTUSBaseline(BaselineInterface):
             Tuple of (success: bool, result: dict, execution_time: float)
         """
         start_time = time.time()
-        pipeline_file = os.path.join(self.temp_dir, "pipeline.py")
-        
+
+        if self.config.verbose:
+            self.logger.info(f"Processing {len(dataset_paths)} dataset files:")
+            for path in dataset_paths:
+                self.logger.info(f"  - {path}")
+
         # Load dataset samples (this handles CSV files)
+        # No merging - keep files separate for LOTUS to process independently
         dataset_samples = load_sample_data(dataset_paths, max_length=1500, max_string_length=200)
+
+        if self.config.verbose:
+            self.logger.info(f"Loaded samples from {len(dataset_samples)} files")
         
         # Initialize conversation with initial messages
         initial_prompt, messages = create_initial_messages(INSTRUCTION_PROMPT, query, dataset_samples)
@@ -328,10 +548,14 @@ class LOTUSBaseline(BaselineInterface):
         
         for attempt in range(self.max_attempts):
             self.total_generation_attempts += 1
-            
+
+            # Create pipeline filename with attempt number (like DocETL)
+            pipeline_filename = f"{self._create_base_filename(query, f'attempt{attempt}')}.py"
+            pipeline_file = os.path.join(self.pipeline_output_dir, pipeline_filename)
+
             if self.config.verbose:
                 self.logger.info(f"Pipeline generation attempt {attempt + 1}/{self.max_attempts}")
-            
+
             # Save initial prompt on first attempt
             if attempt == 0:
                 self._save_prompt(initial_prompt, query, attempt)
@@ -351,11 +575,26 @@ class LOTUSBaseline(BaselineInterface):
                 
                 # Add wrapper code if needed
                 if "__name__" not in pipeline_code:
-                    output_file = os.path.join(self.temp_dir, "pipeline_output.json")
+                    # Create output file in project directory with timestamp
+                    timestamp = self._get_timestamp()
+                    output_filename = f"{timestamp}_attempt{attempt}_output.json"
+                    output_file = os.path.join(self.pipeline_output_dir, output_filename)
                     pipeline_code = create_wrapped_pipeline_code(pipeline_code, dataset_paths, output_file)
                 
-                # Save pipeline to file
+                # Save pipeline to file with metadata (like DocETL)
                 with open(pipeline_file, "w") as f:
+                    # Handle multi-line queries by commenting each line properly
+                    query_lines = query.strip().split('\n')
+                    f.write(f"# Query: {query_lines[0]}\n")
+                    for line in query_lines[1:]:
+                        # Ensure each line is properly commented, handle empty lines
+                        if line.strip():
+                            f.write(f"# {line}\n")
+                        else:
+                            f.write("#\n")
+                    f.write(f"# Attempt: {attempt}\n")
+                    f.write(f"# Generated at: {datetime.now().isoformat()}\n")
+                    f.write("#" + "="*50 + "\n\n")
                     f.write(pipeline_code)
                 os.chmod(pipeline_file, 0o755)  # Make executable
                 
@@ -366,10 +605,6 @@ class LOTUSBaseline(BaselineInterface):
                     # Execution failed - add error feedback for retry
                     if self.config.verbose:
                         self.logger.warning(f"Pipeline execution failed: {error_msg}")
-                    
-                    # Save failed pipeline for inspection (only on last attempt)
-                    if attempt == self.max_attempts - 1:
-                        self._save_pipeline_to_persistent_dir(pipeline_code, query, success=False)
                     
                     messages = add_error_message(messages, "execution", error_msg)
                     pipeline_history.append(FailedPipeline(
@@ -405,9 +640,6 @@ class LOTUSBaseline(BaselineInterface):
                         continue
                 
                 # Success!
-                # Save successful pipeline to persistent directory
-                self._save_pipeline_to_persistent_dir(pipeline_code, query, success=True)
-                
                 # Save complete message history for successful run
                 self._save_messages(messages, query, pipeline_history)
                 

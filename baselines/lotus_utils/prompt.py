@@ -48,7 +48,7 @@ df = pd.DataFrame([
 ml_df = df.sem_filter("{Description} indicates that the class is relevant for machine learning.")
 # 2. Summarize how to succeed in those courses
 tips = ml_df.sem_agg(
-    "Given each {Course Name} and its {Description}, give me a study plan to succeed in my classes."
+    user_instruction="Given each {Course Name} and its {Description}, give me a study plan to succeed in my classes."
 )._output[0]
 
 # 3. Find the top two courses with the highest workload:contentReference[oaicite:4]{index=4}
@@ -304,7 +304,7 @@ df = pd.DataFrame({"ArticleContent": [
     "Renewable energy helps mitigate climate change."
 ]})
 # Summarize all articles in a single paragraph
-df = df.sem_agg("Provide a concise summary of all {ArticleContent}.")
+df = df.sem_agg(user_instruction="Provide a concise summary of all {ArticleContent}.")
 summary = df._output[0]
 ```
 
@@ -397,7 +397,7 @@ df = pd.DataFrame({"Course Name": [
 partitions = lotus.utils.cluster("Course Name", 2)
 df = df.sem_index("Course Name", "course_index").sem_partition_by(partitions)
 # Aggregate while respecting the partition order
-out = df.sem_agg("Summarize all {Course Name}")._output[0]
+out = df.sem_agg(user_instruction="Summarize all {Course Name}")._output[0]
 ```
 
 **sem\_index – Build a semantic index**
