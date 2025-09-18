@@ -357,7 +357,7 @@ class DocETLBaseline(BaselineInterface):
 
     def _merge_datasets_to_json(self, dataset_paths: List[str]) -> str:
         """
-        Merge multiple dataset files into a single JSON file.
+        Merge multiple dataset files into a single JSON file as a list of dictionaries.
 
         Args:
             dataset_paths: List of dataset file paths
@@ -369,7 +369,7 @@ class DocETLBaseline(BaselineInterface):
         merged_filename = f"{timestamp}_merged_datasets.json"
         merged_filepath = os.path.join(self.converted_data_dir, merged_filename)
 
-        merged_data = {}
+        merged_data = []  # Changed from dict to list
 
         for file_path in dataset_paths:
             try:
@@ -443,8 +443,11 @@ class DocETLBaseline(BaselineInterface):
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content = f.read()
 
-                # Store pure content without any metadata
-                merged_data[key_name] = content
+                # Add as dictionary with filename and content fields
+                merged_data.append({
+                    "filename": key_name,
+                    "content": content
+                })
 
                 if self.config.verbose:
                     if isinstance(content, list):

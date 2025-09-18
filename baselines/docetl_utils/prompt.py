@@ -25,24 +25,21 @@ DocETL provides a declarative, YAML-driven interface for defining pipelines that
    ```
 
 3. **Merged Datasets**
-   When multiple files are provided, they are merged into a single JSON object with this structure:
+   When multiple files are provided, they are merged into a single JSON list with this structure:
    ```json
-   {
-     "filename1": [list of records or content],
-     "filename2": [list of records or content]
-   }
+   [
+     {"filename": "filename1_ext", "content": [list of records or content]},
+     {"filename": "filename2_ext", "content": [list of records or content]}
+   ]
    ```
 
-   **Access Syntax**: Use simple key-based access `input.filename` to access all content from filename
+   **Access Syntax**: Use `input.filename` to access the filename field and `input.content` to access the content
 
    **Example**: If you have data.csv and instructions.txt merged:
-   - Access CSV records: `input.data_csv` (returns list of records)
-   - Access text content: `input.instructions_txt` (returns string content)
+   - Access filename: `input.filename` (returns "data_csv" or "instructions_txt")
+   - Access content: `input.content` (returns list of records for CSV or string for text)
 
-4. **Non-Standard Data**
-   If the data includes audio, PDFs, or other formats, use parsing tools (e.g., Whisper or OCR) to convert them into structured text fields in an initial code operation.
-
-5. **Consistency**
+4. **Consistency**
    Keep field names consistent across all dataset entries (e.g., always use `text` if multiple names exist, or generate a code operation to extract the primary field).
 
 ---
@@ -71,7 +68,7 @@ DocETL provides a declarative, YAML-driven interface for defining pipelines that
 
 DocETL supports the following operation types. Use them singly or in combination to form pipelines:
 
-1. **Map** — Per-document transformation using an LLM or code. Access fields via `input.<field>`.
+1. **Map** — Per-document transformation using an LLM. Access fields via `input.<field>`.
 2. **Filter** — Keep or discard documents by returning a boolean.
 3. **Reduce** — Aggregate over groups using a `reduce_key`, combining multiple items into one. Requires `reduce_key` to be specified.
 4. **Resolve** — Deduplicate or standardize entities by comparing and merging inputs; set `optimize: true` for realistic workloads.
@@ -83,11 +80,8 @@ DocETL supports the following operation types. Use them singly or in combination
 10. **Unnest** — Expand array or nested fields into separate items.
 11. **Sample** — Subset the dataset uniformly or stratified for debugging or prototyping.
 12. **TopK** — Retrieve the top-k most relevant documents via embeddings, keywords, or LLM comparison. It's used to doc retrieval but not rank already loaded docs.
-13. **Code Operations** — Deterministic transforms with Python:
-
-    * `code_map`: per-document transformation
-    * `code_filter`: keep/discard via boolean function
-    * `code_reduce`: aggregate with deterministic logic
+13. **code_map** — Finish final result transformation using Python code.
+14. **code_filter** - Select needed datasets using Python code.
 
 ---
 
@@ -310,7 +304,7 @@ Divides long text into manageable chunks for further processing, such as splitti
   method: token_count
   method_kwargs:
     num_tokens: 500
-    model: gpt-4o-mini
+    model: azure/gpt-4o
 ```
 
 
@@ -384,46 +378,20 @@ Retrieves the top‑k most relevant documents using embeddings, keyword search, 
 
 
 
-#### Code
+#### code_map
 
-Executes deterministic Python transformations instead of LLM prompts; this example extracts keywords from text/average category volume/filter the documents.
+Executes deterministic final result transformation via Python transformations instead of LLM prompts.
 
 ```yaml
-- name: extract_keywords
+- name: final_extract_keywords
   type: code_map
   code: |
     def transform(doc) -> dict:
         keywords = doc['text'].lower().split()
         return {
-            'keywords': keywords,
-            'keyword_count': len(keywords)
+            'result': keywords
         }
 ```
-
-```yaml
-- name: aggregate_stats
-  type: code_reduce
-  reduce_key: category
-  code: |
-    def transform(items) -> dict:
-        total = sum(item['value'] for item in items)
-        avg = total / len(items)
-        return {
-            'total': total,
-            'average': avg,
-            'count': len(items)
-        }
-```
-
-```yaml
-- name: filter_valid_entries
-  type: code_filter
-  code: |
-    def transform(doc) -> bool:
-        # Return True to keep the document, False to filter it out
-        return doc['score'] >= 0.5 and len(doc['text']) > 100
-```
-
 ---
 
 
@@ -444,7 +412,7 @@ system_prompt:
   dataset_description: a collection of transcripts of presidential debates
   persona: a political analyst
 
-default_model: gpt-4o-mini
+default_model: azure/gpt-4o
 
 operations:
   - name: extract_themes_and_viewpoints
@@ -505,6 +473,18 @@ operations:
 
       Format your response as a well-structured report.
 
+  - name: final_transform
+    type: code_map
+    code: |
+      def transform(doc) -> dict:
+          result = {
+              "theme": doc['theme'],
+              "report": doc['report']
+          }
+          return {
+              "result": result
+          }
+
 pipeline:
   steps:
     - name: debate_analysis
@@ -513,6 +493,7 @@ pipeline:
         - extract_themes_and_viewpoints
         - unnest_themes
         - summarize_theme_evolution
+        - final_transform
 
   output:
     type: file
@@ -526,7 +507,7 @@ This example analyzes concatenated reviews of video games to find themes that sh
 **YAML:**
 
 ```yaml
-default_model: gpt-4o-mini
+default_model: azure/gpt-4o
 
 system_prompt:
   dataset_description: a collection of reviews for video games
@@ -627,6 +608,18 @@ operations:
         theme_summary: str
         representative_quotes: "list[{game: str, quote: str, sentiment: str}]"
 
+  - name: final_transform
+    type: code_map
+    code: |
+      def transform(doc) -> dict:
+          result = {
+              "theme_summary": doc['theme_summary'],
+              "representative_quotes": doc['representative_quotes']
+          }
+          return {
+              "result": result
+          }
+
 pipeline:
   steps:
     - name: game_analysis
@@ -636,6 +629,7 @@ pipeline:
         - unnest_polarizing_themes
         - resolve_themes
         - aggregate_common_themes
+        - final_transform
 
   output:
     type: file
@@ -661,7 +655,7 @@ datasets:
           use_url: true
           include_line_numbers: true
 
-default_model: gpt-4o-mini
+default_model: azure/gpt-4o
 
 system_prompt:
   dataset_description: the Trump vs. United States case
@@ -670,7 +664,7 @@ system_prompt:
 operations:
   - name: extract_metadata_find_people_and_involvements
     type: map
-    model: gpt-4o-mini
+    model: azure/gpt-4o
     prompt: |
       Given the document excerpt: {{ input.extracted_text }}
       Extract all the people mentioned and summarize their involvements in the case described.
@@ -687,7 +681,7 @@ operations:
 
   - name: header_extraction_extracted_text_find_people_and_involvements
     type: map
-    model: gpt-4o-mini
+    model: azure/gpt-4o
     output:
       schema:
         headers: "list[{header: string, level: integer}]"
@@ -723,7 +717,7 @@ operations:
 
   - name: submap_find_people_and_involvements
     type: map
-    model: gpt-4o-mini
+    model: azure
     output:
       schema:
         people_and_involvements: list[str]
@@ -733,7 +727,7 @@ operations:
 
   - name: subreduce_find_people_and_involvements
     type: reduce
-    model: gpt-4o-mini
+    model: azure/g p t
     associative: true
     pass_through: true
     synthesize_resolve: false
@@ -753,6 +747,18 @@ operations:
 
       Make sure to include all the people and their involvements. If a person has multiple involvements, group them together.
 
+  - name: final_transform
+    type: code_map
+    code: |
+      def transform(doc) -> dict:
+          result = {
+              "metadata": doc['metadata'],
+              "people_and_involvements": doc['people_and_involvements']
+          }
+          return {
+              "result": result
+          }
+
 pipeline:
   steps:
     - name: analyze_document
@@ -764,6 +770,7 @@ pipeline:
         - gather_extracted_text_find_people_and_involvements
         - submap_find_people_and_involvements
         - subreduce_find_people_and_involvements
+        - final_transform
 
   output:
     type: file
@@ -817,7 +824,7 @@ When generating a pipeline, the model must follow these rules:
 
 5. **Field consistency**
 
-   * Reference only fields present in the dataset or created earlier in the pipeline. If multiple text fields exist, normalize them into a single `text` field via `code_map`.
+   * Reference only fields present in the dataset or created earlier in the pipeline.
    * Common field unconsistency errors:
         - Wrong pluralization (e.g., `medications` vs. `medication`)
         - Synonyms (e.g., `review_text` vs. `text`)
@@ -829,6 +836,8 @@ When generating a pipeline, the model must follow these rules:
     * Use `reduce_key` for `reduce` operations. It **CANNOT** be null or omitted. `reduce`'s prompt must reference `inputs`.
     * All LLM-based operations must have a `prompt`.
     * For unnesting list of dicts, use `recursive: true` and `depth: 2` to fully flatten the structure.
+    * Do not use `code_map` in any other scenarios except for final output transformation.
+
 7. **Optimization**
 
    * Set `optimize: true` for `resolve` steps.
@@ -843,7 +852,7 @@ When generating a pipeline, the model must follow these rules:
    * Produce a single YAML string only.
    * No markdown fencing, comments, or prose.
    * YAML must be well-formed and valid.
-   * The last operator must be a special `code_map`. It maps the final results of the query to the `result` field. For example:
+   * The last operator must be a `code_map`. It maps the final results of the query to the `result` field. For example:
    ```yaml
       - name: get_personal_info
         type: map
@@ -891,10 +900,11 @@ Datasets:
 $profiles_str
 
 Important Notes for Merged Datasets:
-- If the dataset contains multiple sources, access them using filename keys with underscores: `input.filename_ext`
-- CSV files become lists of records: `input.data_csv` (list), access fields with operations
-- Text files become string content: `input.instructions_txt` (string)
-- Consider all provided data sources to answer the query completely.
+- Merged datasets are a list of dictionaries with "filename" and "content" fields
+- Access filename: `input.filename` (e.g., "data_csv" or "instructions_txt")
+- Access content: `input.content` (list for CSV, string for text, etc.)
+- You may need to filter by filename to process specific files
+- Consider all provided data sources to answer the query completely
 
 Example for merged datasets, if the final dataset is generated from `person_table.csv` and `instructions.txt`:
 ```yaml
@@ -904,23 +914,21 @@ datasets:
     path: "merged_datasets.json"
 
 operations:
-  - name: process_csv_data
-    type: map
-    prompt: "Process CSV record: {{ input.person_table_csv }}"
+  - name: filter_csv_data
+    type: filter
+    prompt: "Check if this is CSV data: {{ input.filename == 'person_table_csv' }}"
 
-  - name: process_csv_data_code
-    type: code_map
-    code: |
-      def transform(doc) -> dict:
-        table = doc['person_table_csv'] # this is the json version of csv
-        # Do something to get birthdays 
-        return {
-            'birthdays': birthdays
-        }
+  - name: process_csv_records
+    type: map
+    prompt: "Process CSV records: {{ input.content }}"
+
+  - name: filter_text_data
+    type: filter
+    prompt: "Check if this is text instructions: {{ input.filename == 'instructions_txt' }}"
 
   - name: extract_from_text
     type: map
-    prompt: "Use instructions: {{ input.instructions_txt }} to process data"
+    prompt: "Use instructions: {{ input.content }} to process data"
 ```
 
 Output:
@@ -949,7 +957,7 @@ Rules:
 1. Return ONLY the corrected pipeline YAML.
 2. Make minimal changes to fix the specific error.
 3. Ensure field names match the dataset exactly.
-4. For merged datasets, use `input.filename` to access data from specific files.
+4. For merged datasets, use `input.filename` to check the source file and `input.content` to access the actual data.
 5. Double-check operator syntax (e.g., reduce needs reduce_key, map needs prompt).
 6. Ensure schemas are properly formatted with correct types.
 7. Do not add markdown fencing or explanations.

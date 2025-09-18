@@ -275,24 +275,31 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
                 if file_path.endswith('.json'):
                     data = json.load(f)
 
-                    # Check if this is a merged dataset (dict with filename keys)
-                    if (isinstance(data, dict) and
-                        'merged_datasets' in os.path.basename(file_path)):
+                    # Check if this is a merged dataset (list with filename/content dicts)
+                    if (isinstance(data, list) and
+                        'merged_datasets' in os.path.basename(file_path) and
+                        len(data) > 0 and isinstance(data[0], dict) and
+                        'filename' in data[0] and 'content' in data[0]):
 
                         # This is a merged dataset, sample from each source
-                        sampled_data = {}
+                        sampled_data = []
 
-                        for filename, content in data.items():
+                        for item in data:
+                            sampled_item = {"filename": item["filename"]}
+                            content = item["content"]
+
                             if isinstance(content, list):
                                 # For list data (like CSV records), sample first N items
                                 sample_size = min(csv_sample_rows, len(content))
-                                sampled_data[filename] = content[:sample_size]
+                                sampled_item["content"] = content[:sample_size]
                             else:
                                 # For other data types (like text), keep as is but truncate if too long
                                 if isinstance(content, str) and len(content) > 2000:
-                                    sampled_data[filename] = content[:2000] + "..."
+                                    sampled_item["content"] = content[:2000] + "..."
                                 else:
-                                    sampled_data[filename] = content
+                                    sampled_item["content"] = content
+
+                            sampled_data.append(sampled_item)
 
                         data = sampled_data
                 elif file_path.endswith('.csv'):
