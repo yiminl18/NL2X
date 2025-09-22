@@ -2,7 +2,6 @@ import time
 from typing import Any, Dict, List, Optional
 import os
 import json
-import tempfile
 import traceback
 import shutil
 import re
@@ -45,7 +44,6 @@ class LOTUSBaseline(BaselineInterface):
         # Use configuration from BaselineConfig
         self.max_attempts = self.config.max_attempts
         self.validate_answer = self.config.validate_answer
-        self.temp_dir = tempfile.mkdtemp(prefix="lotus_baseline_")
 
         # Create persistent directories for saving outputs (matching DocETL structure)
         base_dir = os.getcwd()
@@ -64,7 +62,6 @@ class LOTUSBaseline(BaselineInterface):
 
         if self.config.verbose:
             self.logger.info(f"Initialized LOTUS baseline with config: {self.config}")
-            self.logger.info(f"Temporary directory: {self.temp_dir}")
             self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
 
     def _get_timestamp(self) -> str:
@@ -82,10 +79,6 @@ class LOTUSBaseline(BaselineInterface):
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
-    def _save_json_to_both_dirs(self, data: Any, persistent_file: str, temp_file: str) -> None:
-        """Save JSON data to both persistent and temp directories."""
-        self._write_json(data, persistent_file)
-        self._write_json(data, temp_file)
 
     def _confirm_pipeline_execution(self, pipeline_file: str, query: str, attempt: int) -> bool:
         """
@@ -364,8 +357,9 @@ class LOTUSBaseline(BaselineInterface):
 
     def _process_xlsx_content(self, key: str, content: Any) -> List[str]:
         """Process XLSX content and convert to cleaned CSV files by sheets."""
-        # Write XLSX content to temp file first
-        temp_xlsx = os.path.join(self.temp_dir, f"{key}_temp.xlsx")
+        # Write XLSX content to converted_data_dir first
+        timestamp = self._get_timestamp()
+        temp_xlsx = os.path.join(self.converted_data_dir, f"{timestamp}_{key}_temp.xlsx")
         if isinstance(content, bytes):
             with open(temp_xlsx, 'wb') as f:
                 f.write(content)
@@ -823,12 +817,3 @@ class LOTUSBaseline(BaselineInterface):
             "baseline_type": "lotus"
         }
     
-    def __del__(self):
-        """Cleanup temporary directory on deletion."""
-        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
-            try:
-                import shutil
-                shutil.rmtree(self.temp_dir)
-            except Exception as e:
-                if hasattr(self, 'logger'):
-                    self.logger.warning(f"Failed to cleanup temp directory: {e}")
