@@ -3,7 +3,6 @@ from typing import Any, Dict, List, Optional
 import os
 import json
 import yaml
-import tempfile
 import traceback
 from datetime import datetime
 import logging
@@ -41,7 +40,6 @@ class DocETLBaseline(BaselineInterface):
         # Use configuration from BaselineConfig
         self.max_attempts = self.config.max_attempts
         self.validate_answer = self.config.validate_answer
-        self.temp_dir = tempfile.mkdtemp(prefix="docetl_baseline_")
 
         # Control LiteLLM logging based on mode
         # In confirm-only mode (not verbose), suppress most LiteLLM output
@@ -74,7 +72,6 @@ class DocETLBaseline(BaselineInterface):
         
         if self.config.verbose:
             self.logger.info(f"Initialized DocETL baseline with config: {self.config}")
-            self.logger.info(f"Temporary directory: {self.temp_dir}")
             self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
 
     def _get_timestamp(self) -> str:
@@ -92,10 +89,6 @@ class DocETLBaseline(BaselineInterface):
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
-    def _save_json_to_both_dirs(self, data: Any, persistent_file: str, temp_file: str) -> None:
-        """Save JSON data to both persistent and temp directories."""
-        self._write_json(data, persistent_file)
-        self._write_json(data, temp_file)
 
     def _rename_pipeline_file(self, pipeline_file: str, status: str) -> None:
         """Rename pipeline file based on status (success or failed)."""
@@ -173,10 +166,9 @@ class DocETLBaseline(BaselineInterface):
         # Remove .html/.htm extension from key if present to avoid duplication in filename
         key_base = key.replace('.html', '').replace('.HTML', '').replace('.htm', '').replace('.HTM', '')
         persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key_base}_html_to_json.json")
-        temp_file = os.path.join(self.temp_dir, f"{key}.json")
 
         parsed_html = parse_html_to_dict(content)
-        self._save_json_to_both_dirs([parsed_html], persistent_file, temp_file)
+        self._write_json([parsed_html], persistent_file)
 
         if self.config.verbose:
             self.logger.info(f"Saved HTML-to-JSON conversion to: {persistent_file}")
@@ -189,13 +181,12 @@ class DocETLBaseline(BaselineInterface):
         # Remove .txt extension from key if present to avoid duplication in filename
         key_base = key.replace('.txt', '').replace('.TXT', '')
         persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key_base}_txt_to_json.json")
-        temp_file = os.path.join(self.temp_dir, f"{key}.json")
 
         head_chars, tail_chars = self._get_char_limits(value)
         filename = filename or f"{key}.txt"
 
         json_data = convert_txt_to_json(content, filename, head_chars, tail_chars)
-        self._save_json_to_both_dirs([json_data], persistent_file, temp_file)
+        self._write_json([json_data], persistent_file)
 
         if self.config.verbose:
             self.logger.info(f"Saved TXT-to-JSON conversion to: {persistent_file}")
@@ -204,7 +195,8 @@ class DocETLBaseline(BaselineInterface):
 
     def _process_json_content(self, key: str, content: Any) -> str:
         """Process JSON content and save to file."""
-        temp_file = os.path.join(self.temp_dir, f"{key}.json")
+        timestamp = self._get_timestamp()
+        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}.json")
 
         # Determine the data to save
         if isinstance(content, (list, dict)):
@@ -215,13 +207,14 @@ class DocETLBaseline(BaselineInterface):
             except:
                 data = [{"text": content}]
 
-        self._write_json(data, temp_file)
-        return temp_file
+        self._write_json(data, persistent_file)
+        return persistent_file
 
     def _process_xlsx_content(self, key: str, content: Any) -> List[str]:
         """Process XLSX content and convert to CSV."""
-        # Write XLSX content to temp file first
-        temp_xlsx = os.path.join(self.temp_dir, f"{key}_temp.xlsx")
+        # Write XLSX content to converted_data_dir first
+        timestamp = self._get_timestamp()
+        temp_xlsx = os.path.join(self.converted_data_dir, f"{timestamp}_{key}_temp.xlsx")
         if isinstance(content, bytes):
             with open(temp_xlsx, 'wb') as f:
                 f.write(content)
@@ -243,10 +236,11 @@ class DocETLBaseline(BaselineInterface):
 
     def _process_csv_content(self, key: str, content: str) -> str:
         """Process CSV content and save to file."""
-        temp_file = os.path.join(self.temp_dir, f"{key}.csv")
-        with open(temp_file, 'w', encoding='utf-8') as f:
+        timestamp = self._get_timestamp()
+        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}.csv")
+        with open(persistent_file, 'w', encoding='utf-8') as f:
             f.write(content)
-        return temp_file
+        return persistent_file
 
     def _process_html_file(self, key: str, file_path: str) -> str:
         """Process HTML file and convert to JSON."""
@@ -845,12 +839,3 @@ class DocETLBaseline(BaselineInterface):
             "baseline_type": "docetl"
         }
     
-    def __del__(self):
-        """Cleanup temporary directory on deletion."""
-        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
-            try:
-                import shutil
-                shutil.rmtree(self.temp_dir)
-            except Exception as e:
-                if hasattr(self, 'logger'):
-                    self.logger.warning(f"Failed to cleanup temp directory: {e}")
