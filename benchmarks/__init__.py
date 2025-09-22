@@ -20,3 +20,4 @@ def list_benchmarks():
 from .dsbench import DSBenchBenchmark
 from .crag import CRAGBenchmark
 from .kramabench import KramaBenchBenchmark
+from .cuad import CUADBenchmark

@@ -1,0 +1,1 @@
+Put the CUAD_v1.json file downloaded from https://www.atticusprojectai.org/cuad here.

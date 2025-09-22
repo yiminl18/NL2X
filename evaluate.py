@@ -104,6 +104,9 @@ class EvaluationFramework:
                         "status": "aborted",
                         "aborted_at_sample": i+1,
                         "total_samples": len(samples),
+                        "total_time": 0,
+                        "avg_time_per_sample": 0,
+                        'aggregate_metrics': {},
                         "message": "User aborted during debug mode"
                     }
 
