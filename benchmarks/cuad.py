@@ -14,7 +14,7 @@ CUAD_PATH = "./benchmarks/CUAD/"
 CUAD_DATA_PATH = CUAD_PATH + "CUAD_v1.json"
 
 
-class CUAD_DataLoader:
+class CUADDataLoader:
     def __init__(self, data_path: str): 
         # Read CUAD_v1.json
         with open(data_path, 'r') as f:
@@ -89,6 +89,9 @@ class CUAD_DataLoader:
 39. Insurance: Is there a requirement for insurance that must be maintained by one party for the benefit of the counterparty?
 40. Covenant Not To Sue: Is a party restricted from contesting the validity of the counterparty’s ownership of intellectual property or otherwise bringing a claim against the counterparty for matters unrelated to the contract?
 41. Third Party Beneficiary: Is there a non-contracting party who is a beneficiary to some or all of the clauses in the contract and therefore can enforce its rights against a contracting party?
+
+Texts must be extracted from documents, and each catogorization is wrapped by list. Here is a answer example:
+[['SUPPLY CONTRACT'], ['The seller:', 'The buyer/End-User: Shenzhen LOHAS Supply Chain Management Co., Ltd.'], [], [], ['The Contract is valid for 5 years, beginning from and ended on .'], [], [], ["It will be governed by the law of the People's Republic of China ,otherwise it is governed by United Nations Convention on Contract for the International Sale of Goods."], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], ['Within 7 days after the arrival of the goods at destination, should the quality, specification, or quantity be found not in conformity with the stipulations of the Contract except those claims for which the insurance company or the owners of the vessel are liable, the Buyers, on the strength of the Inspection Certificate issued by the China Commodity Inspection Bureau, have the right to claim for replacement with new goods, or for compensation, and all the expenses (such as inspection charges, freight for returning the goods and for sending the replacement, insurance premium, storage and loading and unloading charges etc.) shall be borne by the Sellers.'], ['To be covered by the Seller for 110% invoice value against All Risks and War Risk.'], [], []]
 """
 
 @register_benchmark("cuad")
@@ -100,7 +103,7 @@ class CUADBenchmark(BenchmarkInterface):
 
     def _load_data(self) -> List[BenchmarkSample]:
         samples = []
-        data_loader = CUAD_DataLoader(CUAD_DATA_PATH)
+        data_loader = CUADDataLoader(CUAD_DATA_PATH)
         num_samples = min(self.config.max_samples, len(data_loader.documents))
         # num_samples = min(self.config.max_samples, len(data_loader.documents))
         docs = []
@@ -127,14 +130,40 @@ class CUADBenchmark(BenchmarkInterface):
         return self._samples
     
     def evaluate_sample(self, sample: BenchmarkSample, prediction: Any) -> EvaluationResult:
-        if not isinstance(prediction['answer'], str):
+        # Check if prediction['answer'] is a list at the top level
+        if not isinstance(prediction['answer'], list):
             return EvaluationResult(
                 sample_id=sample.id,
                 prediction=prediction,
                 ground_truth=sample.ground_truth,
                 metrics={"accuracy": 0.0}
             )
-        
+
+        # Clean prediction['answer']: ensure inner elements are lists
+        cleaned_answer = []
+        for item in prediction['answer']:
+            if isinstance(item, list):
+                # Filter out non-string elements from inner lists
+                cleaned_inner = [elem for elem in item if isinstance(elem, str)]
+                cleaned_answer.append(cleaned_inner)
+            else:
+                # Replace non-list items with empty lists
+                cleaned_answer.append([])
+
+        # Adjust length to match ground_truth
+        gt_length = len(sample.ground_truth)
+        pred_length = len(cleaned_answer)
+
+        if pred_length > gt_length:
+            # Truncate if prediction is longer
+            cleaned_answer = cleaned_answer[:gt_length]
+        elif pred_length < gt_length:
+            # Pad with empty lists if prediction is shorter
+            cleaned_answer.extend([[] for _ in range(gt_length - pred_length)])
+
+        # Update prediction with cleaned answer
+        prediction['answer'] = cleaned_answer
+
         # Compute the Jaccard similarity, correct if similarity > 0.15, compute precision and recall
         def jaccard_similarity(str1: str, str2: str) -> float:
             """Compute Jaccard similarity between two strings."""
@@ -224,3 +253,6 @@ class CUADBenchmark(BenchmarkInterface):
         }
         
         return aggregate
+
+if __name__ == "__main__":
+    data_loader = CUADDataLoader('/Users/chiyuh/Workspace/NL2X/benchmarks/CUAD/CUAD_v1.json')

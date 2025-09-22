@@ -905,6 +905,8 @@ Important Notes for Merged Datasets:
 - Access content: `input.content` (list for CSV, string for text, etc.)
 - You may need to filter by filename to process specific files
 - Consider all provided data sources to answer the query completely
+- Every operator must refer to at least one field in the dataset or created earlier in the pipeline.
+- If a output schema is defined, the final output must follow the schema. Do not add any extra wrappers. 
 
 Example for merged datasets, if the final dataset is generated from `person_table.csv` and `instructions.txt`:
 ```yaml
