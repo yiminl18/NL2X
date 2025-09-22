@@ -589,7 +589,7 @@ def generate_and_execute_pipeline_with_messages(
         True if successful, False otherwise
     """
     # Load dataset samples for all files
-    dataset_samples = load_sample_data(dataset_paths, max_length=1500, max_string_length=200)
+    dataset_samples = load_sample_data(dataset_paths, max_length=2500, max_string_length=500)
     
     # Initialize conversation with system and user messages
     messages = create_initial_messages(instruction_prompt, query, dataset_samples)

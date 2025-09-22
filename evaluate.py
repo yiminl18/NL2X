@@ -84,8 +84,8 @@ class EvaluationFramework:
                         # Show preview of content if available and not too large
                         if hasattr(value, 'content') and value.content:
                             content_str = str(value.content)
-                            if len(content_str) > 200:
-                                print(f"    Preview: {content_str[:200]}...")
+                            if len(content_str) > 500:
+                                print(f"    Preview: {content_str[:500]}...")
                             else:
                                 print(f"    Content: {content_str}")
                     print("-"*40)

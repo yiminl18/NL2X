@@ -87,6 +87,57 @@ class LOTUSBaseline(BaselineInterface):
         self._write_json(data, persistent_file)
         self._write_json(data, temp_file)
 
+    def _confirm_pipeline_execution(self, pipeline_file: str, query: str, attempt: int) -> bool:
+        """
+        Ask user for confirmation before executing pipeline in confirm/debug mode.
+
+        Args:
+            pipeline_file: Path to the generated pipeline file
+            query: The original query
+            attempt: Current attempt number
+
+        Returns:
+            True if user confirms execution, False otherwise
+        """
+        if not (self.config.confirm or self.config.debug):
+            return True
+
+        print("\n" + "="*80)
+        mode_text = "[DEBUG MODE]" if self.config.debug else "[CONFIRM MODE]"
+        print(f"{mode_text} Pipeline Generated - Attempt {attempt + 1}")
+        print("="*80)
+
+        print(f"\n📋 Query:")
+        print("-"*40)
+        print(query)
+        print("-"*40)
+
+        print(f"\n📄 Generated Pipeline File:")
+        print(f"  {pipeline_file}")
+
+        print(f"\n📝 Pipeline Preview (first 50 lines):")
+        print("-"*40)
+        try:
+            with open(pipeline_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                for i, line in enumerate(lines[:50]):
+                    print(f"{i+1:3d}: {line.rstrip()}")
+                if len(lines) > 50:
+                    print(f"... ({len(lines) - 50} more lines)")
+        except Exception as e:
+            print(f"Error reading pipeline file: {e}")
+        print("-"*40)
+
+        print("\n⚠️  Execute this pipeline? (Y/n): ", end="")
+        user_input = input().strip().lower()
+
+        if user_input and user_input != 'y':
+            print("❌ Pipeline execution skipped by user")
+            return False
+
+        print("✅ Proceeding with pipeline execution...")
+        return True
+
     def _extract_text_from_html(self, html_content: str) -> str:
         """
         Extract plain text from HTML content.
@@ -597,7 +648,12 @@ class LOTUSBaseline(BaselineInterface):
                     f.write("#" + "="*50 + "\n\n")
                     f.write(pipeline_code)
                 os.chmod(pipeline_file, 0o755)  # Make executable
-                
+
+                # Confirm pipeline execution in debug/confirm mode
+                if not self._confirm_pipeline_execution(pipeline_file, query, attempt):
+                    # User declined to execute - skip this attempt
+                    continue
+
                 # Execute pipeline
                 success, error_msg, output_data = execute_single_pipeline(pipeline_file, dataset_paths)
                 
