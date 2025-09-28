@@ -75,6 +75,9 @@ QUERY: {query}
 DATASET SAMPLE:
 {dataset_samples}
 
+AVAILABLE FIELDS AT THIS STAGE:
+{available_fields}
+
 PREVIOUS OPERATORS IN PIPELINE:
 {previous_operators}
 
@@ -86,20 +89,28 @@ CURRENT OPERATOR FRAMEWORK:
 
 Fill in all the "TO_BE_GENERATED" placeholders with appropriate values.
 
+IMPORTANT FIELD RULES:
+- You can ONLY reference fields listed in "AVAILABLE FIELDS AT THIS STAGE"
+- Fields from previous operators' outputs are included in available fields
+- Do NOT reference fields that don't exist yet
+- When creating output schemas, choose field names that don't conflict with existing fields
+
 For prompts:
 - Use Jinja2 templating: {{{{ input.field }}}} for single items, {{{{ inputs }}}} for reduce operations
 - Be specific about what information to extract or process
 - Match the output schema exactly
+- ONLY use fields that are in the AVAILABLE FIELDS list
 
 For schemas:
 - Keep them simple and flat
 - Use appropriate types: string, integer, number, boolean, list[...]
 - For complex structures, use quoted strings: "list[{{field: type}}]"
+- Output field names should be descriptive and unique
 
 For operator-specific fields:
-- reduce_key: must specify the field to group by for reduce operations
-- split_key: the field to split for split operations
-- unnest_key: the field containing arrays to unnest
+- reduce_key: must specify the field to group by for reduce operations (must exist in available fields)
+- split_key: the field to split for split operations (must exist in available fields)
+- unnest_key: the field containing arrays to unnest (must exist in available fields)
 
 Return ONLY the filled operator configuration in YAML format.
 

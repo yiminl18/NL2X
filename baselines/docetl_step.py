@@ -10,7 +10,7 @@ import re
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
-from .utils import parse_html_to_dict, convert_txt_to_json, convert_xlsx_to_csv
+from .docetl_data_utils import DocETLDataProcessor
 from .docetl_utils.llm2pipeline_docetl import (
     load_sample_data,
     execute_single_pipeline,
@@ -73,42 +73,16 @@ class DocETLStepBaseline(BaselineInterface):
             setattr(self, attr_name, dir_path)
             os.makedirs(dir_path, exist_ok=True)
 
+        # Initialize data processor
+        self.data_processor = DocETLDataProcessor(
+            converted_data_dir=self.converted_data_dir,
+            verbose=self.config.verbose,
+            logger=self.logger
+        )
+
         if self.config.verbose:
             self.logger.info(f"Initialized DocETL Step-by-Step baseline with config: {self.config}")
             self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
-
-    def _get_timestamp(self) -> str:
-        """Get current timestamp in standard format."""
-        return datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    def _get_char_limits(self, value: Any) -> tuple:
-        """Get head and tail character limits from value object."""
-        head_chars = getattr(value, 'head_chars', 2500) if hasattr(value, 'head_chars') else 2500
-        tail_chars = getattr(value, 'tail_chars', 2500) if hasattr(value, 'tail_chars') else 2500
-        return head_chars, tail_chars
-
-    def _write_json(self, data: Any, filepath: str) -> None:
-        """Write JSON data to file with standard formatting."""
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-
-    def _rename_pipeline_file(self, pipeline_file: str, status: str) -> None:
-        """Rename pipeline file based on status (success or failed)."""
-        if not os.path.exists(pipeline_file):
-            return
-
-        dir_name = os.path.dirname(pipeline_file)
-        base_name = os.path.basename(pipeline_file)
-        new_filename = base_name.replace("attempt", f"{status}_attempt")
-        new_file = os.path.join(dir_name, new_filename)
-
-        try:
-            os.rename(pipeline_file, new_file)
-            if self.config.verbose:
-                self.logger.info(f"{status.capitalize()} pipeline renamed to: {new_file}")
-        except Exception as e:
-            if self.config.verbose:
-                self.logger.warning(f"Could not rename {status} pipeline: {e}")
 
     def _confirm_pipeline_execution(self, pipeline_file: str, query: str, attempt: int) -> bool:
         """Ask user for confirmation before executing pipeline in confirm/debug mode."""
@@ -151,262 +125,11 @@ class DocETLStepBaseline(BaselineInterface):
         print("✅ Proceeding with pipeline execution...")
         return True
 
-    # Data processing methods (reuse from original docetl.py)
-    def _process_html_content(self, key: str, content: str) -> str:
-        """Process HTML content and save as JSON."""
-        timestamp = self._get_timestamp()
-        key_base = key.replace('.html', '').replace('.HTML', '').replace('.htm', '').replace('.HTM', '')
-        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key_base}_html_to_json.json")
 
-        parsed_html = parse_html_to_dict(content)
-        self._write_json([parsed_html], persistent_file)
-
-        if self.config.verbose:
-            self.logger.info(f"Saved HTML-to-JSON conversion to: {persistent_file}")
-
-        return persistent_file
-
-    def _process_text_content(self, key: str, content: str, value: Any, filename: str = None) -> str:
-        """Process text content and save as JSON."""
-        timestamp = self._get_timestamp()
-        key_base = key.replace('.txt', '').replace('.TXT', '')
-        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key_base}_txt_to_json.json")
-
-        head_chars, tail_chars = self._get_char_limits(value)
-        filename = filename or f"{key}.txt"
-
-        json_data = convert_txt_to_json(content, filename, head_chars, tail_chars)
-        self._write_json([json_data], persistent_file)
-
-        if self.config.verbose:
-            self.logger.info(f"Saved TXT-to-JSON conversion to: {persistent_file}")
-
-        return persistent_file
-
-    def _process_json_content(self, key: str, content: Any) -> str:
-        """Process JSON content and save to file."""
-        timestamp = self._get_timestamp()
-        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}.json")
-
-        if isinstance(content, (list, dict)):
-            data = content
-        else:
-            try:
-                data = json.loads(content)
-            except:
-                data = [{"text": content}]
-
-        self._write_json(data, persistent_file)
-        return persistent_file
-
-    def _process_xlsx_content(self, key: str, content: Any) -> List[str]:
-        """Process XLSX content and convert to CSV."""
-        timestamp = self._get_timestamp()
-        temp_xlsx = os.path.join(self.converted_data_dir, f"{timestamp}_{key}_temp.xlsx")
-        if isinstance(content, bytes):
-            with open(temp_xlsx, 'wb') as f:
-                f.write(content)
-        else:
-            with open(temp_xlsx, 'w', encoding='utf-8') as f:
-                f.write(content)
-
-        csv_files = convert_xlsx_to_csv(temp_xlsx, self.converted_data_dir)
-
-        if self.config.verbose:
-            self.logger.info(f"Converted XLSX to {len(csv_files)} CSV file(s)")
-
-        os.unlink(temp_xlsx)
-        return csv_files
-
-    def _process_csv_content(self, key: str, content: str) -> str:
-        """Process CSV content and save to file."""
-        timestamp = self._get_timestamp()
-        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}.csv")
-        with open(persistent_file, 'w', encoding='utf-8') as f:
-            f.write(content)
-        return persistent_file
-
-    def _prepare_dataset_files(self, context: Dict[str, Any]) -> List[str]:
-        """Prepare dataset files from context for DocETL pipeline."""
-        dataset_paths = []
-
-        if not context:
-            return dataset_paths
-
-        for key, value in context.items():
-            try:
-                file_type = getattr(value, 'type', 'json')
-
-                if hasattr(value, 'content') and value.content is not None:
-                    dataset_paths.extend(self._process_content(key, value.content, file_type, value))
-                elif hasattr(value, 'path') and value.path:
-                    if os.path.exists(value.path):
-                        dataset_paths.extend(self._process_file_path(key, value.path, file_type, value))
-                    else:
-                        if self.config.verbose:
-                            self.logger.warning(f"File not found: {value.path}")
-
-            except Exception as e:
-                if self.config.verbose:
-                    self.logger.warning(f"Failed to prepare dataset {key}: {e}")
-
-        return dataset_paths
-
-    def _process_content(self, key: str, content: Any, file_type: str, value: Any) -> List[str]:
-        """Process content based on file type."""
-        paths = []
-
-        if file_type == 'html':
-            paths.append(self._process_html_content(key, content))
-        elif file_type in ['text', 'txt']:
-            paths.append(self._process_text_content(key, content, value))
-        elif file_type == 'json':
-            paths.append(self._process_json_content(key, content))
-        elif file_type in ['xlsx', 'excel']:
-            paths.extend(self._process_xlsx_content(key, content))
-        elif file_type == 'csv':
-            paths.append(self._process_csv_content(key, content))
-
-        return paths
-
-    def _process_file_path(self, key: str, file_path: str, file_type: str, value: Any) -> List[str]:
-        """Process file path based on file type or extension."""
-        paths = []
-
-        if file_type == 'html' or file_path.endswith(('.html', '.htm')):
-            paths.append(self._process_html_file(key, file_path))
-        elif file_type == 'text' or file_path.endswith('.txt'):
-            paths.append(self._process_text_file(key, file_path, value))
-        elif file_type in ['xlsx', 'excel'] or file_path.endswith(('.xlsx', '.xls', '.xlsm')):
-            paths.extend(self._process_xlsx_file(file_path))
-        else:
-            paths.append(file_path)
-
-        return paths
-
-    def _process_html_file(self, key: str, file_path: str) -> str:
-        """Process HTML file and convert to JSON."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-        return self._process_html_content(key, html_content)
-
-    def _process_text_file(self, key: str, file_path: str, value: Any) -> str:
-        """Process text file and convert to JSON."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            text_content = f.read()
-        filename = os.path.basename(file_path)
-        return self._process_text_content(key, text_content, value, filename)
-
-    def _process_xlsx_file(self, file_path: str) -> List[str]:
-        """Process XLSX file and convert to CSV."""
-        csv_files = convert_xlsx_to_csv(file_path, self.converted_data_dir)
-        if self.config.verbose:
-            self.logger.info(f"Converted {file_path} to {len(csv_files)} CSV file(s)")
-        return csv_files
-
-    def _merge_datasets_to_json(self, dataset_paths: List[str]) -> str:
-        """Merge multiple dataset files into a single JSON file."""
-        timestamp = self._get_timestamp()
-        merged_filename = f"{timestamp}_merged_datasets.json"
-        merged_filepath = os.path.join(self.converted_data_dir, merged_filename)
-
-        merged_data = []
-
-        for file_path in dataset_paths:
-            try:
-                filename = os.path.basename(file_path)
-
-                if '_txt_to_json.json' in filename:
-                    parts = filename.split('_')
-                    if len(parts) >= 3:
-                        original_name = None
-                        for part in parts:
-                            if not (part.isdigit() or (len(part) == 6 and part.isdigit())):
-                                original_name = part
-                                break
-                        if original_name:
-                            key_name = f"{original_name}_txt"
-                        else:
-                            key_name = f"{parts[-3]}_txt" if len(parts) >= 3 else "text_txt"
-                    else:
-                        key_name = "text_txt"
-                elif '_html_to_json.json' in filename:
-                    parts = filename.split('_')
-                    if len(parts) >= 3:
-                        original_name = None
-                        for part in parts:
-                            if not (part.isdigit() or (len(part) == 6 and part.isdigit())):
-                                original_name = part
-                                break
-                        if original_name:
-                            key_name = f"{original_name}_html"
-                        else:
-                            key_name = f"{parts[-3]}_html" if len(parts) >= 3 else "html_html"
-                    else:
-                        key_name = "html_html"
-                else:
-                    name, ext = os.path.splitext(filename)
-                    if ext:
-                        key_name = f"{name}_{ext[1:]}"
-                    else:
-                        key_name = name
-
-                if file_path.endswith('.json'):
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        json_content = json.load(f)
-
-                    if (isinstance(json_content, list) and len(json_content) == 1 and
-                        isinstance(json_content[0], dict) and 'content' in json_content[0] and
-                        'file_name' in json_content[0]):
-                        content = json_content[0]['content']
-                    else:
-                        content = json_content
-                elif file_path.endswith('.csv'):
-                    import pandas as pd
-                    df = pd.read_csv(file_path)
-                    content = df.to_dict('records')
-                else:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-
-                merged_data.append({
-                    "filename": key_name,
-                    "content": content
-                })
-
-                if self.config.verbose:
-                    if isinstance(content, list):
-                        self.logger.info(f"Merged {filename} with {len(content)} records")
-                    elif isinstance(content, str):
-                        self.logger.info(f"Merged {filename} with text content ({len(content)} chars)")
-                    else:
-                        self.logger.info(f"Merged {filename} with data")
-
-            except Exception as e:
-                if self.config.verbose:
-                    self.logger.warning(f"Failed to merge {file_path}: {e}")
-                continue
-
-        with open(merged_filepath, 'w', encoding='utf-8') as f:
-            json.dump(merged_data, f, indent=2, ensure_ascii=False)
-
-        if self.config.verbose:
-            self.logger.info(f"Created merged dataset with {len(merged_data)} file sources: {merged_filepath}")
-
-        return merged_filepath
-
-    def _create_base_filename(self, query: str, suffix: str = "") -> str:
-        """Create a base filename with timestamp and query snippet."""
-        timestamp = self._get_timestamp()
-        query_snippet = query[:50].replace(" ", "_").replace("/", "_").replace("\\", "_")
-        query_snippet = "".join(c for c in query_snippet if c.isalnum() or c in "_-")
-        if suffix:
-            return f"{timestamp}_{suffix}_{query_snippet}"
-        return f"{timestamp}_{query_snippet}"
 
     def _save_prompt(self, prompt: str, query: str, attempt: int = 0) -> str:
         """Save prompt to persistent directory."""
-        filename = f"{self._create_base_filename(query, f'attempt{attempt}')}.txt"
+        filename = f"{self.data_processor._create_base_filename(query, f'attempt{attempt}')}.txt"
         filepath = os.path.join(self.prompts_output_dir, filename)
 
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -420,7 +143,7 @@ class DocETLStepBaseline(BaselineInterface):
 
     def _save_step_output(self, step_name: str, content: Any, query: str, attempt: int = 0) -> str:
         """Save intermediate step output."""
-        filename = f"{self._create_base_filename(query, f'attempt{attempt}_{step_name}')}.json"
+        filename = f"{self.data_processor._create_base_filename(query, f'attempt{attempt}_{step_name}')}.json"
         filepath = os.path.join(self.steps_output_dir, filename)
 
         step_data = {
@@ -431,7 +154,7 @@ class DocETLStepBaseline(BaselineInterface):
             "content": content
         }
 
-        self._write_json(step_data, filepath)
+        self.data_processor._write_json(step_data, filepath)
         return filepath
 
     # Step-by-step pipeline generation methods
@@ -647,9 +370,186 @@ class DocETLStepBaseline(BaselineInterface):
 
         return frameworks
 
+    def _parse_operator_output_fields(self, operator: Dict[str, Any]) -> List[str]:
+        """
+        Parse output fields from an operator's configuration.
+
+        Returns a list of field names that this operator will add to the data.
+        """
+        output_fields = []
+
+        if 'output' in operator and isinstance(operator['output'], dict):
+            schema = operator['output'].get('schema', {})
+
+            if isinstance(schema, dict):
+                # Simple dictionary schema
+                output_fields.extend(schema.keys())
+            elif isinstance(schema, str):
+                # Handle quoted string schemas like "list[{field: type}]"
+                # Extract field names from the string
+                import re
+                # Match patterns like "field: type" or "field:type"
+                matches = re.findall(r'(\w+)\s*:\s*\w+', schema)
+                output_fields.extend(matches)
+
+        # Handle specific operator types # TODO Fix this
+        if operator['type'] == 'unnest' and 'unnest_key' in operator:
+            # Unnest typically preserves all fields and expands the unnest_key
+            pass  # Fields remain the same, just expanded
+        elif operator['type'] == 'split':
+            # Split adds index fields
+            output_fields.append('_split_id')
+            output_fields.append('_split_index')
+        elif operator['type'] == 'gather':
+            # Gather adds context fields
+            if 'output_key' in operator:
+                output_fields.append(operator['output_key'])
+
+        return output_fields
+
+    def _extract_dataset_fields(self, dataset_samples: Dict[str, Any]) -> List[str]:
+        """
+        Extract field names from dataset samples.
+
+        Returns a list of all unique field names found in the dataset.
+        """
+        fields = set()
+
+        def extract_fields_from_item(item):
+            if isinstance(item, dict):
+                fields.update(item.keys())
+                # Recursively check nested dictionaries
+                for value in item.values():
+                    if isinstance(value, dict):
+                        extract_fields_from_item(value)
+
+        if isinstance(dataset_samples, list):
+            for item in dataset_samples:
+                extract_fields_from_item(item)
+        elif isinstance(dataset_samples, dict):
+            # Could be a single item or a dict of items
+            if all(isinstance(v, (list, dict)) for v in dataset_samples.values()):
+                # Multiple datasets
+                for dataset in dataset_samples.values():
+                    if isinstance(dataset, list):
+                        for item in dataset:
+                            extract_fields_from_item(item)
+                    else:
+                        extract_fields_from_item(dataset)
+            else:
+                # Single item
+                extract_fields_from_item(dataset_samples)
+
+        return list(fields)
+
+    def _track_available_fields(self, dataset_samples: Dict[str, Any],
+                               filled_operators: List[Dict[str, Any]]) -> List[str]:
+        """
+        Track all fields available at the current stage of the pipeline.
+
+        Args:
+            dataset_samples: The original dataset samples
+            filled_operators: List of already filled operators
+
+        Returns:
+            List of all available field names
+        """
+        # Start with fields from the dataset
+        available_fields = set(self._extract_dataset_fields(dataset_samples))
+
+        # Add fields from each filled operator's output
+        for operator in filled_operators:
+            output_fields = self._parse_operator_output_fields(operator)
+            available_fields.update(output_fields)
+
+            # Handle operators that transform field names
+            if operator['type'] == 'reduce':
+                # Reduce operations often change the structure
+                # The reduce_key is preserved, other fields may be aggregated
+                if 'reduce_key' in operator and operator['reduce_key'] != "TO_BE_GENERATED":
+                    available_fields.add(operator['reduce_key'])
+
+        # Sort for consistent ordering
+        return sorted(list(available_fields))
+
+    def _validate_field_references(self, operator: Dict[str, Any], available_fields: List[str]) -> tuple:
+        """
+        Validate that an operator only references fields that are available.
+
+        Args:
+            operator: The operator configuration to validate
+            available_fields: List of available field names
+
+        Returns:
+            Tuple of (is_valid: bool, error_messages: List[str])
+        """
+        errors = []
+
+        # Check prompt field references
+        if 'prompt' in operator and isinstance(operator['prompt'], str):
+            import re
+            # Find Jinja2 template references like {{ input.field }} or {{ field }}
+            field_refs = re.findall(r'\{\{\s*(?:input\.)?(\w+)\s*\}\}', operator['prompt'])
+            for field_ref in field_refs:
+                if field_ref not in available_fields and field_ref != 'inputs':  # inputs is special for reduce
+                    errors.append(f"Prompt references unavailable field: {field_ref}")
+
+        # Check operator-specific field references
+        op_type = operator.get('type', '')
+
+        if op_type == 'reduce' and 'reduce_key' in operator:
+            reduce_key = operator['reduce_key']
+            if reduce_key != "TO_BE_GENERATED" and reduce_key not in available_fields:
+                errors.append(f"Reduce operation references unavailable reduce_key: {reduce_key}")
+
+        if op_type == 'split' and 'split_key' in operator:
+            split_key = operator['split_key']
+            if split_key != "TO_BE_GENERATED" and split_key not in available_fields:
+                errors.append(f"Split operation references unavailable split_key: {split_key}")
+
+        if op_type == 'unnest' and 'unnest_key' in operator:
+            unnest_key = operator['unnest_key']
+            if unnest_key != "TO_BE_GENERATED" and unnest_key not in available_fields:
+                errors.append(f"Unnest operation references unavailable unnest_key: {unnest_key}")
+
+        if op_type == 'gather':
+            if 'content_key' in operator:
+                content_key = operator['content_key']
+                if content_key != "TO_BE_GENERATED" and content_key not in available_fields:
+                    errors.append(f"Gather operation references unavailable content_key: {content_key}")
+
+            if 'doc_id_key' in operator:
+                doc_id_key = operator['doc_id_key']
+                if doc_id_key != "TO_BE_GENERATED" and doc_id_key not in available_fields:
+                    errors.append(f"Gather operation references unavailable doc_id_key: {doc_id_key}")
+
+        if op_type == 'rank' and 'input_keys' in operator:
+            input_keys = operator['input_keys']
+            if isinstance(input_keys, list):
+                for key in input_keys:
+                    if key not in available_fields:
+                        errors.append(f"Rank operation references unavailable input_key: {key}")
+
+        if op_type == 'cluster' and 'embedding_keys' in operator:
+            embedding_keys = operator['embedding_keys']
+            if isinstance(embedding_keys, list):
+                for key in embedding_keys:
+                    if key not in available_fields:
+                        errors.append(f"Cluster operation references unavailable embedding_key: {key}")
+
+        if op_type == 'topk' and 'keys' in operator:
+            keys = operator['keys']
+            if isinstance(keys, list):
+                for key in keys:
+                    if key not in available_fields:
+                        errors.append(f"TopK operation references unavailable key: {key}")
+
+        return len(errors) == 0, errors
+
     def _generate_operator_details(self, operator: Dict[str, Any], query: str,
                                   dataset_samples: Dict[str, Any],
-                                  previous_operators: List[Dict[str, Any]]) -> Dict[str, Any]:
+                                  previous_operators: List[Dict[str, Any]],
+                                  available_fields: List[str]) -> Dict[str, Any]:
         """
         Step 3: Generate details for a single operator.
 
@@ -669,6 +569,7 @@ class DocETLStepBaseline(BaselineInterface):
             query=query,
             dataset_samples=json.dumps(dataset_samples, indent=2)[:1500],
             previous_operators=json.dumps(previous_operators, indent=2) if previous_operators else "None",
+            available_fields=json.dumps(available_fields, indent=2),
             operator_examples=op_examples,
             operator_framework=json.dumps(operator, indent=2)
         )
@@ -711,13 +612,27 @@ class DocETLStepBaseline(BaselineInterface):
             if self.config.verbose:
                 self.logger.info(f"Generating details for operator {i+1}/{len(frameworks)}: {framework['type']}")
 
+            # Track available fields at this stage
+            available_fields = self._track_available_fields(dataset_samples, filled_operators)
+
+            if self.config.verbose:
+                self.logger.info(f"Available fields for operator {framework['type']}: {available_fields}")
+
             # Generate details for this operator
             filled_op = self._generate_operator_details(
                 framework,
                 query,
                 dataset_samples,
-                filled_operators  # Pass previously filled operators for context
+                filled_operators,  # Pass previously filled operators for context
+                available_fields  # Pass available fields
             )
+
+            # Validate field references
+            is_valid, validation_errors = self._validate_field_references(filled_op, available_fields)
+
+            if not is_valid and self.config.verbose:
+                self.logger.warning(f"Field validation issues in operator {framework['type']}: {validation_errors}")
+                # Continue anyway, but log the issues
 
             # Clean up the operator name
             filled_op['name'] = f"{framework['type']}_{i}"
@@ -752,7 +667,7 @@ class DocETLStepBaseline(BaselineInterface):
         if dataset_paths:
             if is_merged or len(dataset_paths) > 1:
                 # Use the merged dataset path
-                dataset_path = dataset_paths[0] if len(dataset_paths) == 1 else self._merge_datasets_to_json(dataset_paths)
+                dataset_path = dataset_paths[0] if len(dataset_paths) == 1 else self.data_processor.merge_datasets_to_json(dataset_paths)
                 pipeline['datasets']['merged_data'] = {
                     'type': 'file',
                     'path': dataset_path
@@ -781,7 +696,7 @@ class DocETLStepBaseline(BaselineInterface):
         }]
 
         # Set up output
-        timestamp = self._get_timestamp()
+        timestamp = self.data_processor._get_timestamp()
         output_filename = f"output_{timestamp}.json"
         pipeline['pipeline']['output'] = {
             'type': 'file',
@@ -863,7 +778,7 @@ class DocETLStepBaseline(BaselineInterface):
 
         # Handle multiple datasets: merge them into a single JSON file
         if len(dataset_paths) > 1:
-            merged_file_path = self._merge_datasets_to_json(dataset_paths)
+            merged_file_path = self.data_processor.merge_datasets_to_json(dataset_paths)
             final_dataset_paths = [merged_file_path]
             if self.config.verbose:
                 self.logger.info(f"Merged {len(dataset_paths)} files into single dataset: {merged_file_path}")
@@ -877,7 +792,7 @@ class DocETLStepBaseline(BaselineInterface):
             self.total_generation_attempts += 1
 
             # Create pipeline filename with attempt number
-            pipeline_filename = f"{self._create_base_filename(query, f'attempt{attempt}')}.yaml"
+            pipeline_filename = f"{self.data_processor._create_base_filename(query, f'attempt{attempt}')}.yaml"
             pipeline_file = os.path.join(self.pipeline_output_dir, pipeline_filename)
 
             if self.config.verbose:
@@ -1031,7 +946,7 @@ class DocETLStepBaseline(BaselineInterface):
 
         try:
             # Prepare dataset files from context
-            dataset_paths = self._prepare_dataset_files(context)
+            dataset_paths = self.data_processor.prepare_dataset_files(context)
 
             if not dataset_paths and context:
                 raise ValueError("No valid datasets could be prepared from context")

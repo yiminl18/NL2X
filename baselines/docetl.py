@@ -9,7 +9,7 @@ import logging
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
-from .utils import parse_html_to_dict, convert_txt_to_json, convert_xlsx_to_csv, convert_csv_to_json
+from .docetl_data_utils import DocETLDataProcessor
 from .docetl_utils.llm2pipeline_docetl import (
     create_initial_messages,
     add_error_message,
@@ -69,45 +69,18 @@ class DocETLBaseline(BaselineInterface):
         for attr_name, dir_path in self.output_dirs.items():
             setattr(self, attr_name, dir_path)
             os.makedirs(dir_path, exist_ok=True)
-        
+
+        # Initialize data processor
+        self.data_processor = DocETLDataProcessor(
+            converted_data_dir=self.converted_data_dir,
+            verbose=self.config.verbose,
+            logger=self.logger
+        )
+
         if self.config.verbose:
             self.logger.info(f"Initialized DocETL baseline with config: {self.config}")
             self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
 
-    def _get_timestamp(self) -> str:
-        """Get current timestamp in standard format."""
-        return datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    def _get_char_limits(self, value: Any) -> tuple:
-        """Get head and tail character limits from value object."""
-        head_chars = getattr(value, 'head_chars', 2500) if hasattr(value, 'head_chars') else 2500
-        tail_chars = getattr(value, 'tail_chars', 2500) if hasattr(value, 'tail_chars') else 2500
-        return head_chars, tail_chars
-
-    def _write_json(self, data: Any, filepath: str) -> None:
-        """Write JSON data to file with standard formatting."""
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-    def _rename_pipeline_file(self, pipeline_file: str, status: str) -> None:
-        """Rename pipeline file based on status (success or failed)."""
-        if not os.path.exists(pipeline_file):
-            return
-
-        dir_name = os.path.dirname(pipeline_file)
-        base_name = os.path.basename(pipeline_file)
-        new_filename = base_name.replace("attempt", f"{status}_attempt")
-        new_file = os.path.join(dir_name, new_filename)
-
-        try:
-            os.rename(pipeline_file, new_file)
-            if self.config.verbose:
-                self.logger.info(f"{status.capitalize()} pipeline renamed to: {new_file}")
-        except Exception as e:
-            if self.config.verbose:
-                self.logger.warning(f"Could not rename {status} pipeline: {e}")
-                self.logger.info(f"{status.capitalize()} pipeline kept at: {pipeline_file}")
 
     def _confirm_pipeline_execution(self, pipeline_file: str, query: str, attempt: int) -> bool:
         """
@@ -160,196 +133,11 @@ class DocETLBaseline(BaselineInterface):
         print("✅ Proceeding with pipeline execution...")
         return True
 
-    def _process_html_content(self, key: str, content: str) -> str:
-        """Process HTML content and save as JSON."""
-        timestamp = self._get_timestamp()
-        # Remove .html/.htm extension from key if present to avoid duplication in filename
-        key_base = key.replace('.html', '').replace('.HTML', '').replace('.htm', '').replace('.HTM', '')
-        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key_base}_html_to_json.json")
-
-        parsed_html = parse_html_to_dict(content)
-        self._write_json([parsed_html], persistent_file)
-
-        if self.config.verbose:
-            self.logger.info(f"Saved HTML-to-JSON conversion to: {persistent_file}")
-
-        return persistent_file
-
-    def _process_text_content(self, key: str, content: str, value: Any, filename: str = None) -> str:
-        """Process text content and save as JSON."""
-        timestamp = self._get_timestamp()
-        # Remove .txt extension from key if present to avoid duplication in filename
-        key_base = key.replace('.txt', '').replace('.TXT', '')
-        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key_base}_txt_to_json.json")
-
-        head_chars, tail_chars = self._get_char_limits(value)
-        filename = filename or f"{key}.txt"
-
-        json_data = convert_txt_to_json(content, filename, head_chars, tail_chars)
-        self._write_json([json_data], persistent_file)
-
-        if self.config.verbose:
-            self.logger.info(f"Saved TXT-to-JSON conversion to: {persistent_file}")
-
-        return persistent_file
-
-    def _process_json_content(self, key: str, content: Any) -> str:
-        """Process JSON content and save to file."""
-        timestamp = self._get_timestamp()
-        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}.json")
-
-        # Determine the data to save
-        if isinstance(content, (list, dict)):
-            data = content
-        else:
-            try:
-                data = json.loads(content)
-            except:
-                data = [{"text": content}]
-
-        self._write_json(data, persistent_file)
-        return persistent_file
-
-    def _process_xlsx_content(self, key: str, content: Any) -> List[str]:
-        """Process XLSX content and convert to CSV."""
-        # Write XLSX content to converted_data_dir first
-        timestamp = self._get_timestamp()
-        temp_xlsx = os.path.join(self.converted_data_dir, f"{timestamp}_{key}_temp.xlsx")
-        if isinstance(content, bytes):
-            with open(temp_xlsx, 'wb') as f:
-                f.write(content)
-        else:
-            # If content is text, write as is (though XLSX should be binary)
-            with open(temp_xlsx, 'w', encoding='utf-8') as f:
-                f.write(content)
-
-        # Convert to CSV
-        csv_files = convert_xlsx_to_csv(temp_xlsx, self.converted_data_dir)
-
-        if self.config.verbose:
-            self.logger.info(f"Converted XLSX to {len(csv_files)} CSV file(s)")
-
-        # Clean up temp file
-        os.unlink(temp_xlsx)
-
-        return csv_files
-
-    def _process_csv_content(self, key: str, content: str) -> str:
-        """Process CSV content and save to file."""
-        timestamp = self._get_timestamp()
-        persistent_file = os.path.join(self.converted_data_dir, f"{timestamp}_{key}.csv")
-        with open(persistent_file, 'w', encoding='utf-8') as f:
-            f.write(content)
-        return persistent_file
-
-    def _process_html_file(self, key: str, file_path: str) -> str:
-        """Process HTML file and convert to JSON."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-        return self._process_html_content(key, html_content)
-
-    def _process_text_file(self, key: str, file_path: str, value: Any) -> str:
-        """Process text file and convert to JSON."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            text_content = f.read()
-
-        filename = os.path.basename(file_path)
-        return self._process_text_content(key, text_content, value, filename)
-
-    def _process_xlsx_file(self, file_path: str) -> List[str]:
-        """Process XLSX file and convert to CSV."""
-        csv_files = convert_xlsx_to_csv(file_path, self.converted_data_dir)
-
-        if self.config.verbose:
-            self.logger.info(f"Converted {file_path} to {len(csv_files)} CSV file(s)")
-
-        return csv_files
-
-    def _prepare_dataset_files(self, context: Dict[str, Any]) -> List[str]:
-        """
-        Prepare dataset files from context for DocETL pipeline.
-
-        Args:
-            context: Context dictionary with data
-
-        Returns:
-            List of dataset file paths
-        """
-        dataset_paths = []
-
-        if not context:
-            return dataset_paths
-
-        for key, value in context.items():
-            try:
-                # Determine the file type
-                file_type = getattr(value, 'type', 'json')  # Default to JSON
-
-                # Process based on content or path
-                if hasattr(value, 'content') and value.content is not None:
-                    # Handle content directly
-                    dataset_paths.extend(self._process_content(key, value.content, file_type, value))
-
-                elif hasattr(value, 'path') and value.path:
-                    # Handle file path
-                    if os.path.exists(value.path):
-                        dataset_paths.extend(self._process_file_path(key, value.path, file_type, value))
-                    else:
-                        if self.config.verbose:
-                            self.logger.warning(f"File not found: {value.path}")
-
-            except Exception as e:
-                if self.config.verbose:
-                    self.logger.warning(f"Failed to prepare dataset {key}: {e}")
-
-        return dataset_paths
-
-    def _process_content(self, key: str, content: Any, file_type: str, value: Any) -> List[str]:
-        """Process content based on file type."""
-        paths = []
-
-        if file_type == 'html':
-            paths.append(self._process_html_content(key, content))
-        elif file_type in ['text', 'txt']:
-            paths.append(self._process_text_content(key, content, value))
-        elif file_type == 'json':
-            paths.append(self._process_json_content(key, content))
-        elif file_type in ['xlsx', 'excel']:
-            paths.extend(self._process_xlsx_content(key, content))
-        elif file_type == 'csv':
-            paths.append(self._process_csv_content(key, content))
-
-        return paths
-
-    def _process_file_path(self, key: str, file_path: str, file_type: str, value: Any) -> List[str]:
-        """Process file path based on file type or extension."""
-        paths = []
-
-        # Check explicit type first
-        if file_type == 'html' or file_path.endswith(('.html', '.htm')):
-            paths.append(self._process_html_file(key, file_path))
-        elif file_type == 'text' or file_path.endswith('.txt'):
-            paths.append(self._process_text_file(key, file_path, value))
-        elif file_type in ['xlsx', 'excel'] or file_path.endswith(('.xlsx', '.xls', '.xlsm')):
-            paths.extend(self._process_xlsx_file(file_path))
-        else:
-            # For other file types (JSON, CSV, etc.), use the file directly
-            paths.append(file_path)
-
-        return paths
     
-    def _create_base_filename(self, query: str, suffix: str = "") -> str:
-        """Create a base filename with timestamp and query snippet."""
-        timestamp = self._get_timestamp()
-        query_snippet = query[:50].replace(" ", "_").replace("/", "_").replace("\\", "_")
-        query_snippet = "".join(c for c in query_snippet if c.isalnum() or c in "_-")
-        if suffix:
-            return f"{timestamp}_{suffix}_{query_snippet}"
-        return f"{timestamp}_{query_snippet}"
     
     def _save_prompt(self, prompt: str, query: str, attempt: int = 0) -> str:
         """Save prompt to persistent directory."""
-        filename = f"{self._create_base_filename(query, f'attempt{attempt}')}.txt"
+        filename = f"{self.data_processor._create_base_filename(query, f'attempt{attempt}')}.txt"
         filepath = os.path.join(self.prompts_output_dir, filename)
         
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -363,7 +151,7 @@ class DocETLBaseline(BaselineInterface):
     
     def _save_validation(self, validation_prompt: str, validation_result: dict, query: str) -> str:
         """Save validation prompt and result."""
-        filename = f"{self._create_base_filename(query, 'validation')}.json"
+        filename = f"{self.data_processor._create_base_filename(query, 'validation')}.json"
         filepath = os.path.join(self.validations_output_dir, filename)
 
         validation_data = {
@@ -373,12 +161,12 @@ class DocETLBaseline(BaselineInterface):
             "validation_result": validation_result
         }
 
-        self._write_json(validation_data, filepath)
+        self.data_processor._write_json(validation_data, filepath)
         return filepath
     
     def _save_messages(self, messages: list, query: str, pipeline_history: list = None) -> str:
         """Save complete message history."""
-        filename = f"{self._create_base_filename(query, 'messages')}.json"
+        filename = f"{self.data_processor._create_base_filename(query, 'messages')}.json"
         filepath = os.path.join(self.messages_output_dir, filename)
 
         messages_data = {
@@ -397,125 +185,9 @@ class DocETLBaseline(BaselineInterface):
                     "pipeline_yaml": failed.pipeline_yaml
                 })
 
-        self._write_json(messages_data, filepath)
+        self.data_processor._write_json(messages_data, filepath)
         return filepath
 
-    def _merge_datasets_to_json(self, dataset_paths: List[str]) -> str:
-        """
-        Merge multiple dataset files into a single JSON file as a list of dictionaries.
-
-        Args:
-            dataset_paths: List of dataset file paths
-
-        Returns:
-            Path to the merged JSON file
-        """
-        timestamp = self._get_timestamp()
-        merged_filename = f"{timestamp}_merged_datasets.json"
-        merged_filepath = os.path.join(self.converted_data_dir, merged_filename)
-
-        merged_data = []  # Changed from dict to list
-
-        for file_path in dataset_paths:
-            try:
-                # Get a clean key name from the file path (replace . with _ in extension)
-                filename = os.path.basename(file_path)
-
-                # Handle converted files: extract original filename
-                if '_txt_to_json.json' in filename:
-                    # Extract original name from converted filename like "20250915_213120_introduction_txt_to_json.json"
-                    # Remove timestamp and conversion suffix
-                    parts = filename.split('_')
-                    if len(parts) >= 3:
-                        # Find the part that's not timestamp (doesn't start with digit pattern)
-                        original_name = None
-                        for part in parts:
-                            if not (part.isdigit() or (len(part) == 6 and part.isdigit())):
-                                # This should be the original filename part
-                                original_name = part
-                                break
-                        if original_name:
-                            key_name = f"{original_name}_txt"
-                        else:
-                            # Fallback: use the part before txt_to_json
-                            key_name = f"{parts[-3]}_txt" if len(parts) >= 3 else "text_txt"
-                    else:
-                        key_name = "text_txt"
-                elif '_html_to_json.json' in filename:
-                    # Similar handling for HTML files
-                    parts = filename.split('_')
-                    if len(parts) >= 3:
-                        original_name = None
-                        for part in parts:
-                            if not (part.isdigit() or (len(part) == 6 and part.isdigit())):
-                                original_name = part
-                                break
-                        if original_name:
-                            key_name = f"{original_name}_html"
-                        else:
-                            key_name = f"{parts[-3]}_html" if len(parts) >= 3 else "html_html"
-                    else:
-                        key_name = "html_html"
-                else:
-                    # Regular file handling
-                    name, ext = os.path.splitext(filename)
-                    if ext:
-                        key_name = f"{name}_{ext[1:]}"  # Remove the dot and add underscore
-                    else:
-                        key_name = name
-
-                # Load pure content based on file type
-                if file_path.endswith('.json'):
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        json_content = json.load(f)
-
-                    # Check if this is a text-to-json conversion with metadata
-                    if (isinstance(json_content, list) and len(json_content) == 1 and
-                        isinstance(json_content[0], dict) and 'content' in json_content[0] and
-                        'file_name' in json_content[0]):
-                        # Extract pure text content from converted text file
-                        content = json_content[0]['content']
-                    else:
-                        # Regular JSON content
-                        content = json_content
-                elif file_path.endswith('.csv'):
-                    # Convert CSV to pure list of records
-                    import pandas as pd
-                    df = pd.read_csv(file_path)
-                    content = df.to_dict('records')
-                else:
-                    # For text files, just read the content
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-
-                # Add as dictionary with filename and content fields
-                merged_data.append({
-                    "filename": key_name,
-                    "content": content
-                })
-
-                if self.config.verbose:
-                    if isinstance(content, list):
-                        self.logger.info(f"Merged {filename} with {len(content)} records")
-                    elif isinstance(content, str):
-                        self.logger.info(f"Merged {filename} with text content ({len(content)} chars)")
-                    else:
-                        self.logger.info(f"Merged {filename} with data")
-
-            except Exception as e:
-                if self.config.verbose:
-                    self.logger.warning(f"Failed to merge {file_path}: {e}")
-                # Skip problematic files rather than failing completely
-                continue
-
-        # Save merged data
-        with open(merged_filepath, 'w', encoding='utf-8') as f:
-            json.dump(merged_data, f, indent=2, ensure_ascii=False)
-
-        if self.config.verbose:
-            self.logger.info(f"Created merged dataset with {len(merged_data)} file sources: {merged_filepath}")
-
-        return merged_filepath
 
     def _generate_and_execute_pipeline(self, query: str, dataset_paths: List[str]) -> tuple:
         """
@@ -538,7 +210,7 @@ class DocETLBaseline(BaselineInterface):
         # Handle multiple datasets: merge them into a single JSON file
         if len(dataset_paths) > 1:
             # Merge multiple files into a single JSON dataset
-            merged_file_path = self._merge_datasets_to_json(dataset_paths)
+            merged_file_path = self.data_processor.merge_datasets_to_json(dataset_paths)
             final_dataset_paths = [merged_file_path]
             if self.config.verbose:
                 self.logger.info(f"Merged {len(dataset_paths)} files into single dataset: {merged_file_path}")
@@ -562,7 +234,7 @@ class DocETLBaseline(BaselineInterface):
             self.total_generation_attempts += 1
 
             # Create pipeline filename with attempt number
-            pipeline_filename = f"{self._create_base_filename(query, f'attempt{attempt}')}.yaml"
+            pipeline_filename = f"{self.data_processor._create_base_filename(query, f'attempt{attempt}')}.yaml"
             pipeline_file = os.path.join(self.pipeline_output_dir, pipeline_filename)
 
             if self.config.verbose:
@@ -753,8 +425,8 @@ class DocETLBaseline(BaselineInterface):
         
         try:
             # Prepare dataset files from context
-            dataset_paths = self._prepare_dataset_files(context)
-            
+            dataset_paths = self.data_processor.prepare_dataset_files(context)
+
             if not dataset_paths and context:
                 # No valid datasets could be prepared
                 raise ValueError("No valid datasets could be prepared from context")

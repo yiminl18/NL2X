@@ -21,4 +21,5 @@ from .gpt4o_base import GPT4oBaseBaseline
 from .gpt4o_zero_shot import GPT4oZeroShotBaseline
 from .dummy import DummyBaseline
 from .docetl import DocETLBaseline
+from .docetl_step import DocETLStepBaseline
 from .lotus import LOTUSBaseline
