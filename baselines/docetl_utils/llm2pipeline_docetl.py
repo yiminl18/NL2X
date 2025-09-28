@@ -215,10 +215,10 @@ def add_error_message(messages: List[Dict[str, str]], error_type: str, error_msg
 def llm_call_with_messages(messages: List[Dict[str, str]]) -> str:
     """
     Call LLM API with message list format.
-    
+
     Args:
         messages: List of message dictionaries with 'role' and 'content'
-        
+
     Returns:
         LLM response string
     """
@@ -232,6 +232,51 @@ def llm_call_with_messages(messages: List[Dict[str, str]]) -> str:
         return response
     except Exception as e:
         # Error calling Azure GPT-4o: {e}
+        raise
+
+
+def llm_call_with_schema(messages: List[Dict[str, str]], parameters: Dict[str, Any], system_prompt: str = "") -> str:
+    """
+    Call LLM API with JSON schema parameters to ensure structured output.
+
+    Args:
+        messages: List of message dictionaries with 'role' and 'content'
+        parameters: JSON schema parameters to constrain the output format
+        system_prompt: Optional system prompt to prepend
+
+    Returns:
+        LLM response string (structured JSON)
+    """
+    try:
+        # Prepare messages with optional system prompt
+        if system_prompt:
+            full_messages = [{"role": "system", "content": system_prompt}] + messages
+        else:
+            full_messages = messages
+
+        # Prepare response format for structured output
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "structured_output",
+                "strict": True,
+                "schema": {
+                    **parameters,
+                    "additionalProperties": False
+                }
+            }
+        }
+
+        # Call Azure GPT-4o with structured output
+        response = gpt_4o_azure(
+            prompt=full_messages,
+            max_tokens=4000,
+            temperature=0.3,
+            response_format=response_format
+        )
+        return response
+    except Exception as e:
+        # Error calling Azure GPT-4o with schema: {e}
         raise
 
 def llm_call_wrapper(prompt: str) -> str:

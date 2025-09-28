@@ -6,7 +6,6 @@ import yaml
 import traceback
 from datetime import datetime
 import logging
-import re
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
@@ -18,6 +17,7 @@ from .docetl_utils.llm2pipeline_docetl import (
     extract_yaml_from_response,
     FailedPipeline,
     llm_call_with_messages,
+    llm_call_with_schema,
 )
 from .docetl_utils.prompt_step import (
     OPERATOR_SELECTION_PROMPT,
@@ -241,44 +241,46 @@ class DocETLStepBaseline(BaselineInterface):
             operator_definitions=OPERATOR_DEFINITIONS
         )
 
+        # Define schema for structured operator selection
+        parameters = {
+            "type": "object",
+            "properties": {
+                "operators": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["map", "filter", "reduce", "resolve", "rank", "extract",
+                                        "cluster", "split", "gather", "unnest", "sample", "topk",
+                                        "code_map", "code_filter"]
+                            },
+                            "purpose": {"type": "string"}
+                        },
+                        "required": ["type", "purpose"]
+                    }
+                },
+            },
+            "required": ["operators"]
+        }
+
+        system_prompt = "You are an AI assistant that selects appropriate DocETL operators for data processing pipelines. Always respond with valid JSON matching the required schema."
+
         messages = [{"role": "user", "content": prompt}]
-        response = llm_call_with_messages(messages)
 
-        # Parse the response to extract operators
-        operators = []
-        lines = response.strip().split('\n')
+        try:
+            response = llm_call_with_schema(messages, parameters, system_prompt)
+            result = json.loads(response)
+            operators = result.get("operators", [])
 
-        for line in lines:
-            # Look for patterns like "- map: extract information from each document"
-            match = re.match(r'^[-*]\s*(\w+):\s*(.+)$', line.strip())
-            if match:
-                op_type = match.group(1).strip()
-                purpose = match.group(2).strip()
-                operators.append({
-                    'type': op_type,
-                    'purpose': purpose
-                })
+        except (json.JSONDecodeError, KeyError) as e:
+            if self.config.verbose:
+                self.logger.warning(f"Failed to parse structured operator selection: {e}")
+            # Fallback to empty list, will add code_map below
+            operators = []
 
-        # If no operators found in expected format, try to extract from text
-        if not operators:
-            # Look for operator names mentioned in the text
-            operator_types = ['map', 'filter', 'reduce', 'resolve', 'rank', 'extract',
-                            'cluster', 'split', 'gather', 'unnest', 'sample', 'topk',
-                            'code_map', 'code_filter']
-
-            for op_type in operator_types:
-                if op_type in response.lower():
-                    # Find the context around the operator mention
-                    pattern = rf'\b{op_type}\b[^.]*'
-                    matches = re.findall(pattern, response, re.IGNORECASE)
-                    for match in matches:
-                        operators.append({
-                            'type': op_type,
-                            'purpose': match.strip()
-                        })
-                        break  # Only take the first mention of each operator
-
-        # Always add code_map at the end for final transformation
+        # Always add code_map at the end for final transformation if not present
         if not any(op['type'] == 'code_map' for op in operators):
             operators.append({
                 'type': 'code_map',
@@ -310,9 +312,14 @@ class DocETLStepBaseline(BaselineInterface):
             }
 
             # Add type-specific placeholders
-            if op['type'] in ['map', 'filter', 'extract']:
+            if op['type'] in ['map', 'filter']:
                 framework['prompt'] = "TO_BE_GENERATED"
                 framework['output'] = {'schema': {}}
+
+            elif op['type'] == 'extract':
+                framework['prompt'] = "TO_BE_GENERATED"
+                framework['document_keys'] = []
+                framework['model'] = "TO_BE_GENERATED"
 
             elif op['type'] == 'reduce':
                 framework['reduce_key'] = "TO_BE_GENERATED"
@@ -358,6 +365,12 @@ class DocETLStepBaseline(BaselineInterface):
                 framework['k'] = 5
                 framework['keys'] = []
                 framework['query'] = "TO_BE_GENERATED"
+
+            elif op['type'] == 'sample':
+                framework['method'] = "uniform"
+                framework['samples'] = 0.1
+                framework['stratify_key'] = "TO_BE_GENERATED"
+                framework['random_state'] = 42
 
             frameworks.append(framework)
 
@@ -546,6 +559,148 @@ class DocETLStepBaseline(BaselineInterface):
 
         return len(errors) == 0, errors
 
+    def _get_operator_schema(self, op_type: str) -> Dict[str, Any]:
+        """
+        Generate JSON schema for specific operator type.
+
+        Args:
+            op_type: The operator type (map, reduce, filter, etc.)
+
+        Returns:
+            JSON schema dictionary for the operator
+        """
+        base_schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "type": {"type": "string", "enum": [op_type]}
+            },
+            "required": ["name", "type"]
+        }
+
+        # Add type-specific properties
+        if op_type in ['map', 'filter', 'extract']:
+            base_schema["properties"].update({
+                "prompt": {"type": "string"},
+                "output": {
+                    "type": "object",
+                    "properties": {
+                        "schema": {"type": "object"}
+                    }
+                }
+            })
+            base_schema["required"].extend(["prompt", "output"])
+
+        elif op_type == 'reduce':
+            base_schema["properties"].update({
+                "reduce_key": {"type": "string"},
+                "prompt": {"type": "string"},
+                "output": {
+                    "type": "object",
+                    "properties": {
+                        "schema": {"type": "object"}
+                    }
+                }
+            })
+            base_schema["required"].extend(["reduce_key", "prompt", "output"])
+
+        elif op_type == 'resolve':
+            base_schema["properties"].update({
+                "optimize": {"type": "boolean"},
+                "comparison_prompt": {"type": "string"},
+                "resolution_prompt": {"type": "string"},
+                "output": {
+                    "type": "object",
+                    "properties": {
+                        "schema": {"type": "object"}
+                    }
+                }
+            })
+            base_schema["required"].extend(["comparison_prompt", "resolution_prompt", "output"])
+
+        elif op_type == 'rank':
+            base_schema["properties"].update({
+                "prompt": {"type": "string"},
+                "input_keys": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "direction": {"type": "string", "enum": ["asc", "desc"]}
+            })
+            base_schema["required"].extend(["prompt", "input_keys"])
+
+        elif op_type == 'split':
+            base_schema["properties"].update({
+                "split_key": {"type": "string"},
+                "method": {"type": "string"},
+                "method_kwargs": {"type": "object"}
+            })
+            base_schema["required"].extend(["split_key", "method"])
+
+        elif op_type == 'gather':
+            base_schema["properties"].update({
+                "content_key": {"type": "string"},
+                "doc_id_key": {"type": "string"},
+                "order_key": {"type": "string"}
+            })
+            base_schema["required"].extend(["content_key", "doc_id_key"])
+
+        elif op_type == 'unnest':
+            base_schema["properties"].update({
+                "unnest_key": {"type": "string"}
+            })
+            base_schema["required"].extend(["unnest_key"])
+
+        elif op_type in ['code_map', 'code_filter']:
+            base_schema["properties"].update({
+                "code": {"type": "string"}
+            })
+            base_schema["required"].extend(["code"])
+
+        elif op_type == 'cluster':
+            base_schema["properties"].update({
+                "embedding_keys": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "output_key": {"type": "string"}
+            })
+            base_schema["required"].extend(["embedding_keys", "output_key"])
+
+        elif op_type == 'topk':
+            base_schema["properties"].update({
+                "method": {"type": "string"},
+                "k": {"type": "integer"},
+                "keys": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "query": {"type": "string"}
+            })
+            base_schema["required"].extend(["k", "keys"])
+
+        elif op_type == 'extract':
+            base_schema["properties"].update({
+                "prompt": {"type": "string"},
+                "document_keys": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "model": {"type": "string"}
+            })
+            base_schema["required"].extend(["prompt", "document_keys"])
+
+        elif op_type == 'sample':
+            base_schema["properties"].update({
+                "method": {"type": "string", "enum": ["uniform", "stratified"]},
+                "samples": {"type": ["number", "integer"]},
+                "stratify_key": {"type": "string"},
+                "random_state": {"type": "integer"}
+            })
+            base_schema["required"].extend(["method", "samples"])
+
+        return base_schema
+
     def _generate_operator_details(self, operator: Dict[str, Any], query: str,
                                   dataset_samples: Dict[str, Any],
                                   previous_operators: List[Dict[str, Any]],
@@ -574,29 +729,43 @@ class DocETLStepBaseline(BaselineInterface):
             operator_framework=json.dumps(operator, indent=2)
         )
 
-        messages = [{"role": "user", "content": prompt}]
-        response = llm_call_with_messages(messages)
+        # Get operator-specific schema
+        parameters = self._get_operator_schema(op_type)
 
-        # Extract YAML from response
-        yaml_content = extract_yaml_from_response(response)
-        if not yaml_content:
-            # If no YAML found, return the original operator
-            return operator
+        system_prompt = f"You are an AI assistant that generates detailed configurations for DocETL {op_type} operators. Always respond with valid JSON matching the required schema. Use the available fields and previous operators context to create appropriate configurations."
+
+        messages = [{"role": "user", "content": prompt}]
 
         try:
-            # Parse the YAML to get the filled operator
-            filled_operator = yaml.safe_load(yaml_content)
+            response = llm_call_with_schema(messages, parameters, system_prompt)
+            filled_operator = json.loads(response)
 
-            # Merge with original operator to preserve structure
+            # Merge with original operator to preserve framework structure
             for key, value in filled_operator.items():
-                if value != "TO_BE_GENERATED":
+                if key in operator and operator[key] == "TO_BE_GENERATED":
+                    operator[key] = value
+                elif key not in operator:
                     operator[key] = value
 
             return operator
 
-        except Exception as e:
+        except (json.JSONDecodeError, KeyError) as e:
             if self.config.verbose:
-                self.logger.warning(f"Failed to parse operator details: {e}")
+                self.logger.warning(f"Failed to parse structured operator details: {e}")
+
+            # Fallback to original YAML parsing method
+            try:
+                response = llm_call_with_messages(messages)
+                yaml_content = extract_yaml_from_response(response)
+                if yaml_content:
+                    filled_operator = yaml.safe_load(yaml_content)
+                    for key, value in filled_operator.items():
+                        if value != "TO_BE_GENERATED":
+                            operator[key] = value
+            except Exception as fallback_e:
+                if self.config.verbose:
+                    self.logger.warning(f"Fallback YAML parsing also failed: {fallback_e}")
+
             return operator
 
     def _fill_operator_draft(self, frameworks: List[Dict[str, Any]], query: str,

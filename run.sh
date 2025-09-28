@@ -1,5 +1,5 @@
 #!/bin/bash
-for BASELINE in "docetl"; do
+for BASELINE in "docetl_step"; do
   for SEED in 42; do
     for BENCHMARK in "cuad"; do
         python evaluate.py --baseline $BASELINE --benchmark $BENCHMARK --seed $SEED --validate-answer false --confirm --max-attempts 1
