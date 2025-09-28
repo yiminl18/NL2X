@@ -435,7 +435,78 @@ class DocETLStepBaseline(BaselineInterface):
         return filepath
 
     # Step-by-step pipeline generation methods
-    def _select_operators(self, query: str, dataset_samples: Dict[str, Any]) -> List[Dict[str, str]]:
+    def _confirm_step_execution(self, step_name: str, step_data: Any, query: str, attempt: int) -> bool:
+        """
+        Ask user for confirmation after each step in confirm/debug mode.
+
+        Args:
+            step_name: Name of the step just completed
+            step_data: Data generated in this step
+            query: The original query
+            attempt: Current attempt number
+
+        Returns:
+            True if user wants to continue, False to abort
+        """
+        if not (self.config.confirm or self.config.debug):
+            return True
+
+        print("\n" + "="*80)
+        mode_text = "[DEBUG MODE]" if self.config.debug else "[CONFIRM MODE]"
+        print(f"{mode_text} Step Completed - Attempt {attempt + 1}")
+        print("="*80)
+
+        print(f"\n📋 Query:")
+        print("-"*40)
+        print(query)
+        print("-"*40)
+
+        print(f"\n✅ Completed Step: {step_name}")
+        print("-"*40)
+
+        # Display step-specific data
+        if step_name == "Step 1: Operator Selection":
+            print("Selected Operators:")
+            for i, op in enumerate(step_data, 1):
+                print(f"  {i}. {op['type']}: {op['purpose']}")
+
+        elif step_name == "Step 2: Operator Framework":
+            print("Created Frameworks:")
+            for framework in step_data:
+                print(f"  - {framework['name']} ({framework['type']})")
+                print(f"    Purpose: {framework['purpose']}")
+
+        elif step_name.startswith("Step 3-4: Operator Details"):
+            print("Filled Operators:")
+            for op in step_data:
+                print(f"  - {op['name']} ({op['type']})")
+                if 'prompt' in op and op['prompt'] != "TO_BE_GENERATED":
+                    preview = op['prompt'][:100] + "..." if len(op['prompt']) > 100 else op['prompt']
+                    print(f"    Prompt preview: {preview}")
+                if 'output' in op and 'schema' in op['output']:
+                    print(f"    Output schema: {list(op['output']['schema'].keys()) if op['output']['schema'] else 'empty'}")
+
+        elif step_name == "Step 5: Pipeline Connection":
+            print("Final Pipeline Preview (first 30 lines):")
+            lines = step_data.split('\n')
+            for i, line in enumerate(lines[:30]):
+                print(f"  {line}")
+            if len(lines) > 30:
+                print(f"  ... ({len(lines) - 30} more lines)")
+
+        print("-"*40)
+
+        print(f"\n⚠️  Continue to next step? (Y/n): ", end="")
+        user_input = input().strip().lower()
+
+        if user_input and user_input != 'y':
+            print("❌ Pipeline generation aborted by user")
+            return False
+
+        print("✅ Proceeding to next step...")
+        return True
+
+    def _select_operators(self, query: str, dataset_samples: Dict[str, Any], attempt: int = 0) -> List[Dict[str, str]]:
         """
         Step 1: Select operators needed for the pipeline.
 
@@ -494,9 +565,13 @@ class DocETLStepBaseline(BaselineInterface):
         if self.config.verbose:
             self.logger.info(f"Selected {len(operators)} operators: {[op['type'] for op in operators]}")
 
+        # Confirm this step in confirm/debug mode
+        if not self._confirm_step_execution("Step 1: Operator Selection", operators, query, attempt):
+            raise ValueError("User aborted pipeline generation at operator selection step")
+
         return operators
 
-    def _create_operator_framework(self, operators: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    def _create_operator_framework(self, operators: List[Dict[str, str]], query: str, attempt: int = 0) -> List[Dict[str, Any]]:
         """
         Step 2: Create draft framework for each operator.
 
@@ -566,6 +641,10 @@ class DocETLStepBaseline(BaselineInterface):
         if self.config.verbose:
             self.logger.info(f"Created framework for {len(frameworks)} operators")
 
+        # Confirm this step in confirm/debug mode
+        if not self._confirm_step_execution("Step 2: Operator Framework", frameworks, query, attempt):
+            raise ValueError("User aborted pipeline generation at framework creation step")
+
         return frameworks
 
     def _generate_operator_details(self, operator: Dict[str, Any], query: str,
@@ -620,7 +699,7 @@ class DocETLStepBaseline(BaselineInterface):
             return operator
 
     def _fill_operator_draft(self, frameworks: List[Dict[str, Any]], query: str,
-                            dataset_samples: Dict[str, Any]) -> List[Dict[str, Any]]:
+                            dataset_samples: Dict[str, Any], attempt: int = 0) -> List[Dict[str, Any]]:
         """
         Step 4: Fill all operator drafts with generated details.
 
@@ -645,10 +724,14 @@ class DocETLStepBaseline(BaselineInterface):
 
             filled_operators.append(filled_op)
 
+        # Confirm this step in confirm/debug mode
+        if not self._confirm_step_execution("Step 3-4: Operator Details", filled_operators, query, attempt):
+            raise ValueError("User aborted pipeline generation at operator detail generation step")
+
         return filled_operators
 
     def _connect_pipeline(self, operators: List[Dict[str, Any]], dataset_paths: List[str],
-                         query: str) -> str:
+                         query: str, attempt: int = 0) -> str:
         """
         Step 5: Connect operators and create final pipeline YAML.
 
@@ -709,6 +792,10 @@ class DocETLStepBaseline(BaselineInterface):
         # Convert to YAML
         pipeline_yaml = yaml.dump(pipeline, default_flow_style=False, sort_keys=False)
 
+        # Confirm this step in confirm/debug mode
+        if not self._confirm_step_execution("Step 5: Pipeline Connection", pipeline_yaml, query, attempt):
+            raise ValueError("User aborted pipeline generation at pipeline connection step")
+
         return pipeline_yaml
 
     def _generate_pipeline_step_by_step(self, query: str, dataset_paths: List[str],
@@ -728,7 +815,7 @@ class DocETLStepBaseline(BaselineInterface):
             # Step 1: Select operators
             if self.config.verbose:
                 self.logger.info("Step 1: Selecting operators...")
-            operators = self._select_operators(query, dataset_samples)
+            operators = self._select_operators(query, dataset_samples, attempt)
             self._save_step_output('operators_selected', operators, query, attempt)
 
             if not operators:
@@ -737,19 +824,19 @@ class DocETLStepBaseline(BaselineInterface):
             # Step 2: Create operator framework
             if self.config.verbose:
                 self.logger.info("Step 2: Creating operator framework...")
-            frameworks = self._create_operator_framework(operators)
+            frameworks = self._create_operator_framework(operators, query, attempt)
             self._save_step_output('operator_frameworks', frameworks, query, attempt)
 
             # Step 3 & 4: Generate and fill operator details
             if self.config.verbose:
                 self.logger.info("Step 3-4: Generating operator details...")
-            filled_operators = self._fill_operator_draft(frameworks, query, dataset_samples)
+            filled_operators = self._fill_operator_draft(frameworks, query, dataset_samples, attempt)
             self._save_step_output('filled_operators', filled_operators, query, attempt)
 
             # Step 5: Connect pipeline
             if self.config.verbose:
                 self.logger.info("Step 5: Connecting pipeline...")
-            pipeline_yaml = self._connect_pipeline(filled_operators, dataset_paths, query)
+            pipeline_yaml = self._connect_pipeline(filled_operators, dataset_paths, query, attempt)
             self._save_step_output('final_pipeline', pipeline_yaml, query, attempt)
 
             if self.config.verbose:
@@ -841,11 +928,13 @@ class DocETLStepBaseline(BaselineInterface):
                     if not is_valid:
                         if self.config.verbose:
                             self.logger.warning(f"Pipeline validation failed: {validation_msg}")
+                            if sample_output:
+                                self.logger.warning(f"Sample output: {sample_output[:500]}...")
 
                         pipeline_history.append(FailedPipeline(
                             pipeline_yaml=pipeline_yaml,
                             error_type='validation',
-                            error_message=validation_msg
+                            error_message=f"{validation_msg}\nSample output: {sample_output[:500] if sample_output else 'None'}"
                         ))
                         continue
 

@@ -13,7 +13,6 @@ import tiktoken
 CUAD_PATH = "./benchmarks/CUAD/"
 CUAD_DATA_PATH = CUAD_PATH + "CUAD_v1.json"
 
-
 class CUADDataLoader:
     def __init__(self, data_path: str): 
         # Read CUAD_v1.json
@@ -136,7 +135,7 @@ class CUADBenchmark(BenchmarkInterface):
                 sample_id=sample.id,
                 prediction=prediction,
                 ground_truth=sample.ground_truth,
-                metrics={"accuracy": 0.0}
+                metrics={"f1": 0.0, "recall": 0.0, "precision": 0.0}
             )
 
         # Clean prediction['answer']: ensure inner elements are lists
@@ -233,13 +232,13 @@ class CUADBenchmark(BenchmarkInterface):
         # Calculate metrics
         precision = total_correct / total_pred if total_pred > 0 else 0.0
         recall = total_correct / total_gt if total_gt > 0 else 0.0
-        accuracy = (precision + recall) / 2 if (precision + recall) > 0 else 0.0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
             
         return EvaluationResult(
             sample_id=sample.id,
             prediction=prediction,
             ground_truth=sample.ground_truth,
-            metrics={"accuracy": accuracy, "precision": precision, "recall": recall}
+            metrics={"f1": f1, "precision": precision, "recall": recall}
         )
     
     def compute_aggregate_metrics(self, results: List[EvaluationResult]) -> Dict[str, float]:
@@ -247,7 +246,7 @@ class CUADBenchmark(BenchmarkInterface):
             return {}
         
         aggregate = {
-            "accuracy": sum(r.metrics["accuracy"] for r in results) / len(results),
+            "f1": sum(r.metrics["f1"] for r in results) / len(results),
             "precision": sum(r.metrics["precision"] for r in results) / len(results),
             "recall": sum(r.metrics["recall"] for r in results) / len(results),
         }

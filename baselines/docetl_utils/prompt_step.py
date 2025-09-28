@@ -17,6 +17,29 @@ DATASET SAMPLE:
 AVAILABLE OPERATORS:
 {operator_definitions}
 
+COMPLETE EXAMPLES FROM REAL PIPELINES:
+
+Example 1: Presidential Debate Themes Analysis
+Query: "Extract themes and viewpoints from debate transcripts and analyze how those themes evolve over time across multiple debates"
+Dataset: Collection of presidential debate transcripts with fields: title, date, year, content
+
+Selected operators and reasoning:
+- map: extract themes and viewpoints from each debate transcript (transforms each debate into structured themes with viewpoints)
+- unnest: expand the themes array into individual theme records (needed because map outputs a list of themes per debate)
+- reduce: aggregate viewpoints by theme to analyze evolution over time (groups all instances of the same theme across debates)
+- code_map: transform final output to result format (ensures output follows the required schema)
+
+Example 2: Mining Product Reviews for Polarizing Themes
+Query: "Identify polarizing themes in video game reviews that divide player opinions, resolve similar themes across reviews, and aggregate them to find common polarizing themes across different games"
+Dataset: Video game reviews with fields: app_name, concatenated_reviews
+
+Selected operators and reasoning:
+- map: identify polarizing themes from concatenated reviews (analyzes each game's reviews to find divisive topics)
+- unnest: expand polarizing_themes array into individual theme records (needed to process each theme separately)
+- resolve: deduplicate and consolidate similar themes (merges themes that are essentially the same but worded differently)
+- reduce: aggregate common themes across different games by theme (groups resolved themes to find patterns across games)
+- code_map: transform final output to result format (formats the aggregated results properly)
+
 Based on the query and dataset, list the operators needed in the order they should be applied.
 For each operator, provide:
 - The operator type
@@ -25,12 +48,6 @@ For each operator, provide:
 Format your response as a list:
 - [operator_type]: [what this operator will do]
 
-Example:
-- map: extract key information from each document
-- filter: keep only relevant records
-- reduce: aggregate results by category
-- code_map: transform final output to required format
-
 IMPORTANT:
 1. Only select operators that are actually needed
 2. Consider the data flow between operators
@@ -38,6 +55,8 @@ IMPORTANT:
 4. For aggregation tasks, use reduce with appropriate reduce_key
 5. For deduplication, use resolve
 6. For splitting long text, use split followed by gather if context is needed
+7. Use unnest when you need to expand arrays or nested structures
+8. Chain operators logically - outputs of one operator should match inputs expected by the next
 
 Your response:
 """
