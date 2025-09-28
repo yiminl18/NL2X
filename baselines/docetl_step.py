@@ -383,6 +383,27 @@ class DocETLStepBaseline(BaselineInterface):
 
         return frameworks
 
+    def _format_query_as_comments(self, query: str) -> str:
+        """
+        Format a potentially multi-line query as YAML comments.
+
+        Args:
+            query: The query string, which may contain multiple lines
+
+        Returns:
+            Formatted string with each line prefixed by '# '
+        """
+        lines = query.strip().split('\n')
+        commented_lines = []
+
+        for i, line in enumerate(lines):
+            if i == 0:
+                commented_lines.append(f"# Query: {line}")
+            else:
+                commented_lines.append(f"# {line}")
+
+        return '\n'.join(commented_lines)
+
     def _parse_operator_output_fields(self, operator: Dict[str, Any]) -> List[str]:
         """
         Parse output fields from an operator's configuration.
@@ -978,7 +999,7 @@ class DocETLStepBaseline(BaselineInterface):
 
                 # Save pipeline to file
                 with open(pipeline_file, "w") as f:
-                    f.write(f"# Query: {query}\n")
+                    f.write(f"{self._format_query_as_comments(query)}\n")
                     f.write(f"# Attempt: {attempt}\n")
                     f.write(f"# Generated at: {datetime.now().isoformat()}\n")
                     f.write(f"# Method: Step-by-Step Generation\n")
