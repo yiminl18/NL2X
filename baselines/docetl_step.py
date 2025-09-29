@@ -21,7 +21,21 @@ from .docetl_utils.llm2pipeline_docetl import (
 )
 from .docetl_utils.prompt_step import (
     OPERATOR_SELECTION_PROMPT,
-    OPERATOR_DETAIL_PROMPT,
+    MAP_OPERATOR_PROMPT,
+    FILTER_OPERATOR_PROMPT,
+    REDUCE_OPERATOR_PROMPT,
+    RESOLVE_OPERATOR_PROMPT,
+    RANK_OPERATOR_PROMPT,
+    EXTRACT_OPERATOR_PROMPT,
+    CODE_MAP_OPERATOR_PROMPT,
+    CODE_FILTER_OPERATOR_PROMPT,
+    SPLIT_OPERATOR_PROMPT,
+    GATHER_OPERATOR_PROMPT,
+    UNNEST_OPERATOR_PROMPT,
+    CLUSTER_OPERATOR_PROMPT,
+    SAMPLE_OPERATOR_PROMPT,
+    TOPK_OPERATOR_PROMPT,
+    GENERIC_OPERATOR_PROMPT,
     OPERATOR_DEFINITIONS
 )
 
@@ -152,6 +166,22 @@ class DocETLStepBaseline(BaselineInterface):
         self.data_processor._write_json(step_data, filepath)
         return filepath
 
+    def _get_next_step_info(self, current_step: str) -> str:
+        """Get information about the next step."""
+        step_mapping = {
+            "Step 1: Operator Selection": "Step 2/5 - Operator Framework Creation",
+            "Step 2: Operator Framework": "Step 3-4/5 - Operator Details Generation",
+            "Step 3-4: Operator Details": "Step 5/5 - Pipeline Connection",
+            "Step 5: Pipeline Connection": "Pipeline Execution"
+        }
+
+        # Handle step names that might start with the key
+        for key, value in step_mapping.items():
+            if current_step.startswith(key):
+                return value
+
+        return "Next step"
+
     def _confirm_step_execution(self, step_name: str, step_data: Any, query: str, attempt: int) -> bool:
         """
         Ask user for confirmation after each step in confirm/debug mode.
@@ -209,9 +239,14 @@ class DocETLStepBaseline(BaselineInterface):
             print("Filled Operators:")
             for op in step_data:
                 print(f"  - {op['name']} ({op['type']})")
-                if 'prompt' in op and op['prompt'] != "TO_BE_GENERATED":
-                    preview = op['prompt'][:100] + "..." if len(op['prompt']) > 100 else op['prompt']
-                    print(f"    Prompt preview: {preview}")
+
+                # Show prompts for operators that use prompts
+                if 'prompt' in op:
+                    print(f"    Prompt: {op['prompt']}")
+
+                # Show code for code operators
+                if op['type'] in ['code_map', 'code_filter'] and 'code' in op:
+                    print(f"    Code: {op['code']}")
 
                 # Show different details based on operator type
                 if op['type'] == 'extract':
@@ -224,16 +259,15 @@ class DocETLStepBaseline(BaselineInterface):
                     print(f"    Output schema: {list(op['output']['schema'].keys()) if op['output']['schema'] else 'empty'}")
 
         elif step_name == "Step 5: Pipeline Connection":
-            print("Final Pipeline Preview (first 30 lines):")
+            print("Final Pipeline Preview:")
             lines = step_data.split('\n')
-            for i, line in enumerate(lines[:30]):
+            for line in lines:
                 print(f"  {line}")
-            if len(lines) > 30:
-                print(f"  ... ({len(lines) - 30} more lines)")
 
         print("-"*40)
 
-        print(f"\n⚠️  Continue to next step? (Y/n): ", end="")
+        next_step = self._get_next_step_info(step_name)
+        print(f"\n⚠️  Next: {next_step}. Continue to next step? (Y/n): ", end="")
         user_input = input().strip().lower()
 
         if user_input and user_input != 'y':
@@ -249,10 +283,17 @@ class DocETLStepBaseline(BaselineInterface):
 
         Returns a list of dictionaries with 'type' and 'purpose' for each operator.
         """
+        # Convert OPERATOR_DEFINITIONS dict to string for operator selection
+        operator_definitions_str = ""
+        for op_type, definition in OPERATOR_DEFINITIONS.items():
+            # Extract just the first line of each definition for operator selection
+            first_line = definition.split('\n')[0] if definition else f"**{op_type.upper()} Operator**"
+            operator_definitions_str += f"\n{first_line}"
+
         prompt = OPERATOR_SELECTION_PROMPT.format(
             query=query,
             dataset_samples=json.dumps(dataset_samples, indent=2)[:2000],
-            operator_definitions=OPERATOR_DEFINITIONS
+            operator_definitions=operator_definitions_str
         )
 
         # Define schema for structured operator selection
@@ -427,15 +468,15 @@ class DocETLStepBaseline(BaselineInterface):
 
         # Special handling for extract operator
         if operator['type'] == 'extract':
-            # Extract operator generates fields based on document_keys or common extraction patterns
-            # For contract extraction tasks, common fields are:
-            output_fields.extend([
-                'document_name',
-                'parties',
-                'agreement_date',
-                'effective_date',
-                'expiration_date'
-            ])
+            if 'document_keys' in operator and operator['document_keys'] != "TO_BE_GENERATED":
+                if isinstance(operator['document_keys'], list) and operator['document_keys']:
+                    for doc_key in operator['document_keys']:
+                        suffix = operator.get('extraction_key_suffix', f"_extracted_{operator.get('name', 'extract')}")
+                        output_fields.append(f"{doc_key}{suffix}")
+                else:
+                    # Fallback TODO Can be optimized.
+                    suffix = operator.get('extraction_key_suffix', f"_extracted_{operator.get('name', 'extract')}")
+                    output_fields.append(f"src{suffix}")
             return output_fields
 
         if 'output' in operator and isinstance(operator['output'], dict):
@@ -629,9 +670,8 @@ class DocETLStepBaseline(BaselineInterface):
                     "type": "array",
                     "items": {"type": "string"}
                 },
-                "model": {"type": "string"}
             })
-            base_schema["required"].extend(["prompt", "document_keys", "model"])
+            base_schema["required"].extend(["prompt", "document_keys"])
 
         elif op_type == 'reduce':
             base_schema["properties"].update({
@@ -743,22 +783,37 @@ class DocETLStepBaseline(BaselineInterface):
 
         Returns the operator with filled-in details.
         """
-        # Get operator-specific example from OPERATOR_DEFINITIONS
+        # Get operator-specific prompt template
         op_type = operator['type']
-        op_examples = ""
 
-        # Extract example for this operator type from the definitions
-        if op_type in OPERATOR_DEFINITIONS:
-            op_examples = OPERATOR_DEFINITIONS
+        # Map operator types to their specific prompt templates
+        prompt_templates = {
+            'map': MAP_OPERATOR_PROMPT,
+            'filter': FILTER_OPERATOR_PROMPT,
+            'reduce': REDUCE_OPERATOR_PROMPT,
+            'resolve': RESOLVE_OPERATOR_PROMPT,
+            'rank': RANK_OPERATOR_PROMPT,
+            'extract': EXTRACT_OPERATOR_PROMPT,
+            'code_map': CODE_MAP_OPERATOR_PROMPT,
+            'code_filter': CODE_FILTER_OPERATOR_PROMPT,
+            'split': SPLIT_OPERATOR_PROMPT,
+            'gather': GATHER_OPERATOR_PROMPT,
+            'unnest': UNNEST_OPERATOR_PROMPT,
+            'cluster': CLUSTER_OPERATOR_PROMPT,
+            'sample': SAMPLE_OPERATOR_PROMPT,
+            'topk': TOPK_OPERATOR_PROMPT,
+        }
 
-        prompt = OPERATOR_DETAIL_PROMPT.format(
+        # Select the appropriate prompt template
+        prompt_template = prompt_templates.get(op_type, GENERIC_OPERATOR_PROMPT)
+
+        prompt = prompt_template.format(
             operator_type=op_type,
             operator_purpose=operator['purpose'],
             query=query,
             dataset_samples=json.dumps(dataset_samples, indent=2)[:1500],
             previous_operators=json.dumps(previous_operators, indent=2) if previous_operators else "None",
             available_fields=json.dumps(available_fields, indent=2),
-            operator_examples=op_examples,
             operator_framework=json.dumps(operator, indent=2)
         )
 
@@ -779,6 +834,13 @@ class DocETLStepBaseline(BaselineInterface):
                     operator[key] = value
                 elif key not in operator:
                     operator[key] = value
+
+            # Special validation for extract operators
+            if operator['type'] == 'extract':
+                if 'document_keys' in operator and (not operator['document_keys'] or operator['document_keys'] == []):
+                    if self.config.verbose:
+                        self.logger.warning(f"Extract operator {operator.get('name', 'unknown')} has empty document_keys, defaulting to ['src']")
+                    operator['document_keys'] = ["src"]
 
             return operator
 

@@ -111,6 +111,7 @@ For operator-specific fields:
 - reduce_key: must specify the field to group by for reduce operations (must exist in available fields)
 - split_key: the field to split for split operations (must exist in available fields)
 - unnest_key: the field containing arrays to unnest (must exist in available fields)
+- document_keys: for extract operations, specify which field(s) to extract from (CANNOT be empty, defaults to ["src"] if not specified)
 
 Return ONLY the filled operator configuration in YAML format.
 
