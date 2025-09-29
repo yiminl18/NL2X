@@ -10,20 +10,21 @@ import logging
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
 from .docetl_data_utils import DocETLDataProcessor
+from .docetl_ui import DocETLUserInterface
 from .docetl_utils.llm2pipeline_docetl import (
     load_sample_data,
     execute_single_pipeline,
     validate_pipeline_output,
     extract_yaml_from_response,
     FailedPipeline,
-    llm_call_with_messages,
-    llm_call_with_schema,
 )
+from .docetl_litellm_client import llm_call
 from .docetl_type_utils import (
     TypeSystem,
     extract_type_system,
     apply_operator_transformation,
     format_available_fields_with_types,
+    validate_operator_inputs,
 )
 from .docetl_utils.prompt_step import (
     OPERATOR_SELECTION_PROMPT,
@@ -94,51 +95,12 @@ class DocETLStepBaseline(BaselineInterface):
             logger=self.logger
         )
 
+        # Initialize user interface for confirmations
+        self.ui = DocETLUserInterface(self.config)
+
         if self.config.verbose:
             self.logger.info(f"Initialized DocETL Step-by-Step baseline with config: {self.config}")
             self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
-
-    def _confirm_pipeline_execution(self, pipeline_file: str, query: str, attempt: int) -> bool:
-        """Ask user for confirmation before executing pipeline in confirm/debug mode."""
-        if not (self.config.confirm or self.config.debug):
-            return True
-
-        print("\n" + "="*80)
-        mode_text = "[DEBUG MODE]" if self.config.debug else "[CONFIRM MODE]"
-        print(f"{mode_text} Pipeline Generated - Attempt {attempt + 1}")
-        print("="*80)
-
-        print(f"\n📋 Query:")
-        print("-"*40)
-        print(query)
-        print("-"*40)
-
-        print(f"\n📄 Generated Pipeline File:")
-        print(f"  {pipeline_file}")
-
-        print(f"\n📝 Pipeline Preview (first 50 lines):")
-        print("-"*40)
-        try:
-            with open(pipeline_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                for i, line in enumerate(lines[:50]):
-                    print(f"{i+1:3d}: {line.rstrip()}")
-                if len(lines) > 50:
-                    print(f"... ({len(lines) - 50} more lines)")
-        except Exception as e:
-            print(f"Error reading pipeline file: {e}")
-        print("-"*40)
-
-        print("\n⚠️  Execute this pipeline? (Y/n): ", end="")
-        user_input = input().strip().lower()
-
-        if user_input and user_input != 'y':
-            print("❌ Pipeline execution skipped by user")
-            return False
-
-        print("✅ Proceeding with pipeline execution...")
-        return True
-
 
 
     def _save_prompt(self, prompt: str, query: str, attempt: int = 0) -> str:
@@ -171,123 +133,10 @@ class DocETLStepBaseline(BaselineInterface):
         self.data_processor._write_json(step_data, filepath)
         return filepath
 
-    def _get_next_step_info(self, current_step: str) -> str:
-        """Get information about the next step."""
-        step_mapping = {
-            "Step 1: Operator Selection": "Step 2/5 - Operator Framework Creation",
-            "Step 2: Operator Framework": "Step 3-4/5 - Operator Details Generation",
-            "Step 3-4: Operator Details": "Step 5/5 - Pipeline Connection",
-            "Step 5: Pipeline Connection": "Pipeline Execution"
-        }
 
-        # Handle step names that might start with the key
-        for key, value in step_mapping.items():
-            if current_step.startswith(key):
-                return value
-
-        return "Next step"
-
-    def _confirm_step_execution(self, step_name: str, step_data: Any, query: str, attempt: int) -> bool:
-        """
-        Ask user for confirmation after each step in confirm/debug mode.
-
-        Args:
-            step_name: Name of the step just completed
-            step_data: Data generated in this step
-            query: The original query
-            attempt: Current attempt number
-
-        Returns:
-            True if user wants to continue, False to abort
-        """
-        if not (self.config.confirm or self.config.debug):
-            return True
-
-        print("\n" + "="*80)
-        mode_text = "[DEBUG MODE]" if self.config.debug else "[CONFIRM MODE]"
-        print(f"{mode_text} Step Completed - Attempt {attempt + 1}")
-        print("="*80)
-
-        print(f"\n📋 Query:")
-        print("-"*40)
-        print(query)
-        print("-"*40)
-
-        print(f"\n✅ Completed Step: {step_name}")
-        print("-"*40)
-
-        # Display step-specific data
-        if step_name == "Step 1: Operator Selection":
-            print("Selected Operators:")
-            for i, op in enumerate(step_data, 1):
-                print(f"  {i}. {op['type']}: {op['purpose']}")
-
-        elif step_name == "Step 2: Operator Framework":
-            print("Created Frameworks:")
-            for framework in step_data:
-                print(f"  - {framework['name']} ({framework['type']})")
-                print(f"    Purpose: {framework['purpose']}")
-
-                # Show complete framework structure with TO_BE_GENERATED placeholders
-                print("    Framework structure:")
-                for key, value in framework.items():
-                    if key not in ['name', 'type', 'purpose']:
-                        if isinstance(value, dict):
-                            print(f"      {key}: {value}")
-                        elif isinstance(value, list):
-                            print(f"      {key}: {value}")
-                        else:
-                            print(f"      {key}: {value}")
-                print()
-
-        elif step_name.startswith("Step 3-4: Operator Details"):
-            print("Filled Operators:")
-            for op in step_data:
-                print(f"  - {op['name']} ({op['type']})")
-
-                # Show prompts for operators that use prompts
-                if 'prompt' in op:
-                    print(f"    Prompt: {op['prompt']}")
-
-                # Show code for code operators
-                if op['type'] in ['code_map', 'code_filter'] and 'code' in op:
-                    print(f"    Code: {op['code']}")
-
-                # Show different details based on operator type
-                if op['type'] == 'extract':
-                    if 'document_keys' in op:
-                        print(f"    Document keys: {op['document_keys']}")
-                    # Extract operators don't use output schema, they extract to predefined fields
-                    expected_fields = self._parse_operator_output_fields(op)
-                    print(f"    Expected output fields: {expected_fields}")
-                elif 'output' in op and 'schema' in op['output']:
-                    print(f"    Output schema: {list(op['output']['schema'].keys()) if op['output']['schema'] else 'empty'}")
-
-        elif step_name == "Step 5: Pipeline Connection":
-            print("Final Pipeline Preview:")
-            lines = step_data.split('\n')
-            for line in lines:
-                print(f"  {line}")
-
-        print("-"*40)
-
-        next_step = self._get_next_step_info(step_name)
-        print(f"\n⚠️  Next: {next_step}. Continue to next step? (Y/n): ", end="")
-        user_input = input().strip().lower()
-
-        if user_input and user_input != 'y':
-            print("❌ Pipeline generation aborted by user")
-            return False
-
-        print("✅ Proceeding to next step...")
-        return True
 
     def _select_operators(self, query: str, dataset_samples: Dict[str, Any], attempt: int = 0) -> List[Dict[str, str]]:
-        """
-        Step 1: Select operators needed for the pipeline.
-
-        Returns a list of dictionaries with 'type' and 'purpose' for each operator.
-        """
+        """Step 1: Select operators needed for the pipeline."""
         # Convert OPERATOR_DEFINITIONS dict to string for operator selection
         operator_definitions_str = ""
         for op_type, definition in OPERATOR_DEFINITIONS.items():
@@ -335,7 +184,7 @@ class DocETLStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = llm_call_with_schema(messages, parameters, system_prompt)
+            response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
             result = json.loads(response)
             operators = result.get("operators", [])
 
@@ -349,17 +198,13 @@ class DocETLStepBaseline(BaselineInterface):
             self.logger.info(f"Selected {len(operators)} operators: {[op['type'] for op in operators]}")
 
         # Confirm this step in confirm/debug mode
-        if not self._confirm_step_execution("Step 1: Operator Selection", operators, query, attempt):
+        if not self.ui.confirm_step_execution("Step 1: Operator Selection", operators, query, attempt):
             raise ValueError("User aborted pipeline generation at operator selection step")
 
         return operators
 
     def _create_operator_framework(self, operators: List[Dict[str, str]], query: str, attempt: int = 0) -> List[Dict[str, Any]]:
-        """
-        Step 2: Create draft framework for each operator.
-
-        Returns a list of operator skeletons with placeholders.
-        """
+        """Step 2: Create draft framework for each operator."""
         frameworks = []
 
         for i, op in enumerate(operators):
@@ -436,95 +281,21 @@ class DocETLStepBaseline(BaselineInterface):
             self.logger.info(f"Created framework for {len(frameworks)} operators")
 
         # Confirm this step in confirm/debug mode
-        if not self._confirm_step_execution("Step 2: Operator Framework", frameworks, query, attempt):
+        if not self.ui.confirm_step_execution("Step 2: Operator Framework", frameworks, query, attempt):
             raise ValueError("User aborted pipeline generation at framework creation step")
 
         return frameworks
 
-    def _format_query_as_comments(self, query: str) -> str:
-        """
-        Format a potentially multi-line query as YAML comments.
 
-        Args:
-            query: The query string, which may contain multiple lines
-
-        Returns:
-            Formatted string with each line prefixed by '# '
-        """
-        lines = query.strip().split('\n')
-        commented_lines = []
-
-        for i, line in enumerate(lines):
-            if i == 0:
-                commented_lines.append(f"# Query: {line}")
-            else:
-                commented_lines.append(f"# {line}")
-
-        return '\n'.join(commented_lines)
-
-    def _parse_operator_output_fields(self, operator: Dict[str, Any]) -> List[str]:
-        """
-        Parse output fields from an operator's configuration.
-
-        Returns a list of field names that this operator will add to the data.
-        """
-        output_fields = []
-
-        # Special handling for extract operator
-        if operator['type'] == 'extract':
-            if 'document_keys' in operator and operator['document_keys'] != "TO_BE_GENERATED":
-                if isinstance(operator['document_keys'], list) and operator['document_keys']:
-                    for doc_key in operator['document_keys']:
-                        suffix = operator.get('extraction_key_suffix', f"_extracted_{operator.get('name', 'extract')}")
-                        output_fields.append(f"{doc_key}{suffix}")
-                else:
-                    # Fallback TODO Can be optimized.
-                    suffix = operator.get('extraction_key_suffix', f"_extracted_{operator.get('name', 'extract')}")
-                    output_fields.append(f"src{suffix}")
-            return output_fields
-
-        if 'output' in operator and isinstance(operator['output'], dict):
-            schema = operator['output'].get('schema', {})
-
-            if isinstance(schema, dict):
-                output_fields.extend(schema.keys())
-            elif isinstance(schema, str):
-                import re
-                matches = re.findall(r'(\w+)\s*:\s*\w+', schema)
-                output_fields.extend(matches)
-
-        if operator['type'] == 'unnest' and 'unnest_key' in operator:
-            pass # Fields remain the same, just expanded # TODO Need fix for dict unnest
-        elif operator['type'] == 'split':
-            output_fields.append('_split_id')
-            output_fields.append('_split_index')
-        elif operator['type'] == 'gather':
-            if 'output_key' in operator:
-                output_fields.append(operator['output_key'])
-
-        return output_fields
 
     def _extract_dataset_fields(self, dataset_samples: Dict[str, Any]) -> List[str]:
-        """
-        Extract field names from dataset samples using type system.
-
-        Returns a list of all unique field names found in the dataset.
-        """
+        """Extract field names from dataset samples."""
         type_system = extract_type_system(dataset_samples)
         return type_system.get_all_fields()
 
     def _track_available_fields(self, dataset_samples: Dict[str, Any],
                                filled_operators: List[Dict[str, Any]]) -> List[str]:
-        """
-        Track all fields available at the current stage of the pipeline using type system.
-
-        Args:
-            dataset_samples: The original dataset samples
-            filled_operators: List of already filled operators
-
-        Returns:
-            List of all available field names
-        """
+        """Track fields available at current pipeline stage."""
         # Initialize type system from dataset
         type_system = extract_type_system(dataset_samples)
 
@@ -536,16 +307,7 @@ class DocETLStepBaseline(BaselineInterface):
 
     def _get_type_system_at_stage(self, dataset_samples: Dict[str, Any],
                                  filled_operators: List[Dict[str, Any]]) -> TypeSystem:
-        """
-        Get the complete type system at the current stage of the pipeline.
-
-        Args:
-            dataset_samples: The original dataset samples
-            filled_operators: List of already filled operators
-
-        Returns:
-            TypeSystem representing current state
-        """
+        """Get type system at current pipeline stage."""
         # Initialize type system from dataset
         type_system = extract_type_system(dataset_samples)
 
@@ -555,95 +317,20 @@ class DocETLStepBaseline(BaselineInterface):
 
         return type_system
 
-    def _validate_field_references(self, operator: Dict[str, Any], available_fields: List[str]) -> tuple:
-        """
-        Validate that an operator only references fields that are available.
-
-        Args:
-            operator: The operator configuration to validate
-            available_fields: List of available field names
-
-        Returns:
-            Tuple of (is_valid: bool, error_messages: List[str])
-        """
-        errors = []
-
-        if 'prompt' in operator and isinstance(operator['prompt'], str):
-            import re
-            field_refs = re.findall(r'\{\{\s*(?:input\.)?(\w+)\s*\}\}', operator['prompt'])
-            for field_ref in field_refs:
-                if field_ref not in available_fields and field_ref != 'inputs':
-                    errors.append(f"Prompt references unavailable field: {field_ref}")
-
-        op_type = operator.get('type', '')
-
-        if op_type == 'reduce' and 'reduce_key' in operator:
-            reduce_key = operator['reduce_key']
-            if reduce_key != "TO_BE_GENERATED" and reduce_key not in available_fields:
-                errors.append(f"Reduce operation references unavailable reduce_key: {reduce_key}")
-
-        if op_type == 'split' and 'split_key' in operator:
-            split_key = operator['split_key']
-            if split_key != "TO_BE_GENERATED" and split_key not in available_fields:
-                errors.append(f"Split operation references unavailable split_key: {split_key}")
-
-        if op_type == 'unnest' and 'unnest_key' in operator:
-            unnest_key = operator['unnest_key']
-            if unnest_key != "TO_BE_GENERATED" and unnest_key not in available_fields:
-                errors.append(f"Unnest operation references unavailable unnest_key: {unnest_key}")
-
-        if op_type == 'gather':
-            if 'content_key' in operator:
-                content_key = operator['content_key']
-                if content_key != "TO_BE_GENERATED" and content_key not in available_fields:
-                    errors.append(f"Gather operation references unavailable content_key: {content_key}")
-
-            if 'doc_id_key' in operator:
-                doc_id_key = operator['doc_id_key']
-                if doc_id_key != "TO_BE_GENERATED" and doc_id_key not in available_fields:
-                    errors.append(f"Gather operation references unavailable doc_id_key: {doc_id_key}")
-
-        if op_type == 'rank' and 'input_keys' in operator:
-            input_keys = operator['input_keys']
-            if isinstance(input_keys, list):
-                for key in input_keys:
-                    if key not in available_fields:
-                        errors.append(f"Rank operation references unavailable input_key: {key}")
-
-        if op_type == 'cluster' and 'embedding_keys' in operator:
-            embedding_keys = operator['embedding_keys']
-            if isinstance(embedding_keys, list):
-                for key in embedding_keys:
-                    if key not in available_fields:
-                        errors.append(f"Cluster operation references unavailable embedding_key: {key}")
-
-        if op_type == 'topk' and 'keys' in operator:
-            keys = operator['keys']
-            if isinstance(keys, list):
-                for key in keys:
-                    if key not in available_fields:
-                        errors.append(f"TopK operation references unavailable key: {key}")
-
-        return len(errors) == 0, errors
+    def _validate_field_references(self, operator: Dict[str, Any], type_system: TypeSystem) -> tuple:
+        """Validate operator field references."""
+        # Use the new validate_operator_inputs function from type_utils
+        return validate_operator_inputs(type_system, operator)
 
     def _get_operator_schema(self, op_type: str) -> Dict[str, Any]:
-        """
-        Generate JSON schema for specific operator type.
-
-        Args:
-            op_type: The operator type (map, reduce, filter, etc.)
-
-        Returns:
-            JSON schema dictionary for the operator
-        """
+        """Generate JSON schema for operator type."""
         base_schema = {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
                 "type": {"type": "string", "enum": [op_type]}
             },
-            "required": ["name", "type"],
-            "additionalProperties": False
+            "required": ["name", "type"]
         }
 
         if op_type in ['map', 'filter']:
@@ -653,8 +340,7 @@ class DocETLStepBaseline(BaselineInterface):
                     "type": "object",
                     "properties": {
                         "schema": {"type": "object", "additionalProperties": False}
-                    },
-                    "additionalProperties": False
+                    }
                 }
             })
             base_schema["required"].extend(["prompt", "output"])
@@ -677,8 +363,7 @@ class DocETLStepBaseline(BaselineInterface):
                     "type": "object",
                     "properties": {
                         "schema": {"type": "object", "additionalProperties": False}
-                    },
-                    "additionalProperties": False
+                    }
                 }
             })
             base_schema["required"].extend(["reduce_key", "prompt", "output"])
@@ -692,8 +377,7 @@ class DocETLStepBaseline(BaselineInterface):
                     "type": "object",
                     "properties": {
                         "schema": {"type": "object", "additionalProperties": False}
-                    },
-                    "additionalProperties": False
+                    }
                 }
             })
             base_schema["required"].extend(["comparison_prompt", "resolution_prompt", "output"])
@@ -775,11 +459,7 @@ class DocETLStepBaseline(BaselineInterface):
                                   previous_operators: List[Dict[str, Any]],
                                   available_fields: List[str],
                                   type_system: TypeSystem = None) -> Dict[str, Any]:
-        """
-        Step 3: Generate details for a single operator.
-
-        Returns the operator with filled-in details.
-        """
+        """Step 3: Generate details for a single operator."""
         # Get operator-specific prompt template
         op_type = operator['type']
 
@@ -791,7 +471,7 @@ class DocETLStepBaseline(BaselineInterface):
             'resolve': RESOLVE_OPERATOR_PROMPT,
             'rank': RANK_OPERATOR_PROMPT,
             'extract': EXTRACT_OPERATOR_PROMPT,
-            # 'code_filter': CODE_FILTER_OPERATOR_PROMPT,
+            'code_filter': CODE_FILTER_OPERATOR_PROMPT,
             'split': SPLIT_OPERATOR_PROMPT,
             'gather': GATHER_OPERATOR_PROMPT,
             'unnest': UNNEST_OPERATOR_PROMPT,
@@ -827,7 +507,7 @@ class DocETLStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = llm_call_with_schema(messages, parameters, system_prompt)
+            response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
             filled_operator = json.loads(response)
 
             # Merge with original operator to preserve framework structure
@@ -852,7 +532,7 @@ class DocETLStepBaseline(BaselineInterface):
 
             # Fallback to original YAML parsing method
             try:
-                response = llm_call_with_messages(messages)
+                response = llm_call(messages)
                 yaml_content = extract_yaml_from_response(response)
                 if yaml_content:
                     filled_operator = yaml.safe_load(yaml_content)
@@ -867,17 +547,7 @@ class DocETLStepBaseline(BaselineInterface):
 
     def _identify_answer_fields(self, query: str, available_fields: List[str],
                                filled_operators: List[Dict[str, Any]]) -> List[str]:
-        """
-        Ask LLM to identify which fields contain the answer to the query.
-
-        Args:
-            query: The original user query
-            available_fields: List of fields available after all processing
-            filled_operators: List of operators that have been processed
-
-        Returns:
-            List of field names that contain the answer
-        """
+        """Identify fields containing the answer."""
         prompt = f"""
 Given this query and the available fields after all processing steps,
 identify which specific fields contain the information needed to answer the query.
@@ -911,8 +581,8 @@ Example: ["medication", "dosage"]
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = llm_call_with_schema(messages, schema,
-                                           "You are an AI that identifies which fields answer a query")
+            response = llm_call(messages, schema=schema,
+                               system_prompt="You are an AI that identifies which fields answer a query")
             result = json.loads(response)
             answer_fields = result.get("answer_fields", [])
 
@@ -928,15 +598,7 @@ Example: ["medication", "dosage"]
             return available_fields[:5] if available_fields else []
 
     def _synthesize_final_code_map(self, answer_fields: List[str]) -> Dict[str, Any]:
-        """
-        Programmatically generate final code_map operator.
-
-        Args:
-            answer_fields: List of field names to extract
-
-        Returns:
-            Complete code_map operator configuration
-        """
+        """Generate final code_map operator."""
         if not answer_fields:
             # Fallback code if no fields identified
             code = """def transform(doc) -> dict:
@@ -951,9 +613,10 @@ Example: ["medication", "dosage"]
                 safe_field = field.replace("'", "\\'")
                 field_extractions.append(f"        '{field}': doc.get('{safe_field}', '')")
 
+            join_str = ',\n'
             code = f"""def transform(doc) -> dict:
     return {{
-{',\\n'.join(field_extractions)}
+{join_str.join(field_extractions)}
     }}"""
 
         if self.config.verbose:
@@ -967,11 +630,7 @@ Example: ["medication", "dosage"]
 
     def _fill_operator_draft(self, frameworks: List[Dict[str, Any]], query: str,
                             dataset_samples: Dict[str, Any], attempt: int = 0) -> List[Dict[str, Any]]:
-        """
-        Step 4: Fill all operator drafts with generated details.
-
-        Returns list of fully specified operators.
-        """
+        """Step 4: Fill operator drafts with details."""
         filled_operators = []
 
         for i, framework in enumerate(frameworks):
@@ -996,8 +655,8 @@ Example: ["medication", "dosage"]
                 current_type_system  # Pass type system for better prompting
             )
 
-            # Validate field references
-            is_valid, validation_errors = self._validate_field_references(filled_op, available_fields)
+            # Validate field references using the current type system
+            is_valid, validation_errors = self._validate_field_references(filled_op, current_type_system)
 
             if not is_valid and self.config.verbose:
                 self.logger.warning(f"Field validation issues in operator {framework['type']}: {validation_errors}")
@@ -1009,7 +668,7 @@ Example: ["medication", "dosage"]
             filled_operators.append(filled_op)
 
         # Confirm this step in confirm/debug mode
-        if not self._confirm_step_execution("Step 3-4: Operator Details", filled_operators, query, attempt):
+        if not self.ui.confirm_step_execution("Step 3-4: Operator Details", filled_operators, query, attempt):
             raise ValueError("User aborted pipeline generation at operator detail generation step")
 
         # After all operators are filled, identify answer fields and synthesize final code_map
@@ -1036,11 +695,7 @@ Example: ["medication", "dosage"]
 
     def _connect_pipeline(self, operators: List[Dict[str, Any]], dataset_paths: List[str],
                          query: str, attempt: int = 0) -> str:
-        """
-        Step 5: Connect operators and create final pipeline YAML.
-
-        Returns the complete pipeline YAML string.
-        """
+        """Step 5: Connect operators and create pipeline YAML."""
         # Determine if we have merged datasets
         is_merged = len(dataset_paths) > 1 or 'merged_datasets' in dataset_paths[0] if dataset_paths else False
 
@@ -1070,12 +725,8 @@ Example: ["medication", "dosage"]
                 }
                 input_name = 'input_data'
         else:
-            # No dataset paths provided
-            pipeline['datasets']['input_data'] = {
-                'type': 'file',
-                'path': 'data.json'
-            }
-            input_name = 'input_data'
+            # No dataset paths provided, panic
+            raise ValueError("No dataset paths provided. Please provide at least one dataset path.")
 
         # Set up pipeline steps
         pipeline['pipeline']['steps'] = [{
@@ -1097,18 +748,14 @@ Example: ["medication", "dosage"]
         pipeline_yaml = yaml.dump(pipeline, default_flow_style=False, sort_keys=False)
 
         # Confirm this step in confirm/debug mode
-        if not self._confirm_step_execution("Step 5: Pipeline Connection", pipeline_yaml, query, attempt):
+        if not self.ui.confirm_step_execution("Step 5: Pipeline Connection", pipeline_yaml, query, attempt):
             raise ValueError("User aborted pipeline generation at pipeline connection step")
 
         return pipeline_yaml
 
     def _generate_pipeline_step_by_step(self, query: str, dataset_paths: List[str],
                                        attempt: int = 0) -> Tuple[bool, str, str]:
-        """
-        Main orchestration function for step-by-step pipeline generation.
-
-        Returns (success, pipeline_yaml, error_message)
-        """
+        """Orchestrate step-by-step pipeline generation."""
         try:
             # Load dataset samples
             dataset_samples = load_sample_data(dataset_paths, max_length=1500, max_string_length=200)
@@ -1155,9 +802,7 @@ Example: ["medication", "dosage"]
             return False, None, error_msg
 
     def _generate_and_execute_pipeline(self, query: str, dataset_paths: List[str]) -> tuple:
-        """
-        Generate and execute DocETL pipeline using step-by-step approach.
-        """
+        """Generate and execute pipeline."""
         start_time = time.time()
 
         if self.config.verbose:
@@ -1198,7 +843,7 @@ Example: ["medication", "dosage"]
 
                 # Save pipeline to file
                 with open(pipeline_file, "w") as f:
-                    f.write(f"{self._format_query_as_comments(query)}\n")
+                    f.write(f"{self.ui.format_query_as_comments(query)}\n")
                     f.write(f"# Attempt: {attempt}\n")
                     f.write(f"# Generated at: {datetime.now().isoformat()}\n")
                     f.write(f"# Method: Step-by-Step Generation\n")
@@ -1206,7 +851,7 @@ Example: ["medication", "dosage"]
                     f.write(pipeline_yaml)
 
                 # Confirm pipeline execution in debug/confirm mode
-                if not self._confirm_pipeline_execution(pipeline_file, query, attempt):
+                if not self.ui.confirm_pipeline_execution(pipeline_file, query, attempt):
                     continue
 
                 # Execute pipeline
@@ -1226,7 +871,7 @@ Example: ["medication", "dosage"]
                 # Validate answer if enabled
                 if self.validate_answer:
                     is_valid, validation_msg, sample_output = validate_pipeline_output(
-                        pipeline_file, query, final_dataset_paths, llm_call_with_messages
+                        pipeline_file, query, final_dataset_paths, llm_call
                     )
 
                     if not is_valid:
