@@ -27,7 +27,6 @@ Selected operators and reasoning:
 - map: extract themes and viewpoints from each debate transcript (transforms each debate into structured themes with viewpoints)
 - unnest: expand the themes array into individual theme records (needed because map outputs a list of themes per debate)
 - reduce: aggregate viewpoints by theme to analyze evolution over time (groups all instances of the same theme across debates)
-- code_map: transform final output to result format (ensures output follows the required schema)
 
 Example 2: Mining Product Reviews for Polarizing Themes
 Query: "Identify polarizing themes in video game reviews that divide player opinions, resolve similar themes across reviews, and aggregate them to find common polarizing themes across different games"
@@ -38,7 +37,6 @@ Selected operators and reasoning:
 - unnest: expand polarizing_themes array into individual theme records (needed to process each theme separately)
 - resolve: deduplicate and consolidate similar themes (merges themes that are essentially the same but worded differently)
 - reduce: aggregate common themes across different games by theme (groups resolved themes to find patterns across games)
-- code_map: transform final output to result format (formats the aggregated results properly)
 
 Based on the query and dataset, list the operators needed in the order they should be applied.
 For each operator, provide:
@@ -51,12 +49,11 @@ Format your response as a list:
 IMPORTANT:
 1. Only select operators that are actually needed
 2. Consider the data flow between operators
-3. Always include code_map at the end for final result transformation
-4. For aggregation tasks, use reduce with appropriate reduce_key
-5. For deduplication, use resolve
-6. For splitting long text, use split followed by gather if context is needed
-7. Use unnest when you need to expand arrays or nested structures
-8. Chain operators logically - outputs of one operator should match inputs expected by the next
+3. For aggregation tasks, use reduce with appropriate reduce_key
+4. For deduplication, use resolve
+5. For splitting long text, use split followed by gather if context is needed
+6. Use unnest when you need to expand arrays or nested structures
+7. Chain operators logically - outputs of one operator should match inputs expected by the next
 
 Your response:
 """
@@ -342,58 +339,6 @@ document_keys: [list_of_fields_to_extract_from]
 ```
 """
 
-CODE_MAP_OPERATOR_PROMPT = """
-You are an expert at generating DocETL code_map operator configurations.
-
-Generate the detailed configuration for a CODE_MAP operator:
-
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
-
-DATASET SAMPLE:
-{dataset_samples}
-
-AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
-
-PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
-
-CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
-
-CRITICAL CODE_MAP OPERATOR RULES:
-- Code_map transforms documents using Python code instead of LLM prompts
-- Use doc['field_name'] syntax to access fields in the Python code
-- Available fields: {available_fields}
-- The function must be named 'transform' and take 'doc' parameter
-- Return a dictionary with the transformed data
-- Often used for final result formatting
-
-Example code structure:
-```python
-def transform(doc) -> dict:
-    result = doc['field_name']  # Access available fields
-    return {{
-        'result': result
-    }}
-```
-
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: {operator_type}_operation
-type: code_map
-code: |
-  def transform(doc) -> dict:
-      [Your Python code using doc['field_name']]
-      return {{
-          [output_fields]
-      }}
-```
-"""
 
 CODE_FILTER_OPERATOR_PROMPT = """
 You are an expert at generating DocETL code_filter operator configurations.
@@ -982,46 +927,6 @@ Example:
 ```
 
 CRITICAL: Must specify unnest_key with valid field name.
-""",
-
-    "code_map": """
-**Code Map Operator** — Transform documents using Python code.
-
-FIELD ACCESS: Use doc['field_name'] syntax in Python code.
-
-Example:
-```yaml
-- name: final_transform
-  type: code_map
-  code: |
-    def transform(doc) -> dict:
-        result = {
-            'title': doc['title'],
-            'processed_content': doc['content'].upper()
-        }
-        return {
-            'result': result
-        }
-```
-
-CRITICAL: Use doc['field_name'] syntax and return dictionary.
-""",
-
-    "code_filter": """
-**Code Filter Operator** — Filter documents using Python code.
-
-FIELD ACCESS: Use doc['field_name'] syntax in Python code.
-
-Example:
-```yaml
-- name: filter_by_length
-  type: code_filter
-  code: |
-    def filter(doc) -> bool:
-        return len(doc['content']) > 100
-```
-
-CRITICAL: Use doc['field_name'] syntax and return boolean.
 """,
 
     "sample": """

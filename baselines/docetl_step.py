@@ -33,7 +33,6 @@ from .docetl_utils.prompt_step import (
     RESOLVE_OPERATOR_PROMPT,
     RANK_OPERATOR_PROMPT,
     EXTRACT_OPERATOR_PROMPT,
-    CODE_MAP_OPERATOR_PROMPT,
     CODE_FILTER_OPERATOR_PROMPT,
     SPLIT_OPERATOR_PROMPT,
     GATHER_OPERATOR_PROMPT,
@@ -319,7 +318,7 @@ class DocETLStepBaseline(BaselineInterface):
                                 "type": "string",
                                 "enum": ["map", "filter", "reduce", "resolve", "rank", "extract",
                                         "cluster", "split", "gather", "unnest", "sample", "topk",
-                                        "code_map", "code_filter"]
+                                        "code_filter"]
                             },
                             "purpose": {"type": "string"}
                         },
@@ -345,11 +344,6 @@ class DocETLStepBaseline(BaselineInterface):
                 self.logger.warning(f"Failed to parse structured operator selection: {e}")
             operators = []
 
-        if not any(op['type'] == 'code_map' for op in operators):
-            operators.append({
-                'type': 'code_map',
-                'purpose': 'Transform final output to result format'
-            })
 
         if self.config.verbose:
             self.logger.info(f"Selected {len(operators)} operators: {[op['type'] for op in operators]}")
@@ -414,8 +408,8 @@ class DocETLStepBaseline(BaselineInterface):
             elif op['type'] == 'unnest':
                 framework['unnest_key'] = "TO_BE_GENERATED"
 
-            elif op['type'] == 'code_map':
-                framework['code'] = "TO_BE_GENERATED"
+            # elif op['type'] == 'code_map':
+            #     framework['code'] = "TO_BE_GENERATED"
 
             elif op['type'] == 'code_filter':
                 framework['code'] = "TO_BE_GENERATED"
@@ -797,8 +791,7 @@ class DocETLStepBaseline(BaselineInterface):
             'resolve': RESOLVE_OPERATOR_PROMPT,
             'rank': RANK_OPERATOR_PROMPT,
             'extract': EXTRACT_OPERATOR_PROMPT,
-            'code_map': CODE_MAP_OPERATOR_PROMPT,
-            'code_filter': CODE_FILTER_OPERATOR_PROMPT,
+            # 'code_filter': CODE_FILTER_OPERATOR_PROMPT,
             'split': SPLIT_OPERATOR_PROMPT,
             'gather': GATHER_OPERATOR_PROMPT,
             'unnest': UNNEST_OPERATOR_PROMPT,
@@ -872,6 +865,106 @@ class DocETLStepBaseline(BaselineInterface):
 
             return operator
 
+    def _identify_answer_fields(self, query: str, available_fields: List[str],
+                               filled_operators: List[Dict[str, Any]]) -> List[str]:
+        """
+        Ask LLM to identify which fields contain the answer to the query.
+
+        Args:
+            query: The original user query
+            available_fields: List of fields available after all processing
+            filled_operators: List of operators that have been processed
+
+        Returns:
+            List of field names that contain the answer
+        """
+        prompt = f"""
+Given this query and the available fields after all processing steps,
+identify which specific fields contain the information needed to answer the query.
+
+Query: {query}
+
+Available fields after processing:
+{json.dumps(available_fields, indent=2)}
+
+Processing steps completed:
+{json.dumps([{'name': op.get('name'), 'type': op['type'],
+              'purpose': op.get('purpose', '')}
+             for op in filled_operators], indent=2)}
+
+Return ONLY the field names that contain the final answer, as a JSON list.
+Example: ["medication", "dosage"]
+"""
+
+        # Use structured output to get field list
+        schema = {
+            "type": "object",
+            "properties": {
+                "answer_fields": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["answer_fields"]
+        }
+
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            response = llm_call_with_schema(messages, schema,
+                                           "You are an AI that identifies which fields answer a query")
+            result = json.loads(response)
+            answer_fields = result.get("answer_fields", [])
+
+            if self.config.verbose:
+                self.logger.info(f"Identified answer fields: {answer_fields}")
+
+            return answer_fields
+
+        except Exception as e:
+            if self.config.verbose:
+                self.logger.warning(f"Failed to identify answer fields: {e}")
+            # Fallback: return first few available fields
+            return available_fields[:5] if available_fields else []
+
+    def _synthesize_final_code_map(self, answer_fields: List[str]) -> Dict[str, Any]:
+        """
+        Programmatically generate final code_map operator.
+
+        Args:
+            answer_fields: List of field names to extract
+
+        Returns:
+            Complete code_map operator configuration
+        """
+        if not answer_fields:
+            # Fallback code if no fields identified
+            code = """def transform(doc) -> dict:
+    return {'result': 'No answer fields identified'}"""
+            # Warning the user
+            self.logger.warning(f"No answer fields identified, using fallback code. "
+                              f"Available fields: {answer_fields}")
+        else:
+            # Generate safe field extraction code
+            field_extractions = []
+            for field in answer_fields:
+                safe_field = field.replace("'", "\\'")
+                field_extractions.append(f"        '{field}': doc.get('{safe_field}', '')")
+
+            code = f"""def transform(doc) -> dict:
+    return {{
+{',\\n'.join(field_extractions)}
+    }}"""
+
+        if self.config.verbose:
+            self.logger.info(f"Synthesized final code_map for fields: {answer_fields}")
+
+        return {
+            'name': 'final_extract_result',
+            'type': 'code_map',
+            'code': code
+        }
+
     def _fill_operator_draft(self, frameworks: List[Dict[str, Any]], query: str,
                             dataset_samples: Dict[str, Any], attempt: int = 0) -> List[Dict[str, Any]]:
         """
@@ -918,6 +1011,26 @@ class DocETLStepBaseline(BaselineInterface):
         # Confirm this step in confirm/debug mode
         if not self._confirm_step_execution("Step 3-4: Operator Details", filled_operators, query, attempt):
             raise ValueError("User aborted pipeline generation at operator detail generation step")
+
+        # After all operators are filled, identify answer fields and synthesize final code_map
+        if filled_operators:
+            available_fields = self._track_available_fields(dataset_samples, filled_operators)
+            answer_fields = self._identify_answer_fields(query, available_fields, filled_operators)
+
+            if answer_fields:
+                final_code_map = self._synthesize_final_code_map(answer_fields)
+                filled_operators.append(final_code_map)
+
+                if self.config.verbose:
+                    self.logger.info(f"Auto-synthesized final code_map with fields: {answer_fields}")
+            else:
+                # Fallback: use available fields (limit to 10)
+                fallback_fields = available_fields[:10] if available_fields else ['result']
+                final_code_map = self._synthesize_final_code_map(fallback_fields)
+                filled_operators.append(final_code_map)
+
+                if self.config.verbose:
+                    self.logger.warning(f"No answer fields identified, using fallback fields: {fallback_fields}")
 
         return filled_operators
 
