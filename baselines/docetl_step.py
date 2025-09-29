@@ -19,6 +19,12 @@ from .docetl_utils.llm2pipeline_docetl import (
     llm_call_with_messages,
     llm_call_with_schema,
 )
+from .docetl_type_utils import (
+    TypeSystem,
+    extract_type_system,
+    apply_operator_transformation,
+    format_available_fields_with_types,
+)
 from .docetl_utils.prompt_step import (
     OPERATOR_SELECTION_PROMPT,
     MAP_OPERATOR_PROMPT,
@@ -290,9 +296,13 @@ class DocETLStepBaseline(BaselineInterface):
             first_line = definition.split('\n')[0] if definition else f"**{op_type.upper()} Operator**"
             operator_definitions_str += f"\n{first_line}"
 
+        # Extract type system for better understanding of dataset structure
+        type_system = extract_type_system(dataset_samples)
+        dataset_structure = type_system.format_for_prompt()
+
         prompt = OPERATOR_SELECTION_PROMPT.format(
             query=query,
-            dataset_samples=json.dumps(dataset_samples, indent=2)[:2000],
+            dataset_samples=f"{json.dumps(dataset_samples, indent=2)[:1500]}\n\nDataset Structure:\n{dataset_structure}",
             operator_definitions=operator_definitions_str
         )
 
@@ -502,43 +512,17 @@ class DocETLStepBaseline(BaselineInterface):
 
     def _extract_dataset_fields(self, dataset_samples: Dict[str, Any]) -> List[str]:
         """
-        Extract field names from dataset samples.
+        Extract field names from dataset samples using type system.
 
         Returns a list of all unique field names found in the dataset.
         """
-        fields = set()
-
-        def extract_fields_from_item(item):
-            if isinstance(item, dict):
-                fields.update(item.keys())
-                # Recursively check nested dictionaries
-                for value in item.values():
-                    if isinstance(value, dict):
-                        extract_fields_from_item(value)
-
-        if isinstance(dataset_samples, list):
-            for item in dataset_samples:
-                extract_fields_from_item(item)
-        elif isinstance(dataset_samples, dict):
-            # Could be a single item or a dict of items
-            if all(isinstance(v, (list, dict)) for v in dataset_samples.values()):
-                # Multiple datasets
-                for dataset in dataset_samples.values():
-                    if isinstance(dataset, list):
-                        for item in dataset:
-                            extract_fields_from_item(item)
-                    else:
-                        extract_fields_from_item(dataset)
-            else:
-                # Single item
-                extract_fields_from_item(dataset_samples)
-
-        return list(fields)
+        type_system = extract_type_system(dataset_samples)
+        return type_system.get_all_fields()
 
     def _track_available_fields(self, dataset_samples: Dict[str, Any],
                                filled_operators: List[Dict[str, Any]]) -> List[str]:
         """
-        Track all fields available at the current stage of the pipeline.
+        Track all fields available at the current stage of the pipeline using type system.
 
         Args:
             dataset_samples: The original dataset samples
@@ -547,17 +531,35 @@ class DocETLStepBaseline(BaselineInterface):
         Returns:
             List of all available field names
         """
-        available_fields = set(self._extract_dataset_fields(dataset_samples))
+        # Initialize type system from dataset
+        type_system = extract_type_system(dataset_samples)
 
+        # Apply transformations from each operator
         for operator in filled_operators:
-            output_fields = self._parse_operator_output_fields(operator)
-            available_fields.update(output_fields)
+            type_system = apply_operator_transformation(type_system, operator)
 
-            if operator['type'] == 'reduce':
-                if 'reduce_key' in operator and operator['reduce_key'] != "TO_BE_GENERATED":
-                    available_fields.add(operator['reduce_key'])
+        return sorted(type_system.get_all_fields())
 
-        return sorted(list(available_fields))
+    def _get_type_system_at_stage(self, dataset_samples: Dict[str, Any],
+                                 filled_operators: List[Dict[str, Any]]) -> TypeSystem:
+        """
+        Get the complete type system at the current stage of the pipeline.
+
+        Args:
+            dataset_samples: The original dataset samples
+            filled_operators: List of already filled operators
+
+        Returns:
+            TypeSystem representing current state
+        """
+        # Initialize type system from dataset
+        type_system = extract_type_system(dataset_samples)
+
+        # Apply transformations from each operator
+        for operator in filled_operators:
+            type_system = apply_operator_transformation(type_system, operator)
+
+        return type_system
 
     def _validate_field_references(self, operator: Dict[str, Any], available_fields: List[str]) -> tuple:
         """
@@ -777,7 +779,8 @@ class DocETLStepBaseline(BaselineInterface):
     def _generate_operator_details(self, operator: Dict[str, Any], query: str,
                                   dataset_samples: Dict[str, Any],
                                   previous_operators: List[Dict[str, Any]],
-                                  available_fields: List[str]) -> Dict[str, Any]:
+                                  available_fields: List[str],
+                                  type_system: TypeSystem = None) -> Dict[str, Any]:
         """
         Step 3: Generate details for a single operator.
 
@@ -807,13 +810,19 @@ class DocETLStepBaseline(BaselineInterface):
         # Select the appropriate prompt template
         prompt_template = prompt_templates.get(op_type, GENERIC_OPERATOR_PROMPT)
 
+        # Format available fields with types if type system is provided
+        if type_system:
+            fields_with_types = format_available_fields_with_types(type_system)
+        else:
+            fields_with_types = json.dumps(available_fields, indent=2)
+
         prompt = prompt_template.format(
             operator_type=op_type,
             operator_purpose=operator['purpose'],
             query=query,
             dataset_samples=json.dumps(dataset_samples, indent=2)[:1500],
             previous_operators=json.dumps(previous_operators, indent=2) if previous_operators else "None",
-            available_fields=json.dumps(available_fields, indent=2),
+            available_fields=fields_with_types,
             operator_framework=json.dumps(operator, indent=2)
         )
 
@@ -878,6 +887,8 @@ class DocETLStepBaseline(BaselineInterface):
 
             # Track available fields at this stage
             available_fields = self._track_available_fields(dataset_samples, filled_operators)
+            # Get complete type system at this stage
+            current_type_system = self._get_type_system_at_stage(dataset_samples, filled_operators)
 
             if self.config.verbose:
                 self.logger.info(f"Available fields for operator {framework['type']}: {available_fields}")
@@ -888,7 +899,8 @@ class DocETLStepBaseline(BaselineInterface):
                 query,
                 dataset_samples,
                 filled_operators,  # Pass previously filled operators for context
-                available_fields  # Pass available fields
+                available_fields,  # Pass available fields
+                current_type_system  # Pass type system for better prompting
             )
 
             # Validate field references
