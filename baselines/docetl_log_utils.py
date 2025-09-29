@@ -6,7 +6,7 @@ This module provides unified functions for saving prompts, messages, validations
 import os
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def _create_base_filename(query: str, suffix: str = "") -> str:
@@ -51,12 +51,12 @@ def save_prompt(output_dir: str, filename_base: str, prompt: str, query: str, at
         filename_base: Base filename (from data_processor._create_base_filename if available)
         prompt: Prompt text to save
         query: Original query
-        attempt: Attempt number
+        attempt: Attempt number (deprecated, now included in filename_base)
 
     Returns:
         Path to saved file
     """
-    filename = f"{filename_base}_attempt{attempt}.txt"
+    filename = f"{filename_base}.txt"
     filepath = os.path.join(output_dir, filename)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -66,17 +66,15 @@ def save_prompt(output_dir: str, filename_base: str, prompt: str, query: str, at
     return filepath
 
 
-def save_messages(output_dir: str, filename_base: str, messages: List[Dict], query: str,
-                 pipeline_history: Optional[List] = None) -> str:
+def save_messages(output_dir: str, filename_base: str, messages: List[Dict], query: str) -> str:
     """
-    Save complete message history.
+    Save complete message history (prompts and responses only).
 
     Args:
         output_dir: Directory to save to
         filename_base: Base filename
-        messages: List of message dictionaries
+        messages: List of message dictionaries (user prompts and assistant responses)
         query: Original query
-        pipeline_history: Optional pipeline failure history
 
     Returns:
         Path to saved file
@@ -88,23 +86,8 @@ def save_messages(output_dir: str, filename_base: str, messages: List[Dict], que
         "query": query,
         "timestamp": datetime.now().isoformat(),
         "total_messages": len(messages),
-        "messages": messages,
-        "pipeline_history": []
+        "messages": messages  # Only save prompt+response dialogue
     }
-
-    if pipeline_history:
-        for failed in pipeline_history:
-            pipeline_entry = {
-                "error_type": failed.error_type,
-                "error_message": failed.error_message,
-            }
-            # Handle different pipeline formats (yaml vs code)
-            if hasattr(failed, 'pipeline_yaml'):
-                pipeline_entry["pipeline_yaml"] = failed.pipeline_yaml
-            elif hasattr(failed, 'pipeline_code'):
-                pipeline_entry["pipeline_code"] = failed.pipeline_code
-
-            messages_data["pipeline_history"].append(pipeline_entry)
 
     _write_json(messages_data, filepath)
     return filepath

@@ -11,6 +11,7 @@ from .base import BaselineInterface, BaselineResult
 from . import register_baseline
 from .docetl_data_utils import DocETLDataProcessor
 from .docetl_ui import DocETLUserInterface
+from .docetl_cache import LLMCache
 from .docetl_log_utils import save_prompt, save_messages, save_validation, save_step_output, get_filename_base
 from .docetl_utils.llm2pipeline_docetl import (
     load_sample_data,
@@ -99,9 +100,14 @@ class DocETLStepBaseline(BaselineInterface):
         # Initialize user interface for confirmations
         self.ui = DocETLUserInterface(self.config)
 
+        # Initialize LLM cache
+        cache_dir = os.path.join(base_dir, "llm_cache", "docetl_step")
+        self.llm_cache = LLMCache(cache_dir)
+
         if self.config.verbose:
             self.logger.info(f"Initialized DocETL Step-by-Step baseline with config: {self.config}")
             self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
+            self.logger.info(f"Cache directory: {cache_dir}")
 
 
 
@@ -126,8 +132,8 @@ class DocETLStepBaseline(BaselineInterface):
         )
 
         # Save prompt for debugging
-        filename_base = get_filename_base(self.data_processor, query, f'attempt{attempt}')
-        save_prompt(self.prompts_output_dir, filename_base, prompt, query, attempt)
+        filename_base = get_filename_base(self.data_processor, query, f'step1_attempt{attempt}')
+        save_prompt(self.prompts_output_dir, filename_base, prompt, query, 0)
 
         # Confirm before calling LLM in confirm/debug mode
         if not self.ui.confirm_step_before_llm("Operator Selection", "1"):
@@ -162,7 +168,17 @@ class DocETLStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
+            # Check cache first
+            response = self.llm_cache.get(prompt)
+            if response is None:
+                # No cache, call LLM
+                response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
+                # Save to cache
+                self.llm_cache.set(prompt, response)
+            else:
+                if self.config.verbose:
+                    self.logger.info("Using cached response for Step 1: Operator Selection")
+
             result = json.loads(response)
             operators = result.get("operators", [])
 
@@ -471,8 +487,8 @@ class DocETLStepBaseline(BaselineInterface):
         )
 
         # Save prompt for debugging
-        filename_base = get_filename_base(self.data_processor, query, f'attempt{attempt}_op{operator_index}_{op_type}')
-        save_prompt(self.prompts_output_dir, filename_base, prompt, query, attempt)
+        filename_base = get_filename_base(self.data_processor, query, f'step3_op{operator_index}_{op_type}_attempt{attempt}')
+        save_prompt(self.prompts_output_dir, filename_base, prompt, query, 0)
 
         # Get operator-specific schema
         parameters = self._get_operator_schema(op_type)
@@ -482,7 +498,17 @@ class DocETLStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
+            # Check cache first
+            response = self.llm_cache.get(prompt)
+            if response is None:
+                # No cache, call LLM
+                response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
+                # Save to cache
+                self.llm_cache.set(prompt, response)
+            else:
+                if self.config.verbose:
+                    self.logger.info(f"Using cached response for Step 3: operator {operator_index} ({op_type})")
+
             filled_operator = json.loads(response)
 
             # Collect response for debugging
@@ -776,7 +802,7 @@ Example: ["medication", "dosage"]
 
             # Save all collected messages for successful pipeline generation
             filename_base = get_filename_base(self.data_processor, query, f'attempt{attempt}')
-            save_messages(self.messages_output_dir, filename_base, all_messages, query, None)
+            save_messages(self.messages_output_dir, filename_base, all_messages, query)
 
             return True, pipeline_yaml, None
 
@@ -788,7 +814,7 @@ Example: ["medication", "dosage"]
             # Save messages even for failed attempts
             if all_messages:
                 filename_base = get_filename_base(self.data_processor, query, f'attempt{attempt}')
-                save_messages(self.messages_output_dir, filename_base, all_messages, query, None)
+                save_messages(self.messages_output_dir, filename_base, all_messages, query)
 
             return False, None, error_msg
 
@@ -885,10 +911,6 @@ Example: ["medication", "dosage"]
                 execution_time = time.time() - start_time
                 self.successful_pipelines += 1
 
-                # Save complete pipeline history for successful run
-                filename_base = get_filename_base(self.data_processor, query, f'attempt{attempt}_final')
-                save_messages(self.messages_output_dir, filename_base, [], query, pipeline_history)
-
                 return True, result, execution_time
 
             except Exception as e:
@@ -909,10 +931,6 @@ Example: ["medication", "dosage"]
             'attempts': len(pipeline_history),
             'history': pipeline_history
         })
-
-        # Save pipeline history for completely failed run
-        filename_base = get_filename_base(self.data_processor, query, 'all_attempts_failed')
-        save_messages(self.messages_output_dir, filename_base, [], query, pipeline_history)
 
         return False, {"error": "Failed to generate working pipeline after all attempts"}, execution_time
 
