@@ -42,11 +42,9 @@ class DocETLStepBaseline(BaselineInterface):
         self.successful_pipelines = 0
         self.failed_pipelines = []
 
-        # Use configuration from BaselineConfig
         self.max_attempts = self.config.max_attempts
         self.validate_answer = self.config.validate_answer
 
-        # Control LiteLLM logging based on mode
         if not self.config.verbose:
             logging.getLogger("LiteLLM").setLevel(logging.ERROR)
             logging.getLogger("httpcore").setLevel(logging.ERROR)
@@ -57,7 +55,6 @@ class DocETLStepBaseline(BaselineInterface):
             logging.getLogger("httpcore").setLevel(logging.INFO)
             logging.getLogger("openai").setLevel(logging.INFO)
 
-        # Create persistent directories for saving outputs
         base_dir = os.getcwd()
         self.output_dirs = {
             'pipeline_output_dir': os.path.join(base_dir, "generated_pipelines", "docetl_step"),
@@ -68,12 +65,10 @@ class DocETLStepBaseline(BaselineInterface):
             'steps_output_dir': os.path.join(base_dir, "pipeline_steps", "docetl_step")
         }
 
-        # Set instance attributes and create directories
         for attr_name, dir_path in self.output_dirs.items():
             setattr(self, attr_name, dir_path)
             os.makedirs(dir_path, exist_ok=True)
 
-        # Initialize data processor
         self.data_processor = DocETLDataProcessor(
             converted_data_dir=self.converted_data_dir,
             verbose=self.config.verbose,
@@ -157,7 +152,6 @@ class DocETLStepBaseline(BaselineInterface):
         self.data_processor._write_json(step_data, filepath)
         return filepath
 
-    # Step-by-step pipeline generation methods
     def _confirm_step_execution(self, step_name: str, step_data: Any, query: str, attempt: int) -> bool:
         """
         Ask user for confirmation after each step in confirm/debug mode.
@@ -199,6 +193,18 @@ class DocETLStepBaseline(BaselineInterface):
                 print(f"  - {framework['name']} ({framework['type']})")
                 print(f"    Purpose: {framework['purpose']}")
 
+                # Show complete framework structure with TO_BE_GENERATED placeholders
+                print("    Framework structure:")
+                for key, value in framework.items():
+                    if key not in ['name', 'type', 'purpose']:
+                        if isinstance(value, dict):
+                            print(f"      {key}: {value}")
+                        elif isinstance(value, list):
+                            print(f"      {key}: {value}")
+                        else:
+                            print(f"      {key}: {value}")
+                print()
+
         elif step_name.startswith("Step 3-4: Operator Details"):
             print("Filled Operators:")
             for op in step_data:
@@ -206,7 +212,15 @@ class DocETLStepBaseline(BaselineInterface):
                 if 'prompt' in op and op['prompt'] != "TO_BE_GENERATED":
                     preview = op['prompt'][:100] + "..." if len(op['prompt']) > 100 else op['prompt']
                     print(f"    Prompt preview: {preview}")
-                if 'output' in op and 'schema' in op['output']:
+
+                # Show different details based on operator type
+                if op['type'] == 'extract':
+                    if 'document_keys' in op:
+                        print(f"    Document keys: {op['document_keys']}")
+                    # Extract operators don't use output schema, they extract to predefined fields
+                    expected_fields = self._parse_operator_output_fields(op)
+                    print(f"    Expected output fields: {expected_fields}")
+                elif 'output' in op and 'schema' in op['output']:
                     print(f"    Output schema: {list(op['output']['schema'].keys()) if op['output']['schema'] else 'empty'}")
 
         elif step_name == "Step 5: Pipeline Connection":
@@ -258,7 +272,8 @@ class DocETLStepBaseline(BaselineInterface):
                             },
                             "purpose": {"type": "string"}
                         },
-                        "required": ["type", "purpose"]
+                        "required": ["type", "purpose"],
+                        "additionalProperties": False
                     }
                 },
             },
@@ -277,10 +292,8 @@ class DocETLStepBaseline(BaselineInterface):
         except (json.JSONDecodeError, KeyError) as e:
             if self.config.verbose:
                 self.logger.warning(f"Failed to parse structured operator selection: {e}")
-            # Fallback to empty list, will add code_map below
             operators = []
 
-        # Always add code_map at the end for final transformation if not present
         if not any(op['type'] == 'code_map' for op in operators):
             operators.append({
                 'type': 'code_map',
@@ -412,30 +425,35 @@ class DocETLStepBaseline(BaselineInterface):
         """
         output_fields = []
 
+        # Special handling for extract operator
+        if operator['type'] == 'extract':
+            # Extract operator generates fields based on document_keys or common extraction patterns
+            # For contract extraction tasks, common fields are:
+            output_fields.extend([
+                'document_name',
+                'parties',
+                'agreement_date',
+                'effective_date',
+                'expiration_date'
+            ])
+            return output_fields
+
         if 'output' in operator and isinstance(operator['output'], dict):
             schema = operator['output'].get('schema', {})
 
             if isinstance(schema, dict):
-                # Simple dictionary schema
                 output_fields.extend(schema.keys())
             elif isinstance(schema, str):
-                # Handle quoted string schemas like "list[{field: type}]"
-                # Extract field names from the string
                 import re
-                # Match patterns like "field: type" or "field:type"
                 matches = re.findall(r'(\w+)\s*:\s*\w+', schema)
                 output_fields.extend(matches)
 
-        # Handle specific operator types # TODO Fix this
         if operator['type'] == 'unnest' and 'unnest_key' in operator:
-            # Unnest typically preserves all fields and expands the unnest_key
-            pass  # Fields remain the same, just expanded
+            pass # Fields remain the same, just expanded # TODO Need fix for dict unnest
         elif operator['type'] == 'split':
-            # Split adds index fields
             output_fields.append('_split_id')
             output_fields.append('_split_index')
         elif operator['type'] == 'gather':
-            # Gather adds context fields
             if 'output_key' in operator:
                 output_fields.append(operator['output_key'])
 
@@ -488,22 +506,16 @@ class DocETLStepBaseline(BaselineInterface):
         Returns:
             List of all available field names
         """
-        # Start with fields from the dataset
         available_fields = set(self._extract_dataset_fields(dataset_samples))
 
-        # Add fields from each filled operator's output
         for operator in filled_operators:
             output_fields = self._parse_operator_output_fields(operator)
             available_fields.update(output_fields)
 
-            # Handle operators that transform field names
             if operator['type'] == 'reduce':
-                # Reduce operations often change the structure
-                # The reduce_key is preserved, other fields may be aggregated
                 if 'reduce_key' in operator and operator['reduce_key'] != "TO_BE_GENERATED":
                     available_fields.add(operator['reduce_key'])
 
-        # Sort for consistent ordering
         return sorted(list(available_fields))
 
     def _validate_field_references(self, operator: Dict[str, Any], available_fields: List[str]) -> tuple:
@@ -519,16 +531,13 @@ class DocETLStepBaseline(BaselineInterface):
         """
         errors = []
 
-        # Check prompt field references
         if 'prompt' in operator and isinstance(operator['prompt'], str):
             import re
-            # Find Jinja2 template references like {{ input.field }} or {{ field }}
             field_refs = re.findall(r'\{\{\s*(?:input\.)?(\w+)\s*\}\}', operator['prompt'])
             for field_ref in field_refs:
-                if field_ref not in available_fields and field_ref != 'inputs':  # inputs is special for reduce
+                if field_ref not in available_fields and field_ref != 'inputs':
                     errors.append(f"Prompt references unavailable field: {field_ref}")
 
-        # Check operator-specific field references
         op_type = operator.get('type', '')
 
         if op_type == 'reduce' and 'reduce_key' in operator:
@@ -596,21 +605,33 @@ class DocETLStepBaseline(BaselineInterface):
                 "name": {"type": "string"},
                 "type": {"type": "string", "enum": [op_type]}
             },
-            "required": ["name", "type"]
+            "required": ["name", "type"],
+            "additionalProperties": False
         }
 
-        # Add type-specific properties
-        if op_type in ['map', 'filter', 'extract']:
+        if op_type in ['map', 'filter']:
             base_schema["properties"].update({
                 "prompt": {"type": "string"},
                 "output": {
                     "type": "object",
                     "properties": {
-                        "schema": {"type": "object"}
-                    }
+                        "schema": {"type": "object", "additionalProperties": False}
+                    },
+                    "additionalProperties": False
                 }
             })
             base_schema["required"].extend(["prompt", "output"])
+
+        elif op_type == 'extract':
+            base_schema["properties"].update({
+                "prompt": {"type": "string"},
+                "document_keys": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "model": {"type": "string"}
+            })
+            base_schema["required"].extend(["prompt", "document_keys", "model"])
 
         elif op_type == 'reduce':
             base_schema["properties"].update({
@@ -619,8 +640,9 @@ class DocETLStepBaseline(BaselineInterface):
                 "output": {
                     "type": "object",
                     "properties": {
-                        "schema": {"type": "object"}
-                    }
+                        "schema": {"type": "object", "additionalProperties": False}
+                    },
+                    "additionalProperties": False
                 }
             })
             base_schema["required"].extend(["reduce_key", "prompt", "output"])
@@ -633,8 +655,9 @@ class DocETLStepBaseline(BaselineInterface):
                 "output": {
                     "type": "object",
                     "properties": {
-                        "schema": {"type": "object"}
-                    }
+                        "schema": {"type": "object", "additionalProperties": False}
+                    },
+                    "additionalProperties": False
                 }
             })
             base_schema["required"].extend(["comparison_prompt", "resolution_prompt", "output"])
@@ -654,7 +677,7 @@ class DocETLStepBaseline(BaselineInterface):
             base_schema["properties"].update({
                 "split_key": {"type": "string"},
                 "method": {"type": "string"},
-                "method_kwargs": {"type": "object"}
+                "method_kwargs": {"type": "object", "additionalProperties": False}
             })
             base_schema["required"].extend(["split_key", "method"])
 
@@ -699,17 +722,6 @@ class DocETLStepBaseline(BaselineInterface):
                 "query": {"type": "string"}
             })
             base_schema["required"].extend(["k", "keys"])
-
-        elif op_type == 'extract':
-            base_schema["properties"].update({
-                "prompt": {"type": "string"},
-                "document_keys": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                },
-                "model": {"type": "string"}
-            })
-            base_schema["required"].extend(["prompt", "document_keys"])
 
         elif op_type == 'sample':
             base_schema["properties"].update({
@@ -951,8 +963,8 @@ class DocETLStepBaseline(BaselineInterface):
 
         except Exception as e:
             error_msg = f"Step-by-step pipeline generation failed: {str(e)}\n{traceback.format_exc()}"
-            if self.config.verbose:
-                self.logger.error(error_msg)
+            # Always log critical pipeline generation errors
+            self.logger.error(error_msg)
             return False, None, error_msg
 
     def _generate_and_execute_pipeline(self, query: str, dataset_paths: List[str]) -> tuple:
@@ -1054,8 +1066,8 @@ class DocETLStepBaseline(BaselineInterface):
 
             except Exception as e:
                 error_msg = f"Pipeline generation error: {str(e)}"
-                if self.config.verbose:
-                    self.logger.warning(error_msg)
+                # Always log pipeline generation errors with traceback
+                self.logger.error(f"{error_msg}\nTraceback:\n{traceback.format_exc()}")
 
                 pipeline_history.append(FailedPipeline(
                     pipeline_yaml="",
@@ -1178,8 +1190,8 @@ class DocETLStepBaseline(BaselineInterface):
 
         except Exception as e:
             self.logger.error(f"Error processing query with DocETL Step-by-Step: {e}")
-            if self.config.verbose:
-                self.logger.error(traceback.format_exc())
+            # Always show full traceback for critical errors in main process method
+            self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
 
             execution_time = time.time() - start_time
             self.total_time += execution_time
