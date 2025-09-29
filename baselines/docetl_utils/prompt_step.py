@@ -80,13 +80,9 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL MAP OPERATOR RULES:
 - Map transforms EACH document individually using {{ input.field_name }} syntax (Jinja2 template)
 - You MUST use {{ input.field_name }} to reference fields in the prompt
-- Available fields: $available_fields
 - Create an output schema with new field names that don't conflict with existing fields
 - The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
 - Keep output schema simple and flat when possible
@@ -133,13 +129,9 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL FILTER OPERATOR RULES:
 - Filter keeps/discards documents based on {{ input.field_name }} syntax (Jinja2 template)
 - You MUST use {{ input.field_name }} to reference fields in the prompt
-- Available fields: $available_fields
 - The output schema MUST have a boolean field (type: "bool")
 - The prompt should ask for "true" or "false" as the response
 
@@ -182,13 +174,10 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL REDUCE OPERATOR RULES:
 - Reduce aggregates multiple documents grouped by reduce_key
 - You MUST use {{ inputs }} (plural) to reference the group of documents (Jinja2 template)
-- You MUST specify a reduce_key field that exists in available fields: $available_fields
+- You MUST specify a reduce_key field that exists in available fields
 - Access fields like: {{ inputs[0].field_name }} or {% for item in inputs %}{{ item.field_name }}{% endfor %}
 - The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
 - Create aggregated output schema with new field names
@@ -239,14 +228,10 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL RESOLVE OPERATOR RULES:
 - Resolve deduplicates/standardizes entities with comparison and resolution prompts (Jinja2 templates)
 - comparison_prompt uses {{ input1.field }} and {{ input2.field }} to compare two items
 - resolution_prompt uses {{ inputs }} to merge multiple similar items
-- Available fields: $available_fields
 - Set optimize: true for better performance
 - The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
 - Create output schema for the resolved/standardized entity
@@ -297,9 +282,6 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL RANK OPERATOR RULES:
 - Rank orders documents by custom criteria using LLM scoring
 - Specify input_keys with fields to consider for ranking: $available_fields
@@ -332,9 +314,6 @@ $available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
-
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
 
 CRITICAL EXTRACT OPERATOR RULES:
 - Extract pulls verbatim text sections from documents
@@ -378,13 +357,9 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL CODE_FILTER OPERATOR RULES:
 - Code_filter keeps/discards documents using Python code instead of LLM prompts
 - Use doc['field_name'] syntax to access fields in the Python code
-- Available fields: $available_fields
 - The function must return a boolean (True to keep, False to discard)
 - The function must be named 'filter' and take 'doc' parameter
 
@@ -424,9 +399,6 @@ $available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
-
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
 
 CRITICAL SPLIT OPERATOR RULES:
 - Split breaks long text fields into smaller chunks
@@ -471,15 +443,12 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL GATHER OPERATOR RULES:
 - Gather adds surrounding context to chunks after splitting
 - content_key: field containing the chunk content
 - doc_id_key: field identifying which document the chunk belongs to
 - order_key: field indicating chunk order within document
-- All keys must reference available fields: $available_fields
+- All keys must reference available fields
 - Configure peripheral_chunks for context
 
 Example configuration:
@@ -516,9 +485,6 @@ $available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
-
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
 
 CRITICAL UNNEST OPERATOR RULES:
 - Unnest expands array or nested fields into separate documents
@@ -559,9 +525,6 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL CLUSTER OPERATOR RULES:
 - Cluster groups similar documents using embeddings
 - embedding_keys specifies which fields to use for similarity: $available_fields
@@ -601,9 +564,6 @@ $available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
-
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
 
 CRITICAL SAMPLE OPERATOR RULES:
 - Sample selects a subset of documents for processing
@@ -647,9 +607,6 @@ $available_fields
 PREVIOUS OPERATORS IN PIPELINE:
 $previous_operators
 
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
 CRITICAL TOPK OPERATOR RULES:
 - TopK retrieves the most relevant documents using embeddings or keywords
 - method: "embedding" for semantic search, "keyword" for text matching
@@ -673,46 +630,6 @@ method: [embedding/keyword]
 k: [number_of_documents]
 keys: [fields_to_search]
 query: [search_query_string]
-```
-""")
-
-# Generic fallback prompt for any unlisted operators
-GENERIC_OPERATOR_PROMPT = Template("""
-You are an expert at generating DocETL operator configurations.
-
-Generate the detailed configuration for the following operator:
-
-OPERATOR TYPE: $operator_type
-OPERATOR PURPOSE: $operator_purpose
-
-QUERY: $query
-
-DATASET SAMPLE:
-$dataset_samples
-
-AVAILABLE FIELDS AT THIS STAGE:
-$available_fields
-
-PREVIOUS OPERATORS IN PIPELINE:
-$previous_operators
-
-CURRENT OPERATOR FRAMEWORK:
-$operator_framework
-
-Fill in all the "TO_BE_GENERATED" placeholders with appropriate values.
-
-IMPORTANT FIELD RULES:
-- You can ONLY reference fields listed in "AVAILABLE FIELDS AT THIS STAGE"
-- Fields from previous operators' outputs are included in available fields
-- Do NOT reference fields that don't exist yet
-- When creating output schemas, choose field names that don't conflict with existing fields
-
-Return ONLY the filled operator configuration in YAML format.
-
-```yaml
-name: $operator_type_operation
-type: $operator_type
-# ... fill in all fields with actual values, no placeholders
 ```
 """)
 

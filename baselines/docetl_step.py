@@ -136,7 +136,8 @@ class DocETLStepBaseline(BaselineInterface):
         save_prompt(self.prompts_output_dir, filename_base, prompt, query, 0)
 
         # Confirm before calling LLM in confirm/debug mode
-        if not self.ui.confirm_step_before_llm("Operator Selection", "1"):
+        user_choice = self.ui.confirm_step_before_llm("Operator Selection", "1")
+        if user_choice == 'abort':
             raise ValueError("User aborted pipeline generation at Step 1")
 
         # Define schema for structured operator selection
@@ -168,12 +169,13 @@ class DocETLStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            # Check cache first
-            response = self.llm_cache.get(prompt)
+            # Check cache first (with regeneration flag if requested)
+            force_regenerate = (user_choice == 'regenerate')
+            response = self.llm_cache.get(prompt, force_regenerate=force_regenerate)
             if response is None:
-                # No cache, call LLM
+                # No cache or regeneration requested, call LLM
                 response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
-                # Save to cache
+                # Save to cache (will overwrite if regenerating)
                 self.llm_cache.set(prompt, response)
             else:
                 if self.config.verbose:
@@ -445,7 +447,8 @@ class DocETLStepBaseline(BaselineInterface):
                                   type_system: TypeSystem = None,
                                   collect_messages: bool = False,
                                   operator_index: int = 0,
-                                  attempt: int = 0):
+                                  attempt: int = 0,
+                                  total_operators: int = 1):
         """Step 3: Generate details for a single operator."""
         # Get operator-specific prompt template
         op_type = operator['type']
@@ -468,7 +471,9 @@ class DocETLStepBaseline(BaselineInterface):
         }
 
         # Select the appropriate prompt template
-        prompt_template = prompt_templates.get(op_type, GENERIC_OPERATOR_PROMPT)
+        prompt_template = prompt_templates.get(op_type)
+        if not prompt_template:
+            raise ValueError(f"Prompt template not found for operator type: {op_type}")
 
         # Format available fields with types if type system is provided
         if type_system:
@@ -488,7 +493,20 @@ class DocETLStepBaseline(BaselineInterface):
 
         # Save prompt for debugging
         filename_base = get_filename_base(self.data_processor, query, f'step3_op{operator_index}_{op_type}_attempt{attempt}')
-        save_prompt(self.prompts_output_dir, filename_base, prompt, query, 0)
+        prompt_file_path = save_prompt(self.prompts_output_dir, filename_base, prompt, query, 0)
+
+        # Confirm this operator generation with user in Step 4
+        user_choice = self.ui.confirm_operator_before_llm(
+            operator_index=operator_index,
+            total_operators=total_operators,
+            operator_type=op_type,
+            operator_purpose=operator.get('purpose', ''),
+            prompt=prompt,
+            prompt_file=prompt_file_path
+        )
+
+        if user_choice == 'abort':
+            raise ValueError(f"User aborted operator generation at operator {operator_index + 1}")
 
         # Get operator-specific schema
         parameters = self._get_operator_schema(op_type)
@@ -498,12 +516,13 @@ class DocETLStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            # Check cache first
-            response = self.llm_cache.get(prompt)
+            # Check cache first (with regeneration flag if requested)
+            force_regenerate = (user_choice == 'regenerate')
+            response = self.llm_cache.get(prompt, force_regenerate=force_regenerate)
             if response is None:
-                # No cache, call LLM
+                # No cache or regeneration requested, call LLM
                 response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
-                # Save to cache
+                # Save to cache (will overwrite if regenerating)
                 self.llm_cache.set(prompt, response)
             else:
                 if self.config.verbose:
@@ -540,7 +559,8 @@ class DocETLStepBaseline(BaselineInterface):
 
     def _identify_answer_fields(self, query: str, available_fields: List[str],
                                filled_operators: List[Dict[str, Any]],
-                               collect_messages: bool = False) -> tuple:
+                               collect_messages: bool = False,
+                               force_regenerate: bool = False) -> tuple:
         """Identify fields containing the answer."""
         prompt = f"""
 Given this query and the available fields after all processing steps,
@@ -575,8 +595,18 @@ Example: ["medication", "dosage"]
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = llm_call(messages, schema=schema,
-                               system_prompt="You are an AI that identifies which fields answer a query")
+            # Check cache first (with regeneration flag if requested)
+            response = self.llm_cache.get(prompt, force_regenerate=force_regenerate)
+            if response is None:
+                # No cache or regeneration requested, call LLM
+                response = llm_call(messages, schema=schema,
+                                   system_prompt="You are an AI that identifies which fields answer a query")
+                # Save to cache
+                self.llm_cache.set(prompt, response)
+            else:
+                if self.config.verbose:
+                    self.logger.info("Using cached response for answer field identification")
+
             result = json.loads(response)
             answer_fields = result.get("answer_fields", [])
 
@@ -649,7 +679,8 @@ Example: ["medication", "dosage"]
                 current_type_system,  # Pass type system for better prompting
                 collect_messages=collect_messages,
                 operator_index=i,
-                attempt=attempt
+                attempt=attempt,
+                total_operators=len(frameworks)  # Pass total number of operators
             )
 
             # Collect messages if requested

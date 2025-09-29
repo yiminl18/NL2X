@@ -56,9 +56,9 @@ class DocETLUserInterface:
 
         return "Next step"
 
-    def confirm_step_before_llm(self, step_name: str, step_number: str, total_steps: str = "5") -> bool:
+    def confirm_step_before_llm(self, step_name: str, step_number: str, total_steps: str = "5") -> str:
         """
-        Ask for simple confirmation before calling LLM for a step.
+        Ask for confirmation before calling LLM for a step.
 
         Args:
             step_name: Name of the step
@@ -66,20 +66,78 @@ class DocETLUserInterface:
             total_steps: Total number of steps
 
         Returns:
-            True if user wants to continue, False to abort
+            'continue' if user wants to continue
+            'regenerate' if user wants to regenerate (bypass cache)
+            'abort' if user wants to abort
         """
         if not (self.config.confirm or self.config.debug):
-            return True
+            return 'continue'
 
         print(f"\n➡️  Next: Step {step_number}/{total_steps} - {step_name}")
-        print("Continue? (Y/n): ", end="")
+        print("Continue? (Y/r/n): ", end="")
         user_input = input().strip().lower()
 
-        if user_input and user_input != 'y':
+        if user_input == 'r':
+            print("🔄 Regenerating response (bypassing cache)...")
+            return 'regenerate'
+        elif user_input == 'n':
             print("❌ User aborted pipeline generation")
-            return False
+            return 'abort'
+        else:  # Default to 'y' or empty input
+            return 'continue'
 
-        return True
+    def confirm_operator_before_llm(self, operator_index: int, total_operators: int,
+                                    operator_type: str, operator_purpose: str,
+                                    prompt: str, prompt_file: str) -> str:
+        """
+        Ask for confirmation before generating a single operator in Step 4.
+
+        Args:
+            operator_index: Current operator index (0-based)
+            total_operators: Total number of operators to generate
+            operator_type: Type of the operator (map, filter, etc.)
+            operator_purpose: Purpose of the operator
+            prompt: The prompt that will be sent to LLM
+            prompt_file: Path where the prompt was saved
+
+        Returns:
+            'continue' if user wants to continue
+            'regenerate' if user wants to regenerate (bypass cache)
+            'abort' if user wants to abort
+        """
+        if not (self.config.confirm or self.config.debug):
+            return 'continue'
+
+        print("\n" + "="*80)
+        mode_text = "[DEBUG MODE]" if self.config.debug else "[CONFIRM MODE]"
+        print(f"{mode_text} Step 4 - Operator {operator_index + 1}/{total_operators}")
+        print("="*80)
+
+        print(f"\n📋 Operator Type: {operator_type}")
+        print(f"📋 Purpose: {operator_purpose}")
+        print("-"*40)
+
+        print(f"\n📄 Prompt saved to: {prompt_file}")
+        print("-"*40)
+
+        # Show prompt preview (first 500 chars)
+        prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
+        print("\n📝 Prompt Preview:")
+        print("-"*40)
+        print(prompt_preview)
+        print("-"*40)
+
+        print("\n➡️  Generate this operator? (Y/r/n): ", end="")
+        user_input = input().strip().lower()
+
+        if user_input == 'r':
+            print("🔄 Regenerating operator (bypassing cache)...")
+            return 'regenerate'
+        elif user_input == 'n':
+            print("❌ User aborted operator generation")
+            return 'abort'
+        else:  # Default to 'y' or empty input
+            return 'continue'
 
     def confirm_step_execution(self, step_name: str, step_data: Any, query: str, attempt: int) -> bool:
         """
