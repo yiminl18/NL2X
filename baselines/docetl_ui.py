@@ -30,20 +30,7 @@ class DocETLUserInterface:
         print(f"\n📄 Generated Pipeline File:")
         print(f"  {pipeline_file}")
 
-        print(f"\n📝 Pipeline Preview (first 50 lines):")
-        print("-"*40)
-        try:
-            with open(pipeline_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                for i, line in enumerate(lines[:50]):
-                    print(f"{i+1:3d}: {line.rstrip()}")
-                if len(lines) > 50:
-                    print(f"... ({len(lines) - 50} more lines)")
-        except Exception as e:
-            print(f"Error reading pipeline file: {e}")
-        print("-"*40)
-
-        print("\n⚠️  Execute this pipeline? (Y/n): ", end="")
+        print("\n➡️  Execute this pipeline? (Y/n): ", end="")
         user_input = input().strip().lower()
 
         if user_input and user_input != 'y':
@@ -68,6 +55,31 @@ class DocETLUserInterface:
                 return value
 
         return "Next step"
+
+    def confirm_step_before_llm(self, step_name: str, step_number: str, total_steps: str = "5") -> bool:
+        """
+        Ask for simple confirmation before calling LLM for a step.
+
+        Args:
+            step_name: Name of the step
+            step_number: Current step number (e.g., "1", "3-4")
+            total_steps: Total number of steps
+
+        Returns:
+            True if user wants to continue, False to abort
+        """
+        if not (self.config.confirm or self.config.debug):
+            return True
+
+        print(f"\n➡️  Next: Step {step_number}/{total_steps} - {step_name}")
+        print("Continue? (Y/n): ", end="")
+        user_input = input().strip().lower()
+
+        if user_input and user_input != 'y':
+            print("❌ User aborted pipeline generation")
+            return False
+
+        return True
 
     def confirm_step_execution(self, step_name: str, step_data: Any, query: str, attempt: int) -> bool:
         """
@@ -154,7 +166,7 @@ class DocETLUserInterface:
         print("-"*40)
 
         next_step = self._get_next_step_info(step_name)
-        print(f"\n⚠️  Next: {next_step}. Continue to next step? (Y/n): ", end="")
+        print(f"\n➡️  Next: {next_step}. Continue to next step? (Y/n): ", end="")
         user_input = input().strip().lower()
 
         if user_input and user_input != 'y':

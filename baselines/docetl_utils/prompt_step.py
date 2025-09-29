@@ -2,20 +2,22 @@
 Prompt templates for step-by-step DocETL pipeline generation.
 """
 
+from string import Template
+
 # Operator selection prompt - Step 1
-OPERATOR_SELECTION_PROMPT = """
+OPERATOR_SELECTION_PROMPT = Template("""
 You are an expert at analyzing data processing tasks and selecting appropriate DocETL operators.
 
 Given the following query and dataset, identify which operators are needed to accomplish the task.
 
 QUERY:
-{query}
+$query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE OPERATORS:
-{operator_definitions}
+$operator_definitions
 
 COMPLETE EXAMPLES FROM REAL PIPELINES:
 
@@ -49,230 +51,258 @@ Format your response as a list:
 IMPORTANT:
 1. Only select operators that are actually needed
 2. Consider the data flow between operators
-3. For aggregation tasks, use reduce with appropriate reduce_key
+3. For aggregation tasks, use reduce
 4. For deduplication, use resolve
 5. For splitting long text, use split followed by gather if context is needed
 6. Use unnest when you need to expand arrays or nested structures
-7. Chain operators logically - outputs of one operator should match inputs expected by the next
+7. The map and extract operators has similar function - Using these two operators together is not recommended.
+8. Chain operators logically - outputs of one operator should match inputs expected by the next
 
 Your response:
-"""
+""")
 
 # Individual operator detail generation prompts - Step 3
 
-MAP_OPERATOR_PROMPT = """
+MAP_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL map operator configurations.
 
 Generate the detailed configuration for a MAP operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL MAP OPERATOR RULES:
-- Map transforms EACH document individually using {{ input.field_name }} syntax
+- Map transforms EACH document individually using {{ input.field_name }} syntax (Jinja2 template)
 - You MUST use {{ input.field_name }} to reference fields in the prompt
-- Available fields: {available_fields}
+- Available fields: $available_fields
 - Create an output schema with new field names that don't conflict with existing fields
-- Keep output schema simple and flat
+- The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
+- Keep output schema simple and flat when possible
 
-Example field usage in prompt:
-- "Analyze the following text: {{ input.content }}"
-- "Extract topics from: {{ input.article_text }}"
-- "Process document {{ input.title }} with content {{ input.body }}"
+COMPLETE EXAMPLES (only showing fields you need to generate):
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
+Example 1 - Extracting structured data:
+{
+  "prompt": "Analyze the text: {{ input.content }}. Extract the main themes discussed. Return a list of theme names.",
+  "output_schema": {
+    "themes": "list",
+    "summary": "string"
+  }
+}
 
-Return ONLY the filled operator configuration in YAML format:
+Example 2 - Sentiment analysis:
+{
+  "prompt": "Analyze sentiment of: {{ input.review_text }}. Return sentiment label and confidence score.",
+  "output_schema": {
+    "sentiment": "string",
+    "confidence": "float"
+  }
+}
 
-```yaml
-name: {operator_type}_operation
-type: map
-prompt: |
-  [Your prompt using {{ input.field_name }} syntax]
-output:
-  schema:
-    [field_name]: [type]
-```
-"""
+IMPORTANT: Return valid JSON (not YAML). Your response must be parseable JSON matching this structure.
+The "output_schema" field must be an object with field names as keys and type strings as values.
+Valid types: "string", "int", "float", "bool", "list", "dict"
+""")
 
-FILTER_OPERATOR_PROMPT = """
+FILTER_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL filter operator configurations.
 
 Generate the detailed configuration for a FILTER operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL FILTER OPERATOR RULES:
-- Filter keeps/discards documents based on {{ input.field_name }} syntax
+- Filter keeps/discards documents based on {{ input.field_name }} syntax (Jinja2 template)
 - You MUST use {{ input.field_name }} to reference fields in the prompt
-- Available fields: {available_fields}
-- The output schema MUST have a boolean field (usually called "filter_result" or similar)
+- Available fields: $available_fields
+- The output schema MUST have a boolean field (type: "bool")
 - The prompt should ask for "true" or "false" as the response
 
-Example field usage in prompt:
-- "Should we keep this document? Title: {{ input.title }}, Content: {{ input.content }}. Return true or false."
-- "Filter based on score: {{ input.score }}. Return true if score > 5, else false."
+COMPLETE EXAMPLES (only showing fields you need to generate):
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
+Example 1 - Filter by relevance:
+{
+  "prompt": "Is this document relevant? Title: {{ input.title }}. Return true to keep, false to discard.",
+  "output_schema": {
+    "keep": "bool"
+  }
+}
 
-Return ONLY the filled operator configuration in YAML format:
+Example 2 - Filter by score threshold:
+{
+  "prompt": "Quality score: {{ input.quality_score }}. Return true if score >= 7, else false.",
+  "output_schema": {
+    "passes_threshold": "bool"
+  }
+}
 
-```yaml
-name: {operator_type}_operation
-type: filter
-prompt: |
-  [Your prompt using {{ input.field_name }} syntax, asking for true/false]
-output:
-  schema:
-    [boolean_field_name]: boolean
-```
-"""
+IMPORTANT: Return valid JSON (not YAML). Your response must be parseable JSON matching this structure.
+The "output_schema" field must be an object with a boolean field.
+""")
 
-REDUCE_OPERATOR_PROMPT = """
+REDUCE_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL reduce operator configurations.
 
 Generate the detailed configuration for a REDUCE operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL REDUCE OPERATOR RULES:
 - Reduce aggregates multiple documents grouped by reduce_key
-- You MUST use {{ inputs }} (plural) to reference the group of documents
-- You MUST specify a reduce_key field that exists in available fields: {available_fields}
+- You MUST use {{ inputs }} (plural) to reference the group of documents (Jinja2 template)
+- You MUST specify a reduce_key field that exists in available fields: $available_fields
 - Access fields like: {{ inputs[0].field_name }} or {% for item in inputs %}{{ item.field_name }}{% endfor %}
+- The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
 - Create aggregated output schema with new field names
 
-Example field usage in prompt:
-- "Summarize feedback for {{ inputs[0].department }}: {% for item in inputs %}{{ item.feedback }}{% endfor %}"
-- "Aggregate data by {{ inputs[0].category }}: {% for doc in inputs %}Document: {{ doc.content }}{% endfor %}"
+COMPLETE EXAMPLES (only showing fields you need to generate):
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
+Example 1 - Aggregate themes by category:
+{
+  "reduce_key": "theme",
+  "prompt": "Summarize all viewpoints for theme '{{ inputs[0].theme }}': {% for item in inputs %}{{ item.viewpoint }} {% endfor %}. Provide an aggregated summary.",
+  "output_schema": {
+    "theme": "string",
+    "aggregated_summary": "string",
+    "count": "int"
+  }
+}
 
-Return ONLY the filled operator configuration in YAML format:
+Example 2 - Aggregate reviews by product:
+{
+  "reduce_key": "product_id",
+  "prompt": "Product: {{ inputs[0].product_name }}. Reviews: {% for review in inputs %}{{ review.text }} {% endfor %}. Summarize common themes.",
+  "output_schema": {
+    "product_name": "string",
+    "common_themes": "list",
+    "average_sentiment": "string"
+  }
+}
 
-```yaml
-name: {operator_type}_operation
-type: reduce
-reduce_key: [field_to_group_by]
-prompt: |
-  [Your prompt using {{ inputs }} syntax for aggregation]
-output:
-  schema:
-    [aggregated_field]: [type]
-```
-"""
+IMPORTANT: Return valid JSON (not YAML). Your response must be parseable JSON matching this structure.
+The "output_schema" field must be an object with field names as keys and type strings as values.
+Valid types: "string", "int", "float", "bool", "list", "dict"
+""")
 
-RESOLVE_OPERATOR_PROMPT = """
+RESOLVE_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL resolve operator configurations.
 
 Generate the detailed configuration for a RESOLVE operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL RESOLVE OPERATOR RULES:
-- Resolve deduplicates/standardizes entities with comparison and resolution prompts
+- Resolve deduplicates/standardizes entities with comparison and resolution prompts (Jinja2 templates)
 - comparison_prompt uses {{ input1.field }} and {{ input2.field }} to compare two items
 - resolution_prompt uses {{ inputs }} to merge multiple similar items
-- Available fields: {available_fields}
+- Available fields: $available_fields
 - Set optimize: true for better performance
+- The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
 - Create output schema for the resolved/standardized entity
 
-Example field usage:
-- comparison_prompt: "Are {{ input1.name }} and {{ input2.name }} the same person? Consider {{ input1.email }} vs {{ input2.email }}. Return True or False."
-- resolution_prompt: "Standardize these names: {% for item in inputs %}{{ item.name }}{% endfor %}. Return the canonical version."
+COMPLETE EXAMPLES (only showing fields you need to generate):
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
+Example 1 - Resolve duplicate person names:
+{
+  "optimize": true,
+  "comparison_prompt": "Are {{ input1.name }} and {{ input2.name }} the same person? Email1: {{ input1.email }} vs Email2: {{ input2.email }}. Return True or False.",
+  "resolution_prompt": "Merge these person records: {% for item in inputs %}Name: {{ item.name }}, Email: {{ item.email }} {% endfor %}. Return canonical name and email.",
+  "output_schema": {
+    "canonical_name": "string",
+    "canonical_email": "string"
+  }
+}
 
-Return ONLY the filled operator configuration in YAML format:
+Example 2 - Resolve similar themes:
+{
+  "optimize": true,
+  "comparison_prompt": "Are themes '{{ input1.theme_name }}' and '{{ input2.theme_name }}' similar? Return True or False.",
+  "resolution_prompt": "Consolidate these similar themes: {% for t in inputs %}{{ t.theme_name }}, {{ t.description }} {% endfor %}. Return unified theme name.",
+  "output_schema": {
+    "unified_theme": "string",
+    "consolidated_description": "string"
+  }
+}
 
-```yaml
-name: {operator_type}_operation
-type: resolve
-optimize: true
-comparison_prompt: |
-  [Prompt using {{ input1.field }} and {{ input2.field }}]
-resolution_prompt: |
-  [Prompt using {{ inputs }} for merging]
-output:
-  schema:
-    [resolved_field]: [type]
-```
-"""
+IMPORTANT: Return valid JSON (not YAML). Your response must be parseable JSON matching this structure.
+The "output_schema" field must be an object with field names as keys and type strings as values.
+Valid types: "string", "int", "float", "bool", "list", "dict"
+""")
 
-RANK_OPERATOR_PROMPT = """
+RANK_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL rank operator configurations.
 
 Generate the detailed configuration for a RANK operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL RANK OPERATOR RULES:
 - Rank orders documents by custom criteria using LLM scoring
-- Specify input_keys with fields to consider for ranking: {available_fields}
+- Specify input_keys with fields to consider for ranking: $available_fields
 - The prompt should describe ranking criteria
 - Set direction: "desc" for highest first, "asc" for lowest first
 - Rank adds a "rank" field to output documents
@@ -283,41 +313,32 @@ Example configuration:
 
 Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 
-Return ONLY the filled operator configuration in YAML format:
+Return ONLY the filled operator configuration in JSON format matching the required schema.
+""")
 
-```yaml
-name: {operator_type}_operation
-type: rank
-prompt: |
-  [Ranking criteria description]
-input_keys: [list_of_fields_to_consider]
-direction: [asc/desc]
-```
-"""
-
-EXTRACT_OPERATOR_PROMPT = """
+EXTRACT_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL extract operator configurations.
 
 Generate the detailed configuration for an EXTRACT operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL EXTRACT OPERATOR RULES:
 - Extract pulls verbatim text sections from documents
-- document_keys specifies which fields to extract from: {available_fields}
+- document_keys specifies which fields to extract from: $available_fields
 - document_keys CANNOT be empty (defaults to ["src"] if not specified)
 - The prompt should describe what text sections to extract
 - Extracted content is added as new fields with suffix
@@ -331,39 +352,39 @@ Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 Return ONLY the filled operator configuration in YAML format:
 
 ```yaml
-name: {operator_type}_operation
+name: $operator_type_operation
 type: extract
 prompt: |
   [Description of what text sections to extract]
 document_keys: [list_of_fields_to_extract_from]
 ```
-"""
+""")
 
 
-CODE_FILTER_OPERATOR_PROMPT = """
+CODE_FILTER_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL code_filter operator configurations.
 
 Generate the detailed configuration for a CODE_FILTER operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL CODE_FILTER OPERATOR RULES:
 - Code_filter keeps/discards documents using Python code instead of LLM prompts
 - Use doc['field_name'] syntax to access fields in the Python code
-- Available fields: {available_fields}
+- Available fields: $available_fields
 - The function must return a boolean (True to keep, False to discard)
 - The function must be named 'filter' and take 'doc' parameter
 
@@ -378,38 +399,38 @@ Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 Return ONLY the filled operator configuration in YAML format:
 
 ```yaml
-name: {operator_type}_operation
+name: $operator_type_operation
 type: code_filter
 code: |
   def filter(doc) -> bool:
       [Your Python boolean logic using doc['field_name']]
       return [boolean_expression]
 ```
-"""
+""")
 
-SPLIT_OPERATOR_PROMPT = """
+SPLIT_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL split operator configurations.
 
 Generate the detailed configuration for a SPLIT operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL SPLIT OPERATOR RULES:
 - Split breaks long text fields into smaller chunks
-- split_key must specify which field to split: {available_fields}
+- split_key must specify which field to split: $available_fields
 - method options: "token_count", "sentence", "delimiter"
 - method_kwargs configures the splitting parameters
 - Adds _split_id and _split_index fields to output
@@ -424,41 +445,41 @@ Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 Return ONLY the filled operator configuration in YAML format:
 
 ```yaml
-name: {operator_type}_operation
+name: $operator_type_operation
 type: split
 split_key: [field_to_split]
 method: [token_count/sentence/delimiter]
 method_kwargs:
   [method_parameters]
 ```
-"""
+""")
 
-GATHER_OPERATOR_PROMPT = """
+GATHER_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL gather operator configurations.
 
 Generate the detailed configuration for a GATHER operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL GATHER OPERATOR RULES:
 - Gather adds surrounding context to chunks after splitting
 - content_key: field containing the chunk content
 - doc_id_key: field identifying which document the chunk belongs to
 - order_key: field indicating chunk order within document
-- All keys must reference available fields: {available_fields}
+- All keys must reference available fields: $available_fields
 - Configure peripheral_chunks for context
 
 Example configuration:
@@ -471,37 +492,37 @@ Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 Return ONLY the filled operator configuration in YAML format:
 
 ```yaml
-name: {operator_type}_operation
+name: $operator_type_operation
 type: gather
 content_key: [chunk_content_field]
 doc_id_key: [document_id_field]
 order_key: [chunk_order_field]
 ```
-"""
+""")
 
-UNNEST_OPERATOR_PROMPT = """
+UNNEST_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL unnest operator configurations.
 
 Generate the detailed configuration for an UNNEST operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL UNNEST OPERATOR RULES:
 - Unnest expands array or nested fields into separate documents
-- unnest_key must specify which field contains the array/nested data: {available_fields}
+- unnest_key must specify which field contains the array/nested data: $available_fields
 - For list unnesting: creates multiple documents, one per array element
 - For dict unnesting: flattens nested fields into parent document
 - Use recursive: true and depth: 2 to fully flatten nested structures
@@ -515,35 +536,35 @@ Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 Return ONLY the filled operator configuration in YAML format:
 
 ```yaml
-name: {operator_type}_operation
+name: $operator_type_operation
 type: unnest
 unnest_key: [field_to_unnest]
 ```
-"""
+""")
 
-CLUSTER_OPERATOR_PROMPT = """
+CLUSTER_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL cluster operator configurations.
 
 Generate the detailed configuration for a CLUSTER operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL CLUSTER OPERATOR RULES:
 - Cluster groups similar documents using embeddings
-- embedding_keys specifies which fields to use for similarity: {available_fields}
+- embedding_keys specifies which fields to use for similarity: $available_fields
 - output_key names the field where cluster assignments are stored
 - summary_prompt uses {{ inputs }} to describe cluster characteristics
 - summary_schema defines the cluster summary structure
@@ -557,38 +578,38 @@ Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 Return ONLY the filled operator configuration in YAML format:
 
 ```yaml
-name: {operator_type}_operation
+name: $operator_type_operation
 type: cluster
 embedding_keys: [fields_for_similarity]
 output_key: [cluster_field_name]
 ```
-"""
+""")
 
-SAMPLE_OPERATOR_PROMPT = """
+SAMPLE_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL sample operator configurations.
 
 Generate the detailed configuration for a SAMPLE operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL SAMPLE OPERATOR RULES:
 - Sample selects a subset of documents for processing
 - method: "uniform" for random sampling, "stratified" for balanced sampling
 - samples: fraction (0.1 = 10%) or integer count
-- stratify_key: field to balance across when using stratified sampling: {available_fields}
+- stratify_key: field to balance across when using stratified sampling: $available_fields
 - random_state: seed for reproducible sampling
 
 Example configuration:
@@ -600,40 +621,40 @@ Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 Return ONLY the filled operator configuration in YAML format:
 
 ```yaml
-name: {operator_type}_operation
+name: $operator_type_operation
 type: sample
 method: [uniform/stratified]
 samples: [fraction_or_count]
 stratify_key: [field_for_balancing]
 random_state: 42
 ```
-"""
+""")
 
-TOPK_OPERATOR_PROMPT = """
+TOPK_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL topk operator configurations.
 
 Generate the detailed configuration for a TOPK operator:
 
-OPERATOR PURPOSE: {operator_purpose}
-QUERY: {query}
+OPERATOR PURPOSE: $operator_purpose
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 CRITICAL TOPK OPERATOR RULES:
 - TopK retrieves the most relevant documents using embeddings or keywords
 - method: "embedding" for semantic search, "keyword" for text matching
 - k: number of documents to retrieve
-- keys: fields to search within: {available_fields}
+- keys: fields to search within: $available_fields
 - query: search query string
 - embedding_model: model for embedding-based search
 
@@ -646,37 +667,37 @@ Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 Return ONLY the filled operator configuration in YAML format:
 
 ```yaml
-name: {operator_type}_operation
+name: $operator_type_operation
 type: topk
 method: [embedding/keyword]
 k: [number_of_documents]
 keys: [fields_to_search]
 query: [search_query_string]
 ```
-"""
+""")
 
 # Generic fallback prompt for any unlisted operators
-GENERIC_OPERATOR_PROMPT = """
+GENERIC_OPERATOR_PROMPT = Template("""
 You are an expert at generating DocETL operator configurations.
 
 Generate the detailed configuration for the following operator:
 
-OPERATOR TYPE: {operator_type}
-OPERATOR PURPOSE: {operator_purpose}
+OPERATOR TYPE: $operator_type
+OPERATOR PURPOSE: $operator_purpose
 
-QUERY: {query}
+QUERY: $query
 
 DATASET SAMPLE:
-{dataset_samples}
+$dataset_samples
 
 AVAILABLE FIELDS AT THIS STAGE:
-{available_fields}
+$available_fields
 
 PREVIOUS OPERATORS IN PIPELINE:
-{previous_operators}
+$previous_operators
 
 CURRENT OPERATOR FRAMEWORK:
-{operator_framework}
+$operator_framework
 
 Fill in all the "TO_BE_GENERATED" placeholders with appropriate values.
 
@@ -689,16 +710,16 @@ IMPORTANT FIELD RULES:
 Return ONLY the filled operator configuration in YAML format.
 
 ```yaml
-name: {operator_type}_operation
-type: {operator_type}
+name: $operator_type_operation
+type: $operator_type
 # ... fill in all fields with actual values, no placeholders
 ```
-"""
+""")
 
 # Operator definitions with detailed examples organized by type
 OPERATOR_DEFINITIONS = {
     "map": """
-**Map Operator** — Per-document transformation using an LLM.
+Map Operator — Per-document transformation using an LLM.
 
 FIELD ACCESS: Use {{ input.field_name }} to access document fields.
 
@@ -721,12 +742,10 @@ Example:
       summary: string
       sentiment: string
 ```
-
-CRITICAL: Always use {{ input.field_name }} syntax in prompts.
 """,
 
     "filter": """
-**Filter Operator** — Keep or discard documents by returning a boolean.
+Filter Operator — Keep or discard documents by returning a boolean.
 
 FIELD ACCESS: Use {{ input.field_name }} to access document fields.
 
@@ -744,15 +763,10 @@ Example:
     schema:
       keep_article: boolean
 ```
-
-CRITICAL: Always use {{ input.field_name }} syntax and return boolean.
 """,
 
     "reduce": """
-**Reduce Operator** — Aggregate over groups using a reduce_key.
-
-FIELD ACCESS: Use {{ inputs }} (plural) to access grouped documents.
-REQUIRED: Must specify reduce_key field.
+Reduce Operator — Aggregate over groups using a reduce_key.
 
 Example:
 ```yaml
@@ -771,12 +785,10 @@ Example:
     schema:
       category_summary: string
 ```
-
-CRITICAL: Always use {{ inputs }} syntax and specify reduce_key.
 """,
 
     "resolve": """
-**Resolve Operator** — Deduplicate or standardize entities.
+Resolve Operator — Deduplicate or standardize entities.
 
 FIELD ACCESS:
 - comparison_prompt: {{ input1.field }} and {{ input2.field }}
@@ -802,12 +814,10 @@ Example:
     schema:
       canonical_name: string
 ```
-
-CRITICAL: Use {{ input1.field }}/{{ input2.field }} and {{ inputs }} syntax.
 """,
 
     "rank": """
-**Rank Operator** — Order items by custom criteria using LLM scoring.
+Rank Operator — Order items by custom criteria using LLM scoring.
 
 FIELD ACCESS: Specify input_keys with fields to consider.
 
@@ -821,15 +831,10 @@ Example:
   input_keys: ["title", "content", "metadata"]
   direction: desc
 ```
-
-CRITICAL: Specify input_keys with available field names.
 """,
 
     "extract": """
-**Extract Operator** — Pull verbatim text sections from documents.
-
-FIELD ACCESS: Specify document_keys with fields to extract from.
-REQUIRED: document_keys cannot be empty.
+Extract Operator — Pull verbatim text sections from documents. The difference between this operator and the map operator is that the extract operator fully copies text spans from the original texts.
 
 Example:
 ```yaml
@@ -843,12 +848,10 @@ Example:
     - Main conclusions
   document_keys: ["content", "abstract"]
 ```
-
-CRITICAL: Must specify document_keys with valid field names.
 """,
 
     "cluster": """
-**Cluster Operator** — Group similar documents using embeddings.
+Cluster Operator — Group similar documents using embeddings.
 
 FIELD ACCESS:
 - embedding_keys: fields to use for similarity
@@ -867,12 +870,10 @@ Example:
     {% endfor %}
     What topic connects these articles?
 ```
-
-CRITICAL: Specify embedding_keys and use {{ inputs }} in summary_prompt.
 """,
 
     "split": """
-**Split Operator** — Break long text into chunks.
+Split Operator — Break long text into chunks.
 
 FIELD ACCESS: Specify split_key with field to split.
 
@@ -886,12 +887,10 @@ Example:
     num_tokens: 500
     model: azure/gpt-4o
 ```
-
-CRITICAL: Must specify split_key with valid field name.
 """,
 
     "gather": """
-**Gather Operator** — Add surrounding context to chunks.
+Gather Operator — Add surrounding context to chunks.
 
 FIELD ACCESS: Specify keys for content, document ID, and order.
 
@@ -908,12 +907,10 @@ Example:
     next:
       count: 1
 ```
-
-CRITICAL: All keys must reference valid field names.
 """,
 
     "unnest": """
-**Unnest Operator** — Expand arrays or nested fields.
+Unnest Operator — Expand arrays or nested fields.
 
 FIELD ACCESS: Specify unnest_key with field containing array/nested data.
 
@@ -925,12 +922,10 @@ Example:
   recursive: true
   depth: 2
 ```
-
-CRITICAL: Must specify unnest_key with valid field name.
 """,
 
     "sample": """
-**Sample Operator** — Select subset of documents.
+Sample Operator — Select subset of documents.
 
 FIELD ACCESS: Specify stratify_key for balanced sampling.
 
@@ -943,12 +938,10 @@ Example:
   stratify_key: category
   random_state: 42
 ```
-
-CRITICAL: stratify_key must be valid field name if used.
 """,
 
     "topk": """
-**TopK Operator** — Retrieve most relevant documents.
+TopK Operator — Retrieve most relevant documents.
 
 FIELD ACCESS: Specify keys with fields to search within.
 
@@ -962,23 +955,21 @@ Example:
   query: "machine learning applications"
   embedding_model: text-embedding-3-small
 ```
-
-CRITICAL: keys must contain valid field names.
 """
 }
 
 # Validation prompt for checking operator consistency
-OPERATOR_VALIDATION_PROMPT = """
+OPERATOR_VALIDATION_PROMPT = Template("""
 Check if the following operator configuration is valid and consistent:
 
 OPERATOR:
-{operator_config}
+$operator_config
 
 PREVIOUS OPERATORS OUTPUT:
-{previous_outputs}
+$previous_outputs
 
 DATASET FIELDS:
-{dataset_fields}
+$dataset_fields
 
 Verify:
 1. All input fields referenced exist (either from dataset or previous operators)
@@ -993,4 +984,4 @@ Return:
 Response format:
 STATUS: [VALID/INVALID]
 EXPLANATION: [if invalid, explain the issues]
-"""
+""")

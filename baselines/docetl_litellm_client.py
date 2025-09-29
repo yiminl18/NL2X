@@ -52,12 +52,12 @@ def llm_call(messages: List[Dict[str, str]],
     }
 
     if schema:
-        schema["additionalProperties"] = False
+        # Don't set additionalProperties at root level, let the schema define it
         params["response_format"] = {
             "type": "json_schema",
             "json_schema": {
                 "name": "output",
-                "strict": True,
+                "strict": False,  # Disable strict mode to allow flexible schemas
                 "schema": schema
             }
         }

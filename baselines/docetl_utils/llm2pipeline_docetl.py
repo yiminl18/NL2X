@@ -396,7 +396,11 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
         except Exception as e:
             # print(f"  Warning: Could not load data from {file_path}: {e}")
             dataset_samples[file_path] = f"Error loading file: {str(e)}"
-    
+
+    # If only one dataset, return content directly without the file path key
+    if len(dataset_samples) == 1:
+        return list(dataset_samples.values())[0]
+
     return dataset_samples
 
 

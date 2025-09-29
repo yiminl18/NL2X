@@ -351,9 +351,9 @@ def apply_map_operator_transformation(type_system: TypeSystem, operator: Dict[st
         new_system.record_field_usage(field, operator_name)
 
     produced_fields = []
-    if 'output' in operator and 'schema' in operator['output']:
-        if isinstance(operator['output']['schema'], dict):
-            for field_name, field_type in operator['output']['schema'].items():
+    if 'output_schema' in operator:
+        if isinstance(operator['output_schema'], dict):
+            for field_name, field_type in operator['output_schema'].items():
                 # Infer type from schema field type description
                 type_dict = infer_type_from_schema_type(field_type)
                 new_system.add_field_with_source(field_name, type_dict, operator_name)
@@ -465,9 +465,9 @@ def apply_reduce_operator_transformation(type_system: TypeSystem, operator: Dict
             new_system.add_field_with_source(operator['reduce_key'], existing_type, existing_source)
 
     # Add output schema fields
-    if 'output' in operator and 'schema' in operator['output']:
-        if isinstance(operator['output']['schema'], dict):
-            for field_name, field_type in operator['output']['schema'].items():
+    if 'output_schema' in operator:
+        if isinstance(operator['output_schema'], dict):
+            for field_name, field_type in operator['output_schema'].items():
                 type_dict = infer_type_from_schema_type(field_type)
                 new_system.add_field_with_source(field_name, type_dict, operator_name)
                 produced_fields.append(field_name)
@@ -752,12 +752,12 @@ def parse_operator_output_fields(operator: Dict[str, Any]) -> List[str]:
         return output_fields
 
     # Handle operators with output schema
-    if 'output' in operator and isinstance(operator['output'], dict):
-        if isinstance(operator['output'].get('schema', {}), dict):
-            output_fields.extend(operator['output'].get('schema', {}).keys())
-        elif isinstance(schema, str):
+    if 'output_schema' in operator:
+        if isinstance(operator['output_schema'], dict):
+            output_fields.extend(operator['output_schema'].keys())
+        elif isinstance(operator['output_schema'], str):
             import re
-            matches = re.findall(r'(\w+)\s*:\s*\w+', schema)
+            matches = re.findall(r'(\w+)\s*:\s*\w+', operator['output_schema'])
             output_fields.extend(matches)
 
     # Handle specific operator types

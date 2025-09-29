@@ -10,6 +10,7 @@ import logging
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
 from .docetl_data_utils import DocETLDataProcessor
+from .docetl_log_utils import save_prompt, save_messages, save_validation, get_filename_base
 from .docetl_utils.llm2pipeline_docetl import (
     create_initial_messages,
     add_error_message,
@@ -135,58 +136,6 @@ class DocETLBaseline(BaselineInterface):
 
     
     
-    def _save_prompt(self, prompt: str, query: str, attempt: int = 0) -> str:
-        """Save prompt to persistent directory."""
-        filename = f"{self.data_processor._create_base_filename(query, f'attempt{attempt}')}.txt"
-        filepath = os.path.join(self.prompts_output_dir, filename)
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(f"Query: {query}\n")
-            f.write(f"Attempt: {attempt}\n")
-            f.write(f"Generated at: {datetime.now().isoformat()}\n")
-            f.write("="*50 + "\n\n")
-            f.write(prompt)
-        
-        return filepath
-    
-    def _save_validation(self, validation_prompt: str, validation_result: dict, query: str) -> str:
-        """Save validation prompt and result."""
-        filename = f"{self.data_processor._create_base_filename(query, 'validation')}.json"
-        filepath = os.path.join(self.validations_output_dir, filename)
-
-        validation_data = {
-            "query": query,
-            "timestamp": datetime.now().isoformat(),
-            "validation_prompt": validation_prompt,
-            "validation_result": validation_result
-        }
-
-        self.data_processor._write_json(validation_data, filepath)
-        return filepath
-    
-    def _save_messages(self, messages: list, query: str, pipeline_history: list = None) -> str:
-        """Save complete message history."""
-        filename = f"{self.data_processor._create_base_filename(query, 'messages')}.json"
-        filepath = os.path.join(self.messages_output_dir, filename)
-
-        messages_data = {
-            "query": query,
-            "timestamp": datetime.now().isoformat(),
-            "total_messages": len(messages),
-            "messages": messages,
-            "pipeline_history": []
-        }
-
-        if pipeline_history:
-            for failed in pipeline_history:
-                messages_data["pipeline_history"].append({
-                    "error_type": failed.error_type,
-                    "error_message": failed.error_message,
-                    "pipeline_yaml": failed.pipeline_yaml
-                })
-
-        self.data_processor._write_json(messages_data, filepath)
-        return filepath
 
 
     def _generate_and_execute_pipeline(self, query: str, dataset_paths: List[str]) -> tuple:
@@ -319,7 +268,8 @@ class DocETLBaseline(BaselineInterface):
                 result = self._load_pipeline_output(output_path)
 
                 # Save complete message history for successful run
-                self._save_messages(messages, query, pipeline_history)
+                filename_base = get_filename_base(self.data_processor, query)
+                save_messages(self.messages_output_dir, filename_base, messages, query, pipeline_history)
 
                 # Keep pipeline file without renaming
 
@@ -350,7 +300,8 @@ class DocETLBaseline(BaselineInterface):
         })
 
         # Save message history for failed run
-        self._save_messages(messages, query, pipeline_history)
+        filename_base = get_filename_base(self.data_processor, query)
+        save_messages(self.messages_output_dir, filename_base, messages, query, pipeline_history)
 
         # Keep pipeline file without renaming
 
