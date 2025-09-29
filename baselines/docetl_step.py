@@ -30,21 +30,8 @@ from .docetl_type_utils import (
 )
 from .docetl_utils.prompt_step import (
     OPERATOR_SELECTION_PROMPT,
-    MAP_OPERATOR_PROMPT,
-    FILTER_OPERATOR_PROMPT,
-    REDUCE_OPERATOR_PROMPT,
-    RESOLVE_OPERATOR_PROMPT,
-    RANK_OPERATOR_PROMPT,
-    EXTRACT_OPERATOR_PROMPT,
-    CODE_FILTER_OPERATOR_PROMPT,
-    SPLIT_OPERATOR_PROMPT,
-    GATHER_OPERATOR_PROMPT,
-    UNNEST_OPERATOR_PROMPT,
-    CLUSTER_OPERATOR_PROMPT,
-    SAMPLE_OPERATOR_PROMPT,
-    TOPK_OPERATOR_PROMPT,
-    GENERIC_OPERATOR_PROMPT,
-    OPERATOR_DEFINITIONS
+    OPERATOR_DEFINITIONS,
+    get_op_prompt,
 )
 
 @register_baseline("docetl_step")
@@ -216,65 +203,29 @@ class DocETLStepBaseline(BaselineInterface):
                 'purpose': op['purpose']
             }
 
-            # Add type-specific placeholders
-            if op['type'] in ['map', 'filter']:
-                framework['prompt'] = "TO_BE_GENERATED"
-                framework['output_schema'] = {}
+            # Some ops might need default settings.
+            # if op['type'] == 'resolve':
+            #     framework['optimize'] = True
 
-            elif op['type'] == 'extract':
-                framework['prompt'] = "TO_BE_GENERATED"
-                framework['document_keys'] = []
-                framework['model'] = "TO_BE_GENERATED"
-
-            elif op['type'] == 'reduce':
-                framework['reduce_key'] = "TO_BE_GENERATED"
-                framework['prompt'] = "TO_BE_GENERATED"
-                framework['output_schema'] = {}
-
-            elif op['type'] == 'resolve':
-                framework['optimize'] = True
-                framework['comparison_prompt'] = "TO_BE_GENERATED"
-                framework['resolution_prompt'] = "TO_BE_GENERATED"
-                framework['output_schema'] = {}
-
-            elif op['type'] == 'rank':
-                framework['prompt'] = "TO_BE_GENERATED"
+            if op['type'] == 'rank':
                 framework['input_keys'] = []
                 framework['direction'] = "desc"
 
             elif op['type'] == 'split':
-                framework['split_key'] = "TO_BE_GENERATED"
                 framework['method'] = "token_count"
                 framework['method_kwargs'] = {}
 
-            elif op['type'] == 'gather':
-                framework['content_key'] = "TO_BE_GENERATED"
-                framework['doc_id_key'] = "TO_BE_GENERATED"
-                framework['order_key'] = "TO_BE_GENERATED"
-
-            elif op['type'] == 'unnest':
-                framework['unnest_key'] = "TO_BE_GENERATED"
-
-            elif op['type'] == 'code_map':
-                framework['code'] = "TO_BE_GENERATED"
-
-            elif op['type'] == 'code_filter':
-                framework['code'] = "TO_BE_GENERATED"
-
             elif op['type'] == 'cluster':
                 framework['embedding_keys'] = []
-                framework['output_key'] = "TO_BE_GENERATED"
 
             elif op['type'] == 'topk':
                 framework['method'] = "embedding"
                 framework['k'] = 5
                 framework['keys'] = []
-                framework['query'] = "TO_BE_GENERATED"
 
             elif op['type'] == 'sample':
                 framework['method'] = "uniform"
                 framework['samples'] = 0.1
-                framework['stratify_key'] = "TO_BE_GENERATED"
                 framework['random_state'] = 42
 
             frameworks.append(framework)
@@ -287,8 +238,6 @@ class DocETLStepBaseline(BaselineInterface):
             raise ValueError("User aborted pipeline generation at framework creation step")
 
         return frameworks
-
-
 
     def _extract_dataset_fields(self, dataset_samples: Dict[str, Any]) -> List[str]:
         """Extract field names from dataset samples."""
@@ -326,119 +275,150 @@ class DocETLStepBaseline(BaselineInterface):
 
     def _get_operator_schema(self, op_type: str) -> Dict[str, Any]:
         """Generate JSON schema for operator type."""
-        base_schema = {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "type": {"type": "string", "enum": [op_type]}
-            },
-            "required": ["name", "type"]
-        }
-
         if op_type in ['map', 'filter']:
-            base_schema["properties"].update({
-                "prompt": {"type": "string"},
-                "output_schema": {"type": "object"}
-            })
-            base_schema["required"].extend(["prompt", "output_schema"])
+            return {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "output_schema": {"type": "object"}
+                },
+                "required": ["prompt", "output_schema"]
+            }
 
         elif op_type == 'extract':
-            base_schema["properties"].update({
-                "prompt": {"type": "string"},
-                "document_keys": {
-                    "type": "array",
-                    "items": {"type": "string"}
+            return {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "document_keys": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
                 },
-            })
-            base_schema["required"].extend(["prompt", "document_keys"])
+                "required": ["prompt", "document_keys"]
+            }
 
         elif op_type == 'reduce':
-            base_schema["properties"].update({
-                "reduce_key": {"type": "string"},
-                "prompt": {"type": "string"},
-                "output_schema": {"type": "object"}
-            })
-            base_schema["required"].extend(["reduce_key", "prompt", "output_schema"])
+            return {
+                "type": "object",
+                "properties": {
+                    "reduce_key": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "output_schema": {"type": "object"}
+                },
+                "required": ["reduce_key", "prompt", "output_schema"]
+            }
 
         elif op_type == 'resolve':
-            base_schema["properties"].update({
-                "comparison_prompt": {"type": "string"},
-                "resolution_prompt": {"type": "string"},
-                "output_schema": {"type": "object"}
-            })
-            base_schema["required"].extend(["comparison_prompt", "resolution_prompt", "output_schema"])
+            return {
+                "type": "object",
+                "properties": {
+                    "comparison_prompt": {"type": "string"},
+                    "resolution_prompt": {"type": "string"},
+                    "output_schema": {"type": "object"}
+                },
+                "required": ["comparison_prompt", "resolution_prompt", "output_schema"]
+            }
 
         elif op_type == 'rank':
-            base_schema["properties"].update({
-                "prompt": {"type": "string"},
-                "input_keys": {
-                    "type": "array",
-                    "items": {"type": "string"}
+            return {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "input_keys": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "direction": {"type": "string", "enum": ["asc", "desc"]}
                 },
-                "direction": {"type": "string", "enum": ["asc", "desc"]}
-            })
-            base_schema["required"].extend(["prompt", "input_keys"])
+                "required": ["prompt", "input_keys"]
+            }
 
         elif op_type == 'split':
-            base_schema["properties"].update({
-                "split_key": {"type": "string"},
-                "method": {"type": "string"},
-                "method_kwargs": {"type": "object"}
-            })
-            base_schema["required"].extend(["split_key", "method"])
+            return {
+                "type": "object",
+                "properties": {
+                    "split_key": {"type": "string"},
+                    "method": {"type": "string"},
+                    "method_kwargs": {"type": "object"}
+                },
+                "required": ["split_key", "method"]
+            }
 
         elif op_type == 'gather':
-            base_schema["properties"].update({
-                "content_key": {"type": "string"},
-                "doc_id_key": {"type": "string"},
-                "order_key": {"type": "string"}
-            })
-            base_schema["required"].extend(["content_key", "doc_id_key"])
+            return {
+                "type": "object",
+                "properties": {
+                    "content_key": {"type": "string"},
+                    "doc_id_key": {"type": "string"},
+                    "order_key": {"type": "string"}
+                },
+                "required": ["content_key", "doc_id_key"]
+            }
 
         elif op_type == 'unnest':
-            base_schema["properties"].update({
-                "unnest_key": {"type": "string"}
-            })
-            base_schema["required"].extend(["unnest_key"])
+            return {
+                "type": "object",
+                "properties": {
+                    "unnest_key": {"type": "string"}
+                },
+                "required": ["unnest_key"]
+            }
 
         elif op_type in ['code_map', 'code_filter']:
-            base_schema["properties"].update({
-                "code": {"type": "string"}
-            })
-            base_schema["required"].extend(["code"])
+            return {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"}
+                },
+                "required": ["code"]
+            }
 
         elif op_type == 'cluster':
-            base_schema["properties"].update({
-                "embedding_keys": {
-                    "type": "array",
-                    "items": {"type": "string"}
+            return {
+                "type": "object",
+                "properties": {
+                    "embedding_keys": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "output_key": {"type": "string"}
                 },
-                "output_key": {"type": "string"}
-            })
-            base_schema["required"].extend(["embedding_keys", "output_key"])
+                "required": ["embedding_keys", "output_key"]
+            }
 
         elif op_type == 'topk':
-            base_schema["properties"].update({
-                "method": {"type": "string"},
-                "k": {"type": "integer"},
-                "keys": {
-                    "type": "array",
-                    "items": {"type": "string"}
+            return {
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string"},
+                    "k": {"type": "integer"},
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "query": {"type": "string"}
                 },
-                "query": {"type": "string"}
-            })
-            base_schema["required"].extend(["k", "keys"])
+                "required": ["k", "keys"]
+            }
 
         elif op_type == 'sample':
-            base_schema["properties"].update({
-                "method": {"type": "string", "enum": ["uniform", "stratified"]},
-                "samples": {"type": ["number", "integer"]},
-                "stratify_key": {"type": "string"},
-                "random_state": {"type": "integer"}
-            })
-            base_schema["required"].extend(["method", "samples"])
+            return {
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string", "enum": ["uniform", "stratified"]},
+                    "samples": {"type": ["number", "integer"]},
+                    "stratify_key": {"type": "string"},
+                },
+                "required": ["method", "samples"]
+            }
 
-        return base_schema
+        # Default empty schema for unknown operator types
+        return {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
 
     def _generate_operator_details(self, operator: Dict[str, Any], query: str,
                                   dataset_samples: Dict[str, Any],
@@ -453,33 +433,10 @@ class DocETLStepBaseline(BaselineInterface):
         # Get operator-specific prompt template
         op_type = operator['type']
 
-        # Map operator types to their specific prompt templates
-        prompt_templates = {
-            'map': MAP_OPERATOR_PROMPT,
-            'filter': FILTER_OPERATOR_PROMPT,
-            'reduce': REDUCE_OPERATOR_PROMPT,
-            'resolve': RESOLVE_OPERATOR_PROMPT,
-            'rank': RANK_OPERATOR_PROMPT,
-            'extract': EXTRACT_OPERATOR_PROMPT,
-            'code_filter': CODE_FILTER_OPERATOR_PROMPT,
-            'split': SPLIT_OPERATOR_PROMPT,
-            'gather': GATHER_OPERATOR_PROMPT,
-            'unnest': UNNEST_OPERATOR_PROMPT,
-            'cluster': CLUSTER_OPERATOR_PROMPT,
-            'sample': SAMPLE_OPERATOR_PROMPT,
-            'topk': TOPK_OPERATOR_PROMPT,
-        }
-
         # Select the appropriate prompt template
-        prompt_template = prompt_templates.get(op_type)
-        if not prompt_template:
-            raise ValueError(f"Prompt template not found for operator type: {op_type}")
+        prompt_template = get_op_prompt(op_type)
 
-        # Format available fields with types if type system is provided
-        if type_system:
-            fields_with_types = format_available_fields_with_types(type_system)
-        else:
-            fields_with_types = json.dumps(available_fields, indent=2)
+        fields_with_types = format_available_fields_with_types(type_system)
 
         prompt = prompt_template.substitute(
             operator_type=op_type,
@@ -536,10 +493,18 @@ class DocETLStepBaseline(BaselineInterface):
 
             # Merge with original operator to preserve framework structure
             for key, value in filled_operator.items():
-                if key in operator and operator[key] == "TO_BE_GENERATED":
-                    operator[key] = value
-                elif key not in operator:
-                    operator[key] = value
+                operator[key] = value
+
+            # Transform output_schema to nested output.schema format for DocETL
+            # This applies to operators that use output schemas: map, filter, reduce, resolve
+            if 'output_schema' in operator and operator['type'] in ['map', 'filter', 'reduce', 'resolve']:
+                if operator['output_schema']:  # Only transform if not empty
+                    operator['output'] = {'schema': operator['output_schema']}
+                    del operator['output_schema']
+                else:
+                    # If empty, still create the nested structure with empty schema
+                    operator['output'] = {'schema': {}}
+                    del operator['output_schema']
 
             # Special validation for extract operators
             if operator['type'] == 'extract':

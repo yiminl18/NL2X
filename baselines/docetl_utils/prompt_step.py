@@ -84,7 +84,6 @@ CRITICAL MAP OPERATOR RULES:
 - Map transforms EACH document individually using {{ input.field_name }} syntax (Jinja2 template)
 - You MUST use {{ input.field_name }} to reference fields in the prompt
 - Create an output schema with new field names that don't conflict with existing fields
-- The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
 - Keep output schema simple and flat when possible
 
 COMPLETE EXAMPLES (only showing fields you need to generate):
@@ -93,7 +92,7 @@ Example 1 - Extracting structured data:
 {
   "prompt": "Analyze the text: {{ input.content }}. Extract the main themes discussed. Return a list of theme names.",
   "output_schema": {
-    "themes": "list",
+    "themes": "list[string]",
     "summary": "string"
   }
 }
@@ -103,13 +102,17 @@ Example 2 - Sentiment analysis:
   "prompt": "Analyze sentiment of: {{ input.review_text }}. Return sentiment label and confidence score.",
   "output_schema": {
     "sentiment": "string",
-    "confidence": "float"
+    "confidence": "number"
   }
 }
 
-IMPORTANT: Return valid JSON (not YAML). Your response must be parseable JSON matching this structure.
+IMPORTANT: Return valid JSON. Your response must be parseable JSON matching this structure.
 The "output_schema" field must be an object with field names as keys and type strings as values.
-Valid types: "string", "int", "float", "bool", "list", "dict"
+Valid types:
+- Basic: "string", "integer", "number", "boolean"
+- Lists: "list[type]" (e.g., "list[string]", "list[integer]")
+- Dicts: "{field: type}" (e.g., "{name: string, age: integer}")
+- Note: Complex types (with brackets/braces) must be quoted in YAML
 """)
 
 FILTER_OPERATOR_PROMPT = Template("""
@@ -132,7 +135,7 @@ $previous_operators
 CRITICAL FILTER OPERATOR RULES:
 - Filter keeps/discards documents based on {{ input.field_name }} syntax (Jinja2 template)
 - You MUST use {{ input.field_name }} to reference fields in the prompt
-- The output schema MUST have a boolean field (type: "bool")
+- The output schema MUST have a boolean field (type: "boolean")
 - The prompt should ask for "true" or "false" as the response
 
 COMPLETE EXAMPLES (only showing fields you need to generate):
@@ -141,7 +144,7 @@ Example 1 - Filter by relevance:
 {
   "prompt": "Is this document relevant? Title: {{ input.title }}. Return true to keep, false to discard.",
   "output_schema": {
-    "keep": "bool"
+    "keep": "boolean"
   }
 }
 
@@ -149,11 +152,11 @@ Example 2 - Filter by score threshold:
 {
   "prompt": "Quality score: {{ input.quality_score }}. Return true if score >= 7, else false.",
   "output_schema": {
-    "passes_threshold": "bool"
+    "passes_threshold": "boolean"
   }
 }
 
-IMPORTANT: Return valid JSON (not YAML). Your response must be parseable JSON matching this structure.
+IMPORTANT: Return valid JSON. Your response must be parseable JSON matching this structure.
 The "output_schema" field must be an object with a boolean field.
 """)
 
@@ -179,7 +182,7 @@ CRITICAL REDUCE OPERATOR RULES:
 - You MUST use {{ inputs }} (plural) to reference the group of documents (Jinja2 template)
 - You MUST specify a reduce_key field that exists in available fields
 - Access fields like: {{ inputs[0].field_name }} or {% for item in inputs %}{{ item.field_name }}{% endfor %}
-- The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
+- The output schema MUST specify field types: "string", "integer", "number", "boolean", "list[...]", "dict{...}"
 - Create aggregated output schema with new field names
 
 COMPLETE EXAMPLES (only showing fields you need to generate):
@@ -191,7 +194,7 @@ Example 1 - Aggregate themes by category:
   "output_schema": {
     "theme": "string",
     "aggregated_summary": "string",
-    "count": "int"
+    "count": "integer"
   }
 }
 
@@ -201,14 +204,18 @@ Example 2 - Aggregate reviews by product:
   "prompt": "Product: {{ inputs[0].product_name }}. Reviews: {% for review in inputs %}{{ review.text }} {% endfor %}. Summarize common themes.",
   "output_schema": {
     "product_name": "string",
-    "common_themes": "list",
+    "common_themes": "list[string]",
     "average_sentiment": "string"
   }
 }
 
-IMPORTANT: Return valid JSON (not YAML). Your response must be parseable JSON matching this structure.
+IMPORTANT: Return valid JSON. Your response must be parseable JSON matching this structure.
 The "output_schema" field must be an object with field names as keys and type strings as values.
-Valid types: "string", "int", "float", "bool", "list", "dict"
+Valid types:
+- Basic: "string", "integer", "number", "boolean"
+- Lists: "list[type]" (e.g., "list[string]", "list[integer]")
+- Dicts: "{field: type}" (e.g., "{name: string, age: integer}")
+Note: Complex types (with brackets/braces) must be quoted
 """)
 
 RESOLVE_OPERATOR_PROMPT = Template("""
@@ -233,7 +240,7 @@ CRITICAL RESOLVE OPERATOR RULES:
 - comparison_prompt uses {{ input1.field }} and {{ input2.field }} to compare two items
 - resolution_prompt uses {{ inputs }} to merge multiple similar items
 - Set optimize: true for better performance
-- The output schema MUST specify field types: "string", "int", "float", "bool", "list", "dict"
+- The output schema MUST specify field types: "string", "integer", "number", "boolean", "list[...]", "dict{...}"
 - Create output schema for the resolved/standardized entity
 
 COMPLETE EXAMPLES (only showing fields you need to generate):
@@ -260,9 +267,13 @@ Example 2 - Resolve similar themes:
   }
 }
 
-IMPORTANT: Return valid JSON (not YAML). Your response must be parseable JSON matching this structure.
+IMPORTANT: Return valid JSON. Your response must be parseable JSON matching this structure.
 The "output_schema" field must be an object with field names as keys and type strings as values.
-Valid types: "string", "int", "float", "bool", "list", "dict"
+Valid types:
+- Basic: "string", "integer", "number", "boolean"
+- Lists: "list[type]" (e.g., "list[string]", "list[integer]")
+- Dicts: "{field: type}" (e.g., "{name: string, age: integer}")
+Note: Complex types (with brackets/braces) must be quoted
 """)
 
 RANK_OPERATOR_PROMPT = Template("""
@@ -292,8 +303,6 @@ CRITICAL RANK OPERATOR RULES:
 Example configuration:
 - input_keys: ["title", "content", "score"]
 - prompt: "Rank by relevance considering title and content quality"
-
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
 
 Return ONLY the filled operator configuration in JSON format matching the required schema.
 """)
@@ -326,17 +335,7 @@ Example configuration:
 - document_keys: ["content", "article_text"]
 - prompt: "Extract key findings, conclusions, and important quotes from the text"
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: $operator_type_operation
-type: extract
-prompt: |
-  [Description of what text sections to extract]
-document_keys: [list_of_fields_to_extract_from]
-```
+Return ONLY the filled operator configuration in json format:
 """)
 
 
@@ -369,18 +368,7 @@ def filter(doc) -> bool:
     return doc['field_name'] > threshold  # Use available fields
 ```
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: $operator_type_operation
-type: code_filter
-code: |
-  def filter(doc) -> bool:
-      [Your Python boolean logic using doc['field_name']]
-      return [boolean_expression]
-```
+Return ONLY the filled operator configuration in json format:
 """)
 
 SPLIT_OPERATOR_PROMPT = Template("""
@@ -412,18 +400,7 @@ Example configuration:
 - method: "token_count" with num_tokens parameter
 - method: "sentence" for sentence-based splitting
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: $operator_type_operation
-type: split
-split_key: [field_to_split]
-method: [token_count/sentence/delimiter]
-method_kwargs:
-  [method_parameters]
-```
+Return ONLY the filled operator configuration in json format:
 """)
 
 GATHER_OPERATOR_PROMPT = Template("""
@@ -456,17 +433,7 @@ Example configuration:
 - doc_id_key: "document_id"
 - order_key: "chunk_number"
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: $operator_type_operation
-type: gather
-content_key: [chunk_content_field]
-doc_id_key: [document_id_field]
-order_key: [chunk_order_field]
-```
+Return ONLY the filled operator configuration in json format:
 """)
 
 UNNEST_OPERATOR_PROMPT = Template("""
@@ -497,15 +464,7 @@ Example configuration:
 - unnest_key: "themes" (to expand a themes array)
 - unnest_key: "metadata" (to flatten nested metadata dict)
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: $operator_type_operation
-type: unnest
-unnest_key: [field_to_unnest]
-```
+Return ONLY the filled operator configuration in json format:
 """)
 
 CLUSTER_OPERATOR_PROMPT = Template("""
@@ -536,16 +495,7 @@ Example configuration:
 - embedding_keys: ["title", "content"]
 - summary_prompt: "Summarize this cluster: {% for item in inputs %}{{ item.title }}{% endfor %}"
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: $operator_type_operation
-type: cluster
-embedding_keys: [fields_for_similarity]
-output_key: [cluster_field_name]
-```
+Return ONLY the filled operator configuration in json format:
 """)
 
 SAMPLE_OPERATOR_PROMPT = Template("""
@@ -570,24 +520,12 @@ CRITICAL SAMPLE OPERATOR RULES:
 - method: "uniform" for random sampling, "stratified" for balanced sampling
 - samples: fraction (0.1 = 10%) or integer count
 - stratify_key: field to balance across when using stratified sampling: $available_fields
-- random_state: seed for reproducible sampling
 
 Example configuration:
 - method: "uniform", samples: 0.1 (10% random sample)
 - method: "stratified", samples: 100, stratify_key: "category"
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: $operator_type_operation
-type: sample
-method: [uniform/stratified]
-samples: [fraction_or_count]
-stratify_key: [field_for_balancing]
-random_state: 42
-```
+Return ONLY the filled operator configuration in json format:
 """)
 
 TOPK_OPERATOR_PROMPT = Template("""
@@ -619,18 +557,7 @@ Example configuration:
 - method: "embedding", k: 5, keys: ["title", "content"]
 - query: "machine learning applications"
 
-Fill in the "TO_BE_GENERATED" placeholders with appropriate values.
-
-Return ONLY the filled operator configuration in YAML format:
-
-```yaml
-name: $operator_type_operation
-type: topk
-method: [embedding/keyword]
-k: [number_of_documents]
-keys: [fields_to_search]
-query: [search_query_string]
-```
+Return ONLY the filled operator configuration in json format:
 """)
 
 # Operator definitions with detailed examples organized by type
@@ -751,7 +678,10 @@ Example:
 """,
 
     "extract": """
-Extract Operator — Pull verbatim text sections from documents. The difference between this operator and the map operator is that the extract operator fully copies text spans from the original texts.
+Extract Operator — Pull a verbatim text section from a document. 
+The difference between this operator and the map operator is:
+1. Extract operator can only generate single string output fields. So it's not applicable for task needing analysis, transformation or from-one-to-multiple output fields.
+2. Extract operator pulls a verbatim text section from a document.
 
 Example:
 ```yaml
@@ -902,3 +832,24 @@ Response format:
 STATUS: [VALID/INVALID]
 EXPLANATION: [if invalid, explain the issues]
 """)
+
+def get_op_prompt(op_type):
+    prompt_templates = {
+        'map': MAP_OPERATOR_PROMPT,
+        'filter': FILTER_OPERATOR_PROMPT,
+        'reduce': REDUCE_OPERATOR_PROMPT,
+        'resolve': RESOLVE_OPERATOR_PROMPT,
+        'rank': RANK_OPERATOR_PROMPT,
+        'extract': EXTRACT_OPERATOR_PROMPT,
+        'code_filter': CODE_FILTER_OPERATOR_PROMPT,
+        'split': SPLIT_OPERATOR_PROMPT,
+        'gather': GATHER_OPERATOR_PROMPT,
+        'unnest': UNNEST_OPERATOR_PROMPT,
+        'cluster': CLUSTER_OPERATOR_PROMPT,
+        'sample': SAMPLE_OPERATOR_PROMPT,
+        'topk': TOPK_OPERATOR_PROMPT,
+    }
+    prompt = prompt_templates.get(op_type, None)
+    if not prompt:
+        raise ValueError(f"Prompt template not found for operator type: {op_type}")
+    return prompt

@@ -212,7 +212,12 @@ class DocETLUserInterface:
                     # Extract operators don't use output schema, they extract to predefined fields
                     expected_fields = self._parse_operator_output_fields(op)
                     print(f"    Expected output fields: {expected_fields}")
+                # Display output schema (handle both flat and nested formats)
+                elif 'output_schema' in op:
+                    # Flat format (before transformation)
+                    print(f"    Output schema: {list(op['output_schema'].keys()) if op['output_schema'] else 'empty'}")
                 elif 'output' in op and 'schema' in op['output']:
+                    # Nested format (after transformation)
                     print(f"    Output schema: {list(op['output']['schema'].keys()) if op['output']['schema'] else 'empty'}")
 
         elif step_name == "Step 5: Pipeline Connection":
