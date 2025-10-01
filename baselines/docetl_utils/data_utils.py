@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from datetime import datetime
 
 from .utils import parse_html_to_dict, convert_txt_to_json, convert_xlsx_to_csv
+from ..utils import DataTruncator
 
 
 class DocETLDataProcessor:
@@ -325,3 +326,118 @@ class DocETLDataProcessor:
             self.logger.info(f"Created merged dataset with {len(merged_data)} file sources: {merged_filepath}")
 
         return merged_filepath
+
+
+def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_string_length: int = 200, max_plain_text_length: int = 5000, csv_sample_rows: int = 5) -> Dict[str, Any]:
+    """
+    Load samples from all dataset files with clean formatting.
+
+    Args:
+        dataset_paths: List of dataset file paths
+        max_length: Maximum total length for each file's sample
+        max_string_length: Maximum length for individual string fields
+        max_plain_text_length: Maximum length for plain text content
+        csv_sample_rows: Number of rows to sample from CSV files (default 5)
+
+    Returns:
+        Dictionary with {file_path: sample_data} format
+    """
+    dataset_samples = {}
+
+    # Initialize intelligent truncator
+    truncator = DataTruncator(
+        max_total_length=max_length,
+        max_string_length=max_string_length,
+        max_plain_text_length=max_plain_text_length,
+        max_array_items=3,
+        max_dict_keys=8
+    )
+
+    for file_path in dataset_paths:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                if file_path.endswith('.json'):
+                    data = json.load(f)
+
+                    # Check if this is a merged dataset (list with filename/content dicts)
+                    if (isinstance(data, list) and
+                        'merged_datasets' in os.path.basename(file_path) and
+                        len(data) > 0 and isinstance(data[0], dict) and
+                        'filename' in data[0] and 'content' in data[0]):
+
+                        # This is a merged dataset, sample from each source
+                        sampled_data = []
+
+                        for item in data:
+                            sampled_item = {"filename": item["filename"]}
+                            content = item["content"]
+
+                            if isinstance(content, list):
+                                # For list data (like CSV records), sample first N items
+                                sample_size = min(csv_sample_rows, len(content))
+                                sampled_item["content"] = content[:sample_size]
+                            else:
+                                # For other data types (like text), keep as is but truncate if too long
+                                if isinstance(content, str) and len(content) > 2000:
+                                    sampled_item["content"] = content[:2000] + "..."
+                                else:
+                                    sampled_item["content"] = content
+
+                            sampled_data.append(sampled_item)
+
+                        data = sampled_data
+                elif file_path.endswith('.csv'):
+                    import pandas as pd
+                    df = pd.read_csv(file_path)
+
+                    # For CSV files, sample more rows to show data structure
+                    # Include schema (column names and types) and sample rows
+                    sample_data = {
+                        "schema": {col: str(df[col].dtype) for col in df.columns},
+                        "shape": {"rows": len(df), "columns": len(df.columns)},
+                        "sample_rows": df.head(csv_sample_rows).to_dict('records')
+                    }
+
+                    # If the DataFrame has more rows than sample_rows, add indication
+                    if len(df) > csv_sample_rows:
+                        sample_data["note"] = f"Showing first {csv_sample_rows} rows of {len(df)} total rows"
+
+                    data = sample_data
+                else:
+                    # For other file types, try to read as text
+                    content = f.read()
+                    # Clean up the content and treat as plain text
+                    content = ' '.join(content.split())
+                    # Use plain text truncation for text files
+                    truncated_content = truncator.truncate_text(content, is_plain_text=True)
+                    data = [{"text": truncated_content}]
+
+                # Apply intelligent truncation
+                if file_path.endswith('.csv'):
+                    # CSV files already have controlled sampling, just apply truncation to values
+                    if isinstance(data, dict) and 'sample_rows' in data:
+                        data['sample_rows'] = truncator.truncate_data(data['sample_rows'])
+                    dataset_samples[file_path] = data
+                elif isinstance(data, dict) and 'merged_datasets' in os.path.basename(file_path):
+                    # Handle merged datasets - apply truncation to each file's content
+                    for filename, content in data.items():
+                        if isinstance(content, list):
+                            data[filename] = truncator.truncate_data(content)
+                        elif isinstance(content, str):
+                            data[filename] = truncator.truncate_text(content, is_plain_text=True)
+                    dataset_samples[file_path] = data
+                elif not file_path.endswith(('.txt', '.md', '.html')):
+                    truncated_data = truncator.truncate_data(data)
+                    dataset_samples[file_path] = truncated_data
+                else:
+                    dataset_samples[file_path] = data
+
+        except Exception as e:
+            # print(f"  Warning: Could not load data from {file_path}: {e}")
+            dataset_samples[file_path] = f"Error loading file: {str(e)}"
+
+    # If only one dataset, return content directly without the file path key
+    if len(dataset_samples) == 1:
+        return list(dataset_samples.values())[0]
+
+    return dataset_samples

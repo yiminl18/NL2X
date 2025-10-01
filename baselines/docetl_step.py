@@ -13,7 +13,7 @@ from .docetl_utils.data_utils import DocETLDataProcessor
 from .docetl_step_utils.ui import DocETLUserInterface
 from .docetl_step_utils.cache import LLMCache
 from .docetl_utils.log_utils import save_prompt, save_messages, save_validation, save_step_output, get_filename_base
-from .docetl_utils.llm2pipeline_docetl import (
+from .docetl_utils.pipeline_utils import (
     load_sample_data,
     execute_single_pipeline,
     validate_pipeline_output,

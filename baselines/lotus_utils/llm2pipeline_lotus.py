@@ -276,8 +276,6 @@ def llm_call_wrapper(prompt: str) -> str:
     ]
     return llm_call_with_messages(messages)
 
-# Removed old clean_and_truncate_value function - replaced with intelligent DataTruncator
-
 def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_string_length: int = 200, max_plain_text_length: int = 5000) -> Dict[str, Any]:
     """
     Load samples from all dataset files with clean formatting.
