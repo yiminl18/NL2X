@@ -10,9 +10,7 @@ import json
 import pandas as pd
 from typing import Any, Dict, List
 from datetime import datetime
-
-from .utils import parse_html_to_dict, convert_txt_to_json, convert_xlsx_to_csv
-from ..utils import DataTruncator
+from ..utils import DataTruncator, parse_html_to_dict, convert_txt_to_json, convert_xlsx_to_csv
 
 
 class DocETLDataProcessor:
