@@ -1,7 +1,7 @@
-class Project:
+class Operator:
     def __init__(self):
         self.name = ""
-        self.type = "project"
+        self.type = ""
         self.source = {}
         self.properties = {}
         self.input = {}
