@@ -17,7 +17,6 @@ from .docetl_utils.llm2pipeline_docetl import (
     load_sample_data,
     execute_single_pipeline,
     validate_pipeline_output,
-    extract_yaml_from_response,
     FailedPipeline,
 )
 from .docetl_litellm_client import llm_call
@@ -208,20 +207,15 @@ class DocETLStepBaseline(BaselineInterface):
             #     framework['optimize'] = True
 
             if op['type'] == 'rank':
-                framework['input_keys'] = []
                 framework['direction'] = "desc"
 
             elif op['type'] == 'split':
                 framework['method'] = "token_count"
                 framework['method_kwargs'] = {}
 
-            elif op['type'] == 'cluster':
-                framework['embedding_keys'] = []
-
             elif op['type'] == 'topk':
                 framework['method'] = "embedding"
                 framework['k'] = 5
-                framework['keys'] = []
 
             elif op['type'] == 'sample':
                 framework['method'] = "uniform"
@@ -541,8 +535,10 @@ Processing steps completed:
               'purpose': op.get('purpose', '')}
              for op in filled_operators], indent=2)}
 
-Return ONLY the field names that contain the final answer, as a JSON list.
-Example: ["medication", "dosage"]
+Return ONLY the field names that can directly answer the query without any further processing.
+For example: 
+If the query is "Extract the medication and dosage from the document", and the available fields are ["src", "medication", "dosage"],
+then the answer fields are ["medication", "dosage"]. Even if the "src" field is also available, it need to be processed further to extract the medication and dosage.
 """
 
         # Use structured output to get field list
@@ -602,10 +598,12 @@ Example: ["medication", "dosage"]
             field_extractions.append(f"        '{field}': doc.get('{safe_field}', '')")
 
         join_str = ',\n'
-        code = f"""def transform(doc) -> dict:
-    return {{
-{join_str.join(field_extractions)}
-    }}"""
+        code = f"""
+        def transform(doc) -> dict:
+            return {{
+                {join_str.join(field_extractions)}
+            }}
+        """
 
         if self.config.verbose:
             self.logger.info(f"Synthesized final code_map for fields: {answer_fields}")

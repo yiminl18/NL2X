@@ -6,6 +6,7 @@ Caches responses based on prompt hash to avoid redundant API calls.
 import os
 import json
 import hashlib
+import glob
 from datetime import datetime
 from typing import Optional
 
@@ -44,9 +45,13 @@ class LLMCache:
             return None
 
         cache_key = self._get_cache_key(prompt)
-        cache_file = os.path.join(self.cache_dir, f"{cache_key}.json")
+        # Search for cache files matching pattern: *_{cache_key}.json
+        pattern = os.path.join(self.cache_dir, f"*_{cache_key}.json")
+        matching_files = glob.glob(pattern)
 
-        if os.path.exists(cache_file):
+        if matching_files:
+            # Use the most recent file if multiple exist
+            cache_file = max(matching_files, key=os.path.getmtime)
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     cache_data = json.load(f)
@@ -63,7 +68,9 @@ class LLMCache:
         Save response to cache.
         """
         cache_key = self._get_cache_key(prompt)
-        cache_file = os.path.join(self.cache_dir, f"{cache_key}.json")
+        # Generate timestamp prefix in format YYYYMMDD_HHMMSS
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cache_file = os.path.join(self.cache_dir, f"{timestamp}_{cache_key}.json")
 
         cache_data = {
             'prompt': prompt,
