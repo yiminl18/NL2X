@@ -9,8 +9,8 @@ import logging
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
-from .docetl_data_utils import DocETLDataProcessor
-from .docetl_log_utils import save_prompt, save_messages, save_validation, get_filename_base
+from .docetl_utils.data_utils import DocETLDataProcessor
+from .docetl_utils.log_utils import save_prompt, save_messages, save_validation, get_filename_base
 from .docetl_utils.llm2pipeline_docetl import (
     create_initial_messages,
     add_error_message,

@@ -9,25 +9,25 @@ import logging
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
-from .docetl_data_utils import DocETLDataProcessor
-from .docetl_ui import DocETLUserInterface
-from .docetl_cache import LLMCache
-from .docetl_log_utils import save_prompt, save_messages, save_validation, save_step_output, get_filename_base
+from .docetl_utils.data_utils import DocETLDataProcessor
+from .docetl_step_utils.ui import DocETLUserInterface
+from .docetl_step_utils.cache import LLMCache
+from .docetl_utils.log_utils import save_prompt, save_messages, save_validation, save_step_output, get_filename_base
 from .docetl_utils.llm2pipeline_docetl import (
     load_sample_data,
     execute_single_pipeline,
     validate_pipeline_output,
     FailedPipeline,
 )
-from .docetl_litellm_client import llm_call
-from .docetl_type_utils import (
+from ..model.litellm_client import llm_call
+from .docetl_step_utils.type_utils import (
     TypeSystem,
     extract_type_system,
     apply_operator_transformation,
     format_available_fields_with_types,
     validate_operator_inputs,
 )
-from .docetl_utils.prompt_step import (
+from .docetl_step_utils.prompt_step import (
     OPERATOR_SELECTION_PROMPT,
     OPERATOR_DEFINITIONS,
     get_op_prompt,

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-LLM2Pipeline4DocETL Test Script
-Based on medical_analysis.py, uses generate_pipeline.py to create pipeline from natural language query
+LLM2Pipeline4DocETL Script
 """
 
 import os
@@ -24,8 +23,8 @@ class FailedPipeline(NamedTuple):
     error_message: str
 
 # Add parent directory to path to import azuregpt4o
-sys.path.append('/Users/chiyuh/Workspace/NL2X/model')
-from azuregpt4o import gpt_4o_azure
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from model.azuregpt4o import gpt_4o_azure
 from .prompt import (
     INSTRUCTION_PROMPT,
     PIPELINE_GENERATION_PROMPT_TEMPLATE,

@@ -1,12 +1,7 @@
 import os
 from openai import AzureOpenAI
 
-api_key_path = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt'
-ENDPOINT_URL = 'https://text-db.openai.azure.com/'
-api_version_name = '2025-01-01-preview'
-
 def gpt_4o_azure(prompt,
-                key_path=api_key_path,
                 max_tokens=800,
                 temperature=0,
                 top_p=1,
@@ -19,7 +14,6 @@ def gpt_4o_azure(prompt,
 
     Args:
         prompt (str or list(dict)): The text prompt to send to the model
-        key_path (str): Path to the API key file
         max_tokens (int): Maximum tokens for response
         temperature (float): Response randomness (0-1)
         return_usage (bool): If True, return usage information along with content
@@ -28,15 +22,15 @@ def gpt_4o_azure(prompt,
     Returns:
         str or tuple: The response content from the model, or (content, usage) if return_usage=True
     """
-    # Read API key
-    with open(key_path, 'r') as f:
-        api_key = f.read().strip()
-    
+    api_key = os.getenv("AZURE_API_KEY")
+    if not api_key:
+        raise ValueError("AZURE_API_KEY environment variable is not set")
+
     # Initialize client
     client = AzureOpenAI(
-        azure_endpoint=os.getenv("ENDPOINT_URL", ENDPOINT_URL),
+        azure_endpoint=os.getenv("AZURE_API_BASE", "https://text-db.openai.azure.com/"),
         api_key=api_key,
-        api_version=api_version_name,
+        api_version=os.getenv("AZURE_API_VERSION", "2025-01-01-preview"),
     )
     
     # Prepare completion parameters

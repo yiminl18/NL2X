@@ -4,25 +4,22 @@ LiteLLM Client for DocETL Step-by-Step
 Based on docetl/optimizers/utils.py implementation
 """
 
+import os
 from typing import Dict, List, Any, Optional
 from litellm import completion, RateLimitError
 import time
 
 
 def _get_azure_config():
-    """Get Azure OpenAI configuration from azuregpt4o.txt file"""
-    api_key_path = '/Users/chiyuh/Workspace/NL2X/model/azuregpt4o.txt'
+    api_key = os.getenv("AZURE_API_KEY")
 
-    try:
-        with open(api_key_path, 'r') as f:
-            api_key = f.read().strip()
-    except FileNotFoundError:
-        raise ValueError(f"API key file not found at {api_key_path}")
+    if not api_key:
+        raise ValueError("AZURE_API_KEY environment variable is not set")
 
     config = {
         "api_key": api_key,
-        "api_base": "https://text-db.openai.azure.com/",
-        "api_version": "2025-01-01-preview",
+        "api_base": os.getenv("AZURE_API_BASE", "https://text-db.openai.azure.com/"),
+        "api_version": os.getenv("AZURE_API_VERSION", "2025-01-01-preview"),
         "model": "azure/gpt-4o"
     }
 
