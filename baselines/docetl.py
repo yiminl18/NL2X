@@ -190,7 +190,14 @@ class DocETLBaseline(BaselineInterface):
                 self.logger.info(f"Pipeline generation attempt {attempt + 1}/{self.max_attempts}")
 
             # Save initial prompt for each attempt
-            self._save_prompt(initial_prompt if attempt == 0 else f"Retry attempt {attempt}\n\n{initial_prompt}", query, attempt)
+            filename_base = get_filename_base(self.data_processor, query, f"attempt{attempt}")
+            save_prompt(
+                self.prompts_output_dir,
+                filename_base,
+                initial_prompt if attempt == 0 else f"Retry attempt {attempt}\n\n{initial_prompt}",
+                query,
+                attempt
+            )
 
             try:
                 # Generate pipeline

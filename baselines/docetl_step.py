@@ -19,7 +19,7 @@ from .docetl_utils.pipeline_utils import (
     validate_pipeline_output,
     FailedPipeline,
 )
-from ..model.litellm_client import llm_call
+from model.litellm_client import llm_call
 from .docetl_step_utils.type_utils import (
     TypeSystem,
     extract_type_system,
@@ -417,7 +417,6 @@ class DocETLStepBaseline(BaselineInterface):
     def _generate_operator_details(self, operator: Dict[str, Any], query: str,
                                   dataset_samples: Dict[str, Any],
                                   previous_operators: List[Dict[str, Any]],
-                                  available_fields: List[str],
                                   type_system: TypeSystem = None,
                                   collect_messages: bool = False,
                                   operator_index: int = 0,
@@ -638,7 +637,7 @@ then the answer fields are ["medication", "dosage"]. Even if the "src" field is 
                 query,
                 dataset_samples,
                 filled_operators,  # Pass previously filled operators for context
-                available_fields,  # Pass available fields
+                # available_fields,  # Pass available fields
                 current_type_system,  # Pass type system for better prompting
                 collect_messages=collect_messages,
                 operator_index=i,

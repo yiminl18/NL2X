@@ -10,4 +10,6 @@ Usage:
     from baselines.abstract.convert import docetl_to_abstract, abstract_to_docetl
 """
 
-__all__ = []
+from .docetl import docetl_to_abstract, abstract_to_docetl, docetl_pipeline_to_abstract
+
+__all__ = ['docetl_to_abstract', 'abstract_to_docetl', 'docetl_pipeline_to_abstract']

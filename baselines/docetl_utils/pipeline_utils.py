@@ -31,23 +31,30 @@ from .prompt import (
 )
 from .data_utils import load_sample_data
 
-def create_initial_messages(instruction_prompt: str, query: str, dataset_samples: Dict[str, Any]) -> tuple:
+def create_initial_messages(instruction_prompt: str, query: str, dataset_samples: Any) -> tuple:
     """
     Create initial message list for pipeline generation using PIPELINE_GENERATION_PROMPT.
-    
+
     Args:
         instruction_prompt: Base instruction for pipeline generation (INSTRUCTION_PROMPT)
         query: Natural language query
-        dataset_samples: Dictionary with {file_path: sample_data} format
-        
+        dataset_samples: Dictionary with {file_path: sample_data} format or a list/data structure for single dataset
+
     Returns:
         List of message dictionaries
     """
     # Format dataset profiles string
     profiles_str = ""
-    for file_path, sample_data in dataset_samples.items():
-        profiles_str += f"File: {file_path}\n"
-        profiles_str += f"Sample Data:\n{json.dumps(sample_data, indent=2)}\n\n"
+
+    # Handle both dictionary and direct data (list or other structure) inputs
+    if isinstance(dataset_samples, dict):
+        # Multiple files case - dataset_samples is a dictionary
+        for file_path, sample_data in dataset_samples.items():
+            profiles_str += f"File: {file_path}\n"
+            profiles_str += f"Sample Data:\n{json.dumps(sample_data, indent=2)}\n\n"
+    else:
+        # Single file case - dataset_samples is the actual data (list or other structure)
+        profiles_str += f"Sample Data:\n{json.dumps(dataset_samples, indent=2)}\n\n"
     
     # Use PIPELINE_GENERATION_PROMPT template
     user_content = PIPELINE_GENERATION_PROMPT_TEMPLATE.safe_substitute(
