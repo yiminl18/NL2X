@@ -4,13 +4,14 @@ DocETL to Abstract Operator Conversion Module
 This module provides utilities to convert DocETL operators to abstract operators.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Set
 import copy
 import sys
 import os
 import yaml
 import json
 import argparse
+import re
 from pathlib import Path
 
 # Add parent directory to path to import Operator class
@@ -23,6 +24,7 @@ sys.path.insert(0, os.path.join(_parent_dir, 'tools'))
 try:
     from ..ops.base import Operator
     from ..tools.docetl_pipeline_parser import parse_pipeline_operators
+    from ..tools.static_checker import validate_pipeline
     from ..pipeline import Pipeline, PipelineNode
 except ImportError:
     # Fallback for direct script execution
@@ -31,6 +33,14 @@ except ImportError:
 
     # Import parser from tools
     from docetl_pipeline_parser import parse_pipeline_operators
+
+    # Try to import static checker
+    try:
+        from static_checker import validate_pipeline
+    except ImportError:
+        # Define a stub if not available
+        def validate_pipeline(operators, verbose=False):
+            return {'is_valid': True, 'errors': [], 'warnings': [], 'summary': {}}
 
     # For Pipeline, we need to manually create a minimal version
     # since it has relative imports that can't be resolved in standalone mode
@@ -76,12 +86,13 @@ DOCETL_TO_ABSTRACT_TYPE_MAP = {
 }
 
 
-def docetl_to_abstract(docetl_operator: Dict[str, Any]) -> Operator:
+def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Dict[str, str]] = None) -> Operator:
     """
     Convert a DocETL operator to an abstract operator.
 
     Args:
         docetl_operator: A dictionary representing a DocETL operator
+        field_types: Optional dictionary mapping field names to their types
 
     Returns:
         An abstract Operator instance
@@ -128,92 +139,472 @@ def docetl_to_abstract(docetl_operator: Dict[str, Any]) -> Operator:
     abstract_op.properties = properties
 
     # Handle input/output schemas
-    abstract_op.input = _extract_input_schema(docetl_op)
+    abstract_op.input = _extract_input_schema(docetl_op, field_types)
     abstract_op.output = _extract_output_schema(docetl_op)
 
     return abstract_op
 
 
-def _extract_input_schema(docetl_operator: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_fields_from_jinja2(template: str) -> Set[str]:
+    """
+    Extract field names from Jinja2 template patterns.
+
+    This function identifies field references in various Jinja2 patterns:
+    - {{ input.field }} - single input field access
+    - {{ input1.field }}, {{ input2.field }} - comparison inputs
+    - {{ inputs[0].field }} - array index access
+    - {% for item in inputs %} {{ item.field }} - loop variable access
+
+    Args:
+        template: Jinja2 template string
+
+    Returns:
+        Set of unique field names found in the template
+    """
+    if not template:
+        return set()
+
+    fields = set()
+
+    # Pattern for {{ input.field }} or {{ input["field"] }}
+    input_pattern = r'\{\{\s*input\.(\w+)'
+    fields.update(re.findall(input_pattern, template))
+    input_bracket_pattern = r'\{\{\s*input\["([^"]+)"\]'
+    fields.update(re.findall(input_bracket_pattern, template))
+    input_bracket_single_pattern = r"\{\{\s*input\['([^']+)'\]"
+    fields.update(re.findall(input_bracket_single_pattern, template))
+
+    # Pattern for {{ input1.field }}, {{ input2.field }} (resolve comparison)
+    input_n_pattern = r'\{\{\s*input[12]\.(\w+)'
+    fields.update(re.findall(input_n_pattern, template))
+    input_n_bracket_pattern = r'\{\{\s*input[12]\["([^"]+)"\]'
+    fields.update(re.findall(input_n_bracket_pattern, template))
+
+    # Pattern for {{ inputs[0].field }} (reduce/resolve)
+    inputs_idx_pattern = r'\{\{\s*inputs\[\d+\]\.(\w+)'
+    fields.update(re.findall(inputs_idx_pattern, template))
+
+    # Pattern for {% for item in inputs %} ... {{ item.field }}
+    # First find loop variables
+    for_loop_pattern = r'\{%\s*for\s+(\w+)\s+in\s+inputs\s*%\}'
+    loop_vars = re.findall(for_loop_pattern, template)
+
+    # Then find fields accessed through loop variables
+    for var in loop_vars:
+        escaped_var = re.escape(var)
+        var_pattern = r'\{\{?\s*' + escaped_var + r'\.(\w+)'
+        fields.update(re.findall(var_pattern, template))
+        var_bracket_pattern = r'\{\{?\s*' + escaped_var + r'\["([^"]+)"\]'
+        fields.update(re.findall(var_bracket_pattern, template))
+
+    # Pattern for {% for entry in inputs %} or similar variations
+    for_entry_pattern = r'\{%\s*for\s+(\w+)\s+in\s+\w+\s*%\}'
+    entry_vars = re.findall(for_entry_pattern, template)
+    for var in entry_vars:
+        if var not in loop_vars:  # Avoid duplicates
+            escaped_var = re.escape(var)
+            var_pattern = r'\{\{?\s*' + escaped_var + r'\.(\w+)'
+            fields.update(re.findall(var_pattern, template))
+
+    return fields
+
+
+def _extract_fields_from_python_code(code: str) -> Set[str]:
+    """
+    Extract field names from Python code patterns.
+
+    This function identifies field references in Python code:
+    - doc['field'] or doc["field"]
+    - doc.get('field') or doc.get("field")
+    - input['field'] or input.field
+
+    Args:
+        code: Python code string
+
+    Returns:
+        Set of unique field names found in the code
+    """
+    if not code:
+        return set()
+
+    fields = set()
+
+    # Pattern for doc['field'] or doc["field"]
+    doc_bracket_pattern = r'doc\[[\'"]([\w_]+)[\'"]\]'
+    fields.update(re.findall(doc_bracket_pattern, code))
+
+    # Pattern for doc.get('field') or doc.get("field") - must be before doc.field pattern
+    doc_get_pattern = r'doc\.get\([\'"]([^\'",]+)[\'"]'
+    fields.update(re.findall(doc_get_pattern, code))
+
+    # Pattern for doc.field (but exclude .get method)
+    # Use negative lookahead to exclude 'get'
+    doc_dot_pattern = r'doc\.(?!get\b)(\w+)'
+    fields.update(re.findall(doc_dot_pattern, code))
+
+    # Pattern for input['field'] or input["field"]
+    input_bracket_pattern = r'input\[[\'"]([\w_]+)[\'"]\]'
+    fields.update(re.findall(input_bracket_pattern, code))
+
+    # Pattern for input.field
+    input_dot_pattern = r'input\.(\w+)'
+    fields.update(re.findall(input_dot_pattern, code))
+
+    return fields
+
+
+def _parse_docetl_type(type_str: str) -> str:
+    """
+    Parse DocETL type strings to a simplified string format.
+
+    Handles types like:
+    - "string" or "str" -> "String"
+    - "number" or "int" or "integer" -> "Integer"
+    - "float" -> "Float"
+    - "list[str]" -> "Array"
+    - "list[{theme: str, viewpoints: str}]" -> "Array"
+    - Complex nested types -> simplified representation
+
+    Args:
+        type_str: DocETL type string
+
+    Returns:
+        Normalized type string compatible with TypeSystem
+    """
+    if not type_str:
+        return "Unknown"
+
+    # Normalize the type string
+    type_str = str(type_str).strip()
+
+    # Handle list types
+    if type_str.startswith("list[") or type_str.startswith("List["):
+        return "Array"
+
+    # Handle basic type mappings (matching TypeSystem format)
+    type_mappings = {
+        "str": "String",
+        "string": "String",
+        "int": "Integer",
+        "integer": "Integer",
+        "float": "Float",
+        "number": "Integer",  # Default number to Integer
+        "bool": "Boolean",
+        "boolean": "Boolean",
+        "dict": "Dict",
+        "object": "Dict",
+        "array": "Array",
+        "list": "Array"
+    }
+
+    # Check for exact match
+    lower_type = type_str.lower()
+    if lower_type in type_mappings:
+        return type_mappings[lower_type]
+
+    # If it contains dictionary-like structure
+    if "{" in type_str and "}" in type_str:
+        return "Dict"
+
+    # Default to Unknown for unrecognized types
+    return "Unknown"
+
+
+def _parse_docetl_schema_to_type_dict(schema_str: str) -> Dict[str, Any]:
+    """
+    Parse DocETL schema strings to type dict format compatible with TypeSystem.
+
+    Examples:
+    - "str" -> {'type': 'String'}
+    - "list[str]" -> {'type': 'List', 'element_type': {'type': 'String'}}
+    - "list[{theme: str, viewpoints: str}]" ->
+      {'type': 'List', 'element_type': {'type': 'Dict', 'fields': {...}}}
+
+    Args:
+        schema_str: DocETL schema string
+
+    Returns:
+        Type dict in TypeSystem format
+    """
+    if not schema_str:
+        return {'type': 'Unknown'}
+
+    schema_str = str(schema_str).strip()
+
+    # Handle list types with nested structures
+    if schema_str.startswith("list[") or schema_str.startswith("List["):
+        # Extract the element type
+        inner_match = re.search(r'[Ll]ist\[(.+)\]$', schema_str)
+        if inner_match:
+            element_str = inner_match.group(1).strip()
+
+            # Check if element is a dict/object
+            if element_str.startswith("{") and element_str.endswith("}"):
+                # Parse dict fields
+                fields_dict = {}
+                # Extract field:type pairs from {field1: type1, field2: type2}
+                field_pairs = re.findall(r'(\w+)\s*:\s*(\w+)', element_str)
+                for field_name, field_type in field_pairs:
+                    fields_dict[field_name] = _parse_docetl_schema_to_type_dict(field_type)
+
+                return {
+                    'type': 'List',
+                    'element_type': {
+                        'type': 'Dict',
+                        'fields': fields_dict
+                    }
+                }
+            else:
+                # Simple element type
+                return {
+                    'type': 'List',
+                    'element_type': _parse_docetl_schema_to_type_dict(element_str)
+                }
+
+    # Handle dict/object types
+    if schema_str.startswith("{") and schema_str.endswith("}"):
+        fields_dict = {}
+        field_pairs = re.findall(r'(\w+)\s*:\s*(\w+)', schema_str)
+        for field_name, field_type in field_pairs:
+            fields_dict[field_name] = _parse_docetl_schema_to_type_dict(field_type)
+        return {'type': 'Dict', 'fields': fields_dict}
+
+    # Handle basic types
+    type_mappings = {
+        "str": "String",
+        "string": "String",
+        "int": "Integer",
+        "integer": "Integer",
+        "float": "Float",
+        "number": "Integer",
+        "bool": "Boolean",
+        "boolean": "Boolean",
+        "dict": "Dict",
+        "object": "Dict",
+        "array": "List",
+        "list": "List"
+    }
+
+    lower_type = schema_str.lower()
+    if lower_type in type_mappings:
+        return {'type': type_mappings[lower_type]}
+
+    return {'type': 'Unknown'}
+
+
+def _type_dict_to_docetl_string(type_dict: Dict[str, Any]) -> str:
+    """
+    Convert type dict to DocETL-style type string representation.
+
+    Preserves full type information including nested structures.
+
+    Args:
+        type_dict: Type dict in TypeSystem format
+
+    Returns:
+        DocETL-style type string (e.g., "List[String]", "Dict[theme: String, viewpoints: String]")
+    """
+    if not type_dict:
+        return "Unknown"
+
+    type_name = type_dict.get('type', 'Unknown')
+
+    # For simple types, just return the type name
+    if type_name in ['String', 'Integer', 'Float', 'Boolean', 'Unknown', 'Null']:
+        return type_name
+
+    # For lists, include element type
+    if type_name == 'List':
+        element_type = type_dict.get('element_type', {'type': 'Unknown'})
+        element_str = _type_dict_to_docetl_string(element_type)
+        return f"List[{element_str}]"
+
+    # For dicts, include field definitions
+    if type_name == 'Dict':
+        fields = type_dict.get('fields', {})
+        if fields:
+            field_strs = []
+            for field_name, field_type in fields.items():
+                field_type_str = _type_dict_to_docetl_string(field_type)
+                field_strs.append(f"{field_name}: {field_type_str}")
+            return f"Dict[{{{', '.join(field_strs)}}}]"
+        return "Dict"
+
+    return type_name
+
+
+
+
+def _extract_input_schema(docetl_operator: Dict[str, Any], field_types: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
     Extract input schema from a DocETL operator.
 
-    DocETL doesn't explicitly define input schemas in most cases,
-    but we can infer them from the operator configuration.
+    This function analyzes operator configuration and prompts to identify
+    all input fields required by the operator. It uses template parsing
+    to extract field references from Jinja2 templates.
 
     Args:
         docetl_operator: DocETL operator dictionary
+        field_types: Optional dictionary mapping field names to their types
 
     Returns:
-        Input schema dictionary
+        Input schema dictionary with fields metadata
     """
     input_schema = {}
     op_type = docetl_operator.get("type", "")
+    required_fields = set()
+    extracted_fields = set()
 
-    # Infer input requirements based on operator type and configuration
-    if op_type in ["map", "filter", "code_map", "code_filter"]:
-        # These operate on individual documents
-        # Input keys can be inferred from prompts or code if needed
+    if field_types is None:
+        field_types = {}
+
+    # Process based on operator type
+    if op_type in ["map", "filter"]:
+        # Extract fields from prompt
+        prompt = docetl_operator.get("prompt", "")
+        extracted_fields.update(_extract_fields_from_jinja2(prompt))
+        input_schema["type"] = "object"
+
+    elif op_type in ["code_map", "code_filter"]:
+        # Extract fields from Python code
+        code = docetl_operator.get("code", "")
+        extracted_fields.update(_extract_fields_from_python_code(code))
         input_schema["type"] = "object"
 
     elif op_type == "reduce":
-        # Reduce requires a reduce_key
+        # Reduce requires a reduce_key and fields from prompt
         reduce_key = docetl_operator.get("reduce_key")
         if reduce_key:
-            input_schema["required_fields"] = [reduce_key]
-            input_schema["type"] = "array"
+            required_fields.add(reduce_key)
+
+        prompt = docetl_operator.get("prompt", "")
+        extracted_fields.update(_extract_fields_from_jinja2(prompt))
+        input_schema["type"] = "array"
+
+    elif op_type in ["code_reduce"]:
+        # Code reduce: reduce_key + fields from code
+        reduce_key = docetl_operator.get("reduce_key")
+        if reduce_key:
+            required_fields.add(reduce_key)
+
+        code = docetl_operator.get("code", "")
+        extracted_fields.update(_extract_fields_from_python_code(code))
+        input_schema["type"] = "array"
+
+    elif op_type == "resolve":
+        # Resolve uses comparison_prompt and resolution_prompt
+        comparison_prompt = docetl_operator.get("comparison_prompt", "")
+        resolution_prompt = docetl_operator.get("resolution_prompt", "")
+
+        # Extract from both prompts
+        extracted_fields.update(_extract_fields_from_jinja2(comparison_prompt))
+        extracted_fields.update(_extract_fields_from_jinja2(resolution_prompt))
+        input_schema["type"] = "array"
 
     elif op_type == "split":
         # Split requires a split_key
         split_key = docetl_operator.get("split_key")
         if split_key:
-            input_schema["required_fields"] = [split_key]
-            input_schema["type"] = "object"
+            required_fields.add(split_key)
+        input_schema["type"] = "object"
 
     elif op_type == "gather":
         # Gather requires specific keys
         content_key = docetl_operator.get("content_key")
         doc_id_key = docetl_operator.get("doc_id_key")
         order_key = docetl_operator.get("order_key")
-        required_fields = [k for k in [content_key, doc_id_key, order_key] if k]
-        if required_fields:
-            input_schema["required_fields"] = required_fields
-            input_schema["type"] = "object"
+
+        if content_key:
+            required_fields.add(content_key)
+        if doc_id_key:
+            required_fields.add(doc_id_key)
+        if order_key:
+            required_fields.add(order_key)
+
+        # Also check for doc_header_key and other peripheral keys
+        doc_header_key = docetl_operator.get("doc_header_key")
+        if doc_header_key:
+            extracted_fields.add(doc_header_key)
+
+        input_schema["type"] = "object"
 
     elif op_type == "unnest":
         # Unnest requires an unnest_key
         unnest_key = docetl_operator.get("unnest_key")
         if unnest_key:
-            input_schema["required_fields"] = [unnest_key]
-            input_schema["type"] = "object"
+            required_fields.add(unnest_key)
+        input_schema["type"] = "object"
 
     elif op_type == "rank":
-        # Rank uses input_keys
+        # Rank uses input_keys and may have a prompt
         input_keys = docetl_operator.get("input_keys", [])
-        if input_keys:
-            input_schema["required_fields"] = input_keys
-            input_schema["type"] = "array"
+        required_fields.update(input_keys)
+
+        prompt = docetl_operator.get("prompt", "")
+        if prompt:
+            extracted_fields.update(_extract_fields_from_jinja2(prompt))
+
+        input_schema["type"] = "array"
 
     elif op_type == "cluster":
         # Cluster uses embedding_keys
         embedding_keys = docetl_operator.get("embedding_keys", [])
-        if embedding_keys:
-            input_schema["required_fields"] = embedding_keys
-            input_schema["type"] = "object"
+        required_fields.update(embedding_keys)
+
+        # Check for summary_prompt
+        summary_prompt = docetl_operator.get("summary_prompt", "")
+        if summary_prompt:
+            extracted_fields.update(_extract_fields_from_jinja2(summary_prompt))
+
+        input_schema["type"] = "object"
 
     elif op_type == "extract":
-        # Extract uses document_keys
+        # Extract uses document_keys and prompt
         document_keys = docetl_operator.get("document_keys", [])
-        if document_keys:
-            input_schema["required_fields"] = document_keys
-            input_schema["type"] = "object"
+        required_fields.update(document_keys)
+
+        prompt = docetl_operator.get("prompt", "")
+        if prompt:
+            extracted_fields.update(_extract_fields_from_jinja2(prompt))
+
+        input_schema["type"] = "object"
 
     elif op_type == "topk":
         # TopK uses keys field
         keys = docetl_operator.get("keys", [])
-        if keys:
-            input_schema["required_fields"] = keys
-            input_schema["type"] = "array"
+        required_fields.update(keys)
+        input_schema["type"] = "array"
+
+    elif op_type == "sample":
+        # Sample may have stratify_key
+        stratify_key = docetl_operator.get("stratify_key")
+        if stratify_key:
+            extracted_fields.add(stratify_key)
+        input_schema["type"] = "array"
+
+    elif op_type == "equijoin":
+        # Equijoin would have left_key and right_key
+        left_key = docetl_operator.get("left_key")
+        right_key = docetl_operator.get("right_key")
+        if left_key:
+            required_fields.add(left_key)
+        if right_key:
+            required_fields.add(right_key)
+        input_schema["type"] = "object"
+
+    # Combine required fields and extracted fields
+    all_fields = required_fields.union(extracted_fields)
+
+    if all_fields:
+        # Add fields dictionary with type information
+        input_schema["fields"] = {}
+        for field in sorted(all_fields):
+            # Use provided type map if available, otherwise mark as Unknown
+            if field in field_types:
+                input_schema["fields"][field] = field_types[field]
+            else:
+                # Mark as Unknown for fields without type information
+                input_schema["fields"][field] = "Unknown"
 
     return input_schema
 
@@ -230,18 +621,32 @@ def _extract_output_schema(docetl_operator: Dict[str, Any]) -> Dict[str, Any]:
         docetl_operator: DocETL operator dictionary
 
     Returns:
-        Output schema dictionary
+        Output schema dictionary with full type information preserved
     """
     output_schema = {}
 
     # Check for nested output.schema format
     if "output" in docetl_operator and isinstance(docetl_operator["output"], dict):
         if "schema" in docetl_operator["output"]:
-            output_schema = docetl_operator["output"]["schema"]
+            schema = docetl_operator["output"]["schema"]
+            if isinstance(schema, dict):
+                # Convert each field type to preserve nested structure
+                for field, field_type_str in schema.items():
+                    # Parse to type dict and back to DocETL string to normalize
+                    type_dict = _parse_docetl_schema_to_type_dict(field_type_str)
+                    output_schema[field] = _type_dict_to_docetl_string(type_dict)
+            else:
+                output_schema = schema
 
     # Check for direct output_schema field (might be present before transformation)
     elif "output_schema" in docetl_operator:
-        output_schema = docetl_operator["output_schema"]
+        schema = docetl_operator["output_schema"]
+        if isinstance(schema, dict):
+            for field, field_type_str in schema.items():
+                type_dict = _parse_docetl_schema_to_type_dict(field_type_str)
+                output_schema[field] = _type_dict_to_docetl_string(type_dict)
+        else:
+            output_schema = schema
 
     # For certain operators, we can infer output structure
     op_type = docetl_operator.get("type", "")
@@ -251,12 +656,12 @@ def _extract_output_schema(docetl_operator: Dict[str, Any]) -> Dict[str, Any]:
         output_key = docetl_operator["output_key"]
         if not output_schema:
             output_schema = {}
-        output_schema[output_key] = "string"  # Cluster ID is typically a string
+        output_schema[output_key] = "String"  # Cluster ID is typically a string
 
     elif op_type == "rank":
         # Rank adds a rank field
         if not output_schema:
-            output_schema = {"rank": "number"}
+            output_schema = {"rank": "Integer"}
 
     elif op_type == "split":
         # Split creates multiple documents from one
@@ -273,16 +678,84 @@ def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]]) -> List[O
     """
     Convert a list of DocETL operators (a pipeline) to abstract operators.
 
+    This function tracks field types as they flow through the pipeline,
+    ensuring that types defined in outputs are propagated to downstream inputs.
+
     Args:
         docetl_pipeline: List of DocETL operator dictionaries
 
     Returns:
-        List of abstract Operator instances
+        List of abstract Operator instances with proper type tracking
     """
     abstract_operators = []
-    for docetl_op in docetl_pipeline:
-        abstract_op = docetl_to_abstract(docetl_op)
+    cumulative_field_types = {}  # Track all field types available at each step
+
+    for i, docetl_op in enumerate(docetl_pipeline):
+        # Convert operator with current field types
+        abstract_op = docetl_to_abstract(docetl_op, cumulative_field_types)
         abstract_operators.append(abstract_op)
+
+        # Update cumulative field types based on operator type and output
+        op_type = docetl_op.get("type", "")
+
+        # Handle operators with output schemas
+        if "output" in docetl_op and isinstance(docetl_op["output"], dict):
+            if "schema" in docetl_op["output"]:
+                schema = docetl_op["output"]["schema"]
+                if isinstance(schema, dict):
+                    for field, field_type_str in schema.items():
+                        # Parse the schema to type dict, then convert to DocETL string
+                        type_dict = _parse_docetl_schema_to_type_dict(field_type_str)
+                        cumulative_field_types[field] = _type_dict_to_docetl_string(type_dict)
+
+        # Special handling for unnest operations
+        if op_type == "unnest":
+            unnest_key = docetl_op.get("unnest_key")
+            if unnest_key:
+                # Look for the unnest key's type definition from previous operators
+                for prev_i, prev_op in enumerate(docetl_pipeline[:i]):
+                    if "output" in prev_op and isinstance(prev_op["output"], dict):
+                        if "schema" in prev_op["output"] and unnest_key in prev_op["output"]["schema"]:
+                            schema_str = prev_op["output"]["schema"][unnest_key]
+                            type_dict = _parse_docetl_schema_to_type_dict(schema_str)
+
+                            # If it's a list with dict elements, extract the nested fields
+                            if (type_dict.get('type') == 'List' and
+                                type_dict.get('element_type', {}).get('type') == 'Dict'):
+                                element_fields = type_dict['element_type'].get('fields', {})
+                                for field_name, field_type_dict in element_fields.items():
+                                    # Add the unnested fields to cumulative types
+                                    cumulative_field_types[field_name] = _type_dict_to_docetl_string(field_type_dict)
+
+                # After unnesting, the original list field might be removed
+                # But we preserve it for now as it might still be referenced
+
+        # Handle other special operators
+        elif op_type == "split":
+            # Split adds standard fields
+            cumulative_field_types["_split_id"] = "String"
+            cumulative_field_types["_split_index"] = "Integer"
+
+        elif op_type == "gather" and "output_key" in docetl_op:
+            # Gather produces a list field
+            cumulative_field_types[docetl_op["output_key"]] = "Array"
+
+        elif op_type == "cluster" and "output_key" in docetl_op:
+            # Cluster adds a cluster ID field
+            cumulative_field_types[docetl_op["output_key"]] = "String"
+
+        elif op_type == "rank":
+            # Rank adds a rank field
+            cumulative_field_types["rank"] = "Integer"
+
+        # Update abstract operator's output if we detected special fields
+        if abstract_op.output and isinstance(abstract_op.output, dict):
+            for field, field_type in abstract_op.output.items():
+                if field != "type":  # Skip special keys
+                    # Ensure output types are consistent
+                    if field in cumulative_field_types:
+                        abstract_op.output[field] = cumulative_field_types[field]
+
     return abstract_operators
 
 
@@ -530,19 +1003,20 @@ def dict_to_operator(op_dict: Dict[str, Any]) -> Operator:
 # Standalone Conversion Functions
 # ============================================================================
 
-def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, Path]) -> None:
+def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, Path], validate: bool = False) -> None:
     """
     Convert a DocETL YAML pipeline file to abstract JSON representation.
 
     This function reads a YAML pipeline file, converts it to abstract operators,
-    and saves the result as a JSON file containing only the operator definitions.
+    optionally validates the pipeline, and saves the result as a JSON file.
 
     Args:
         yaml_path: Path to the input YAML pipeline file
         output_path: Path where the output JSON file should be saved
+        validate: Whether to validate the pipeline after conversion
 
     Example:
-        >>> yaml_to_abstract_json("pipeline.yaml", "abstract_pipeline.json")
+        >>> yaml_to_abstract_json("pipeline.yaml", "abstract_pipeline.json", validate=True)
     """
     yaml_path = Path(yaml_path)
     output_path = Path(output_path)
@@ -556,6 +1030,41 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
     operators_data = {
         "operators": [operator_to_dict(op) for op in abstract_operators]
     }
+
+    # Validate if requested
+    if validate:
+        print("\n" + "=" * 60)
+        print("VALIDATING ABSTRACT PIPELINE")
+        print("=" * 60)
+
+        validation_result = validate_pipeline(operators_data["operators"])
+
+        # Print summary
+        print(f"\nValidation Result: {'VALID ✓' if validation_result['is_valid'] else 'INVALID ✗'}")
+        print(f"Total Errors: {len(validation_result['errors'])}")
+        print(f"Total Warnings: {len(validation_result['warnings'])}")
+
+        # Print errors if any
+        if validation_result['errors']:
+            print("\nERRORS:")
+            for i, error in enumerate(validation_result['errors'], 1):
+                print(f"  {i}. {error}")
+
+        # Print warnings if any
+        if validation_result['warnings']:
+            print("\nWARNINGS:")
+            for i, warning in enumerate(validation_result['warnings'], 1):
+                print(f"  {i}. {warning}")
+
+        # If invalid, ask for confirmation to continue
+        if not validation_result['is_valid']:
+            print("\n⚠️  Pipeline validation failed!")
+            response = input("Do you want to save the pipeline anyway? (y/N): ")
+            if response.lower() != 'y':
+                print("Aborting save operation.")
+                return
+
+        print("=" * 60 + "\n")
 
     # Create output directory if it doesn't exist
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -651,6 +1160,13 @@ Examples:
         help='Convert abstract JSON to DocETL YAML (operations only)'
     )
 
+    # Add validation flag
+    parser.add_argument(
+        '--validate',
+        action='store_true',
+        help='Validate the abstract pipeline after conversion (only with --to-abstract)'
+    )
+
     # Add positional arguments for input and output files
     parser.add_argument(
         'input_file',
@@ -668,9 +1184,11 @@ Examples:
     try:
         if args.to_abstract:
             # Convert YAML to abstract JSON
-            yaml_to_abstract_json(args.input_file, args.output_file)
+            yaml_to_abstract_json(args.input_file, args.output_file, validate=args.validate)
         elif args.to_docetl:
             # Convert abstract JSON to YAML
+            if args.validate:
+                print("Warning: --validate flag is only supported with --to-abstract, ignoring.")
             abstract_json_to_yaml(args.input_file, args.output_file)
 
         print("\n✓ Conversion completed successfully!")
