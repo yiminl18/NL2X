@@ -1022,6 +1022,7 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
 
     This function reads a YAML pipeline file, converts it to abstract operators,
     optionally validates the pipeline, and saves the result as a JSON file.
+    All non-operator fields from the YAML are preserved in the JSON output.
 
     Args:
         yaml_path: Path to the input YAML pipeline file
@@ -1051,8 +1052,12 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
         else:
             raise ValueError("dataset_schema must be a dict or path to JSON file")
 
-    # Convert YAML to abstract operators
+    # Read the complete YAML structure to preserve all fields
     print(f"Reading YAML pipeline from: {yaml_path}")
+    with open(yaml_path, 'r') as f:
+        complete_yaml = yaml.safe_load(f)
+
+    # Convert YAML operators to abstract operators
     abstract_operators = yaml_to_abstract_pipeline(yaml_path, schema_dict)
     print(f"Converted {len(abstract_operators)} operators to abstract representation")
 
@@ -1064,6 +1069,11 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
     # Include dataset schema in output if provided
     if schema_dict:
         operators_data["dataset_schema"] = schema_dict
+
+    # Preserve all other fields from the original YAML (except operations)
+    for key, value in complete_yaml.items():
+        if key != "operations":  # Skip operations as they're already converted
+            operators_data[key] = value
 
     # Validate if requested
     if validate:
@@ -1140,17 +1150,16 @@ LiteralDumper.add_representer(str, literal_presenter)
 
 def abstract_json_to_yaml(json_path: Union[str, Path], output_path: Union[str, Path]) -> None:
     """
-    Convert an abstract JSON representation to DocETL YAML pipeline (operations only).
+    Convert an abstract JSON representation back to a complete DocETL YAML pipeline.
 
     This function reads an abstract JSON file, converts it back to DocETL operators,
-    and saves the result as a YAML file containing only the operations section.
-    If dataset schema is present in the JSON, it will be included as a comment.
+    and restores all preserved fields to create a complete, executable YAML pipeline.
 
     Args:
         json_path: Path to the input JSON file
         output_path: Path where the output YAML file should be saved
     Example:
-        >>> abstract_json_to_yaml("abstract_pipeline.json", "pipeline_ops.yaml")
+        >>> abstract_json_to_yaml("abstract_pipeline.json", "recovered_pipeline.yaml")
     """
     json_path = Path(json_path)
     output_path = Path(output_path)
@@ -1172,31 +1181,27 @@ def abstract_json_to_yaml(json_path: Union[str, Path], output_path: Union[str, P
     # Convert to DocETL format
     docetl_operators = [abstract_to_docetl(op) for op in abstract_operators]
 
-    # Create YAML structure with only operations section
-    pipeline_yaml = {
-        "operations": docetl_operators
-    }
+    # Create complete YAML structure with all preserved fields
+    pipeline_yaml = {}
 
-    # Add dataset schema as a comment section if present
-    yaml_content = ""
-    if dataset_schema:
-        yaml_content += "# Dataset Schema Information\n"
-        yaml_content += "# This pipeline expects the following fields in the input dataset:\n"
-        for field_name, field_type in dataset_schema.get("fields", {}).items():
-            yaml_content += f"#   - {field_name}: {field_type}\n"
-        yaml_content += "\n"
+    # Add all preserved fields from JSON (except operators and dataset_schema)
+    # These are the fields that were preserved from the original YAML
+    for key, value in data.items():
+        if key not in ["operators", "dataset_schema"]:
+            pipeline_yaml[key] = value
+
+    # Add the converted operations
+    pipeline_yaml["operations"] = docetl_operators
 
     # Create output directory if it doesn't exist
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save to YAML file with schema comments if present
+    # Save to YAML file
     with open(output_path, 'w', encoding='utf-8') as f:
-        if yaml_content:
-            f.write(yaml_content)
         yaml.dump(pipeline_yaml, f, Dumper=LiteralDumper,
                   default_flow_style=False, sort_keys=False, allow_unicode=True)
 
-    print(f"Saved DocETL operations to: {output_path}")
+    print(f"Saved complete DocETL pipeline to: {output_path}")
 
 
 # ============================================================================
