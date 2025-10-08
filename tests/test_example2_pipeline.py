@@ -298,12 +298,12 @@ class TestPipelineRunner:
             self.log(traceback.format_exc(), level="ERROR")
             return False
 
-    def step_5_execute_pipeline_with_tracking(self):
+    def step_5_execute_pipeline_with_intermediates(self):
         """
-        Step 5: Execute the pipeline and collect all intermediate results.
+        Step 5: Execute the pipeline and save all intermediate results.
         """
         self.log("=" * 70)
-        self.log("STEP 5: Execute Pipeline with Intermediate Tracking")
+        self.log("STEP 5: Execute Pipeline with Intermediate Results")
         self.log("=" * 70)
 
         try:
@@ -340,17 +340,18 @@ class TestPipelineRunner:
 
             self.log(f"Temporary pipeline config saved to: {temp_pipeline_path}")
 
-            # Execute pipeline with tracking
+            # Execute pipeline with intermediate result saving
             self.log("Starting pipeline execution...")
             self.log("This may take a while depending on the LLM API...")
 
-            self.execution_result = executor.execute_with_tracking(
+            self.execution_result = executor.execute_pipeline(
                 pipeline=temp_pipeline_path,
                 input_data=None,  # Already set in pipeline config
-                output_dir=str(self.intermediate_dir),
                 config={
                     'default_model': self.pipeline_config.get('default_model', 'gpt-4o-mini')
-                }
+                },
+                save_intermediates=True,
+                intermediate_dir=str(self.intermediate_dir)
             )
 
             # Clean up temp file
@@ -428,7 +429,7 @@ class TestPipelineRunner:
             ("Load Dataset with Manager", self.step_2_load_dataset_with_manager),
             ("Sample 5 Records", self.step_3_sample_and_store_records),
             ("Modify Pipeline for Sample Data", self.step_4_modify_pipeline_for_sample_data),
-            ("Execute Pipeline with Tracking", self.step_5_execute_pipeline_with_tracking),
+            ("Execute Pipeline with Intermediates", self.step_5_execute_pipeline_with_intermediates),
         ]
 
         results = {}

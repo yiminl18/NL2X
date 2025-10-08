@@ -38,7 +38,7 @@ class OperatorCacheManager:
         if cache_dir is None:
             # Default to abstract/_cache directory
             cache_dir = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
+                os.path.dirname(__file__),
                 '_cache'
             )
 

@@ -14,7 +14,9 @@ import tempfile
 import os
 import time
 import traceback
-from datetime import datetime
+
+# Import base executor and result class
+from .base_executor import BaseSystemExecutor, ExecutionResult
 
 # Import abstract operator classes
 from ..ops.base import Operator
@@ -50,31 +52,7 @@ if TYPE_CHECKING:
     from ..data_management import DatasetManager
 
 
-class ExecutionResult:
-    """Container for execution results with metadata."""
-
-    def __init__(self,
-                 success: bool,
-                 data: Optional[Any] = None,
-                 error: Optional[str] = None,
-                 metadata: Optional[Dict[str, Any]] = None):
-        self.success = success
-        self.data = data
-        self.error = error
-        self.metadata = metadata or {}
-        self.metadata['timestamp'] = datetime.now().isoformat()
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert result to dictionary."""
-        return {
-            'success': self.success,
-            'data': self.data,
-            'error': self.error,
-            'metadata': self.metadata
-        }
-
-
-class DocETLExecutor:
+class DocETLExecutor(BaseSystemExecutor):
     """Executor for DocETL system-specific operations with caching support."""
 
     def __init__(self,
@@ -91,9 +69,9 @@ class DocETLExecutor:
             cache_dir: Directory for cache storage (default: abstract/_cache)
             data_manager: Optional DatasetManager for dataset transformations and path management
         """
-        self.verbose = verbose
-        self.cache_enabled = cache_enabled
-        self.data_manager = data_manager
+        # Initialize base class
+        super().__init__(verbose, cache_enabled, cache_dir, data_manager)
+
         self._docetl_available = self._check_docetl()
 
         self.cache_manager = OperatorCacheManager(
@@ -108,6 +86,15 @@ class DocETLExecutor:
         return True
         # except ImportError:
         #     return False
+
+    def get_system_name(self) -> str:
+        """
+        Get the name of the execution system.
+
+        Returns:
+            'docetl' as the system identifier
+        """
+        return 'docetl'
 
     def execute_operator(self,
                         operator: Operator,
@@ -151,12 +138,15 @@ class DocETLExecutor:
                 operator, input_data, force_execute=force_execute
             )
             if cached_result:
+                cached_data = cached_result['output_data']
                 if self.verbose:
                     print(f"✓ Cache hit for operator: {operator.name}")
+                    data_info = f"{len(cached_data)} records" if isinstance(cached_data, list) else type(cached_data).__name__
+                    print(f"  Cached data: {data_info}")
 
                 return ExecutionResult(
                     success=True,
-                    data=cached_result['output_data'],
+                    data=cached_data,
                     metadata={
                         **cached_result['metadata'],
                         'cache_hit': True,
@@ -213,11 +203,12 @@ class DocETLExecutor:
                 error="DocETL is not available. Please install docetl package."
             )
 
+        temp_input_file = None
         try:
             from docetl.runner import DSLRunner
 
             docetl_op = abstract_to_docetl(operator)
-            temp_pipeline = self._create_temp_pipeline(
+            temp_pipeline, temp_input_file = self._create_temp_pipeline(
                 docetl_op, input_data, config or {}
             )
 
@@ -226,7 +217,8 @@ class DocETLExecutor:
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
                 yaml.dump(temp_pipeline, f, default_flow_style=False, sort_keys=False)
                 temp_file = f.name
-
+            # Print temp pipeline
+            print(f"Temp pipeline: {temp_pipeline}")
             try:
                 runner = DSLRunner.from_yaml(temp_file, max_threads=10)
                 runner.load_run_save()
@@ -252,8 +244,11 @@ class DocETLExecutor:
                 )
 
             finally:
+                # Clean up temp files
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
+                if temp_input_file and os.path.exists(temp_input_file):
+                    os.remove(temp_input_file)
 
         except Exception as e:
             return ExecutionResult(
@@ -389,7 +384,7 @@ class DocETLExecutor:
     def _create_temp_pipeline(self,
                             docetl_op: Dict[str, Any],
                             input_data: Union[str, List[Dict], Path],
-                            config: Dict[str, Any]) -> Dict[str, Any]:
+                            config: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
         """
         Create a temporary pipeline for executing a single operator.
 
@@ -399,17 +394,21 @@ class DocETLExecutor:
             config: Configuration options
 
         Returns:
-            Complete pipeline configuration dictionary
+            Tuple of (pipeline configuration dictionary, temp input file path or None)
+            The temp input file path should be cleaned up by the caller if not None
         """
         # Handle input data
+        temp_input_file = None
         if isinstance(input_data, (str, Path)):
             input_path = str(input_data)
             dataset_type = 'file'
         else:
-            # Save data to temp file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            # Save data to temp file - use mktemp to get path, then write to it
+            # This gives us control over cleanup
+            temp_input_file = tempfile.mktemp(suffix='.json')
+            with open(temp_input_file, 'w') as f:
                 json.dump(input_data, f)
-                input_path = f.name
+            input_path = temp_input_file
             dataset_type = 'file'
 
         # Create output path
@@ -445,7 +444,7 @@ class DocETLExecutor:
         if 'system_prompt' in config:
             pipeline['system_prompt'] = config['system_prompt']
 
-        return pipeline
+        return pipeline, temp_input_file
 
     def _collect_intermediate_results(self, intermediate_dir: str) -> Dict[str, Any]:
         """
