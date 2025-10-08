@@ -14,13 +14,6 @@ Uses function calls rather than file I/O as much as possible.
 Usage:
     # Option 1: Run directly (if executable)
     ./tests/test_example2_pipeline.py
-
-    # Option 2: Run with karma environment Python
-    /opt/homebrew/Caskroom/miniconda/base/envs/karma/bin/python tests/test_example2_pipeline.py
-
-    # Option 3: Activate conda environment first
-    conda activate karma
-    python tests/test_example2_pipeline.py
 """
 
 import sys
