@@ -1,0 +1,5 @@
+# Ignore all cache contents
+*
+
+# But keep the directory structure
+!.gitignore

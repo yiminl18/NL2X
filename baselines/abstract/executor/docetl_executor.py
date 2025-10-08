@@ -6,7 +6,7 @@ and pipelines. It handles conversion from abstract format to DocETL format and
 manages execution using DocETL's DSLRunner.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 from pathlib import Path
 import json
 import yaml
@@ -25,11 +25,29 @@ from ..cache import OperatorCacheManager
 # Import conversion utilities
 try:
     from ..convert.docetl import abstract_to_docetl
+    from ..convert.docetl.path_manager import (
+        get_dataset_paths,
+        set_dataset_paths,
+        get_output_path,
+        set_output_path,
+        apply_path_mappings
+    )
 except ImportError:
     # Try alternative import for standalone execution
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'convert'))
     from docetl import abstract_to_docetl
+    from docetl.path_manager import (
+        get_dataset_paths,
+        set_dataset_paths,
+        get_output_path,
+        set_output_path,
+        apply_path_mappings
+    )
+
+# Use TYPE_CHECKING to avoid circular imports
+if TYPE_CHECKING:
+    from ..data_management import DatasetManager
 
 
 class ExecutionResult:
@@ -62,7 +80,8 @@ class DocETLExecutor:
     def __init__(self,
                  verbose: bool = False,
                  cache_enabled: bool = True,
-                 cache_dir: Optional[Union[str, Path]] = None):
+                 cache_dir: Optional[Union[str, Path]] = None,
+                 data_manager: Optional['DatasetManager'] = None):
         """
         Initialize DocETL executor.
 
@@ -70,12 +89,13 @@ class DocETLExecutor:
             verbose: Enable verbose logging
             cache_enabled: Enable result caching
             cache_dir: Directory for cache storage (default: abstract/_cache)
+            data_manager: Optional DatasetManager for dataset transformations and path management
         """
         self.verbose = verbose
         self.cache_enabled = cache_enabled
+        self.data_manager = data_manager
         self._docetl_available = self._check_docetl()
 
-        # Initialize cache manager
         self.cache_manager = OperatorCacheManager(
             cache_dir=cache_dir,
             enabled=cache_enabled
@@ -83,11 +103,11 @@ class DocETLExecutor:
 
     def _check_docetl(self) -> bool:
         """Check if DocETL is available for execution."""
-        try:
-            from docetl.runner import DSLRunner
-            return True
-        except ImportError:
-            return False
+        # try:
+        from docetl.runner import DSLRunner
+        return True
+        # except ImportError:
+        #     return False
 
     def execute_operator(self,
                         operator: Operator,
@@ -196,15 +216,11 @@ class DocETLExecutor:
         try:
             from docetl.runner import DSLRunner
 
-            # Convert abstract operator to DocETL format
             docetl_op = abstract_to_docetl(operator)
-
-            # Create temporary pipeline
             temp_pipeline = self._create_temp_pipeline(
                 docetl_op, input_data, config or {}
             )
 
-            # Execute pipeline
             start_time = time.time()
 
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
@@ -212,18 +228,15 @@ class DocETLExecutor:
                 temp_file = f.name
 
             try:
-                # Run the pipeline
                 runner = DSLRunner.from_yaml(temp_file, max_threads=10)
                 runner.load_run_save()
 
-                # Load output
                 output_path = temp_pipeline['pipeline']['output']['path']
                 with open(output_path, 'r') as f:
                     output_data = json.load(f)
 
                 execution_time = time.time() - start_time
 
-                # Clean up output file
                 if os.path.exists(output_path):
                     os.remove(output_path)
 
@@ -239,7 +252,6 @@ class DocETLExecutor:
                 )
 
             finally:
-                # Clean up temp files
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
 
@@ -260,6 +272,9 @@ class DocETLExecutor:
                         intermediate_dir: Optional[str] = None) -> ExecutionResult:
         """
         Execute a complete DocETL pipeline.
+
+        If a DatasetManager is configured, it will be used to apply any registered
+        path mappings before execution and to manage output paths.
 
         Args:
             pipeline_config: Complete pipeline configuration (with datasets, operations, pipeline sections)
@@ -288,7 +303,32 @@ class DocETLExecutor:
         try:
             from docetl.runner import DSLRunner
 
-            # Override input data if provided
+            # Apply DatasetManager path mappings if available
+            if self.data_manager:
+                dataset_paths = get_dataset_paths(pipeline_config)
+                dataset_path_mapping = {}
+
+                for dataset_name, original_path in dataset_paths.items():
+                    processed_path = self.data_manager.get_processed_path(original_path)
+                    if processed_path:
+                        dataset_path_mapping[dataset_name] = processed_path
+                        if self.verbose:
+                            print(f"Using processed dataset for {dataset_name}: {processed_path}")
+
+                # Apply dataset path mappings
+                if dataset_path_mapping:
+                    pipeline_config = set_dataset_paths(pipeline_config, dataset_path_mapping, in_place=False)
+
+                # Apply output path mapping if registered
+                original_output_path = get_output_path(pipeline_config)
+                if original_output_path:
+                    new_output_path = self.data_manager.get_output_path(original_output_path)
+                    if new_output_path:
+                        pipeline_config = set_output_path(pipeline_config, new_output_path, in_place=True)
+                        if self.verbose:
+                            print(f"Using custom output path: {new_output_path}")
+
+            # Override input data if provided (takes precedence over DatasetManager)
             if input_data:
                 for dataset_name in pipeline_config.get('datasets', {}).keys():
                     pipeline_config['datasets'][dataset_name]['path'] = str(input_data)

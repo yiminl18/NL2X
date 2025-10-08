@@ -26,6 +26,9 @@ from .pipeline import Pipeline, PipelineNode
 # Import executors
 from .executor import DocETLExecutor, ExecutionResult
 
+# Import data management
+from .data_management import DatasetManager
+
 # Import conversion utilities
 try:
     from .convert.docetl import (
@@ -45,7 +48,8 @@ class AbstractExecutor:
     def __init__(self,
                  verbose: bool = False,
                  cache_enabled: bool = True,
-                 cache_dir: Optional[Union[str, Path]] = None):
+                 cache_dir: Optional[Union[str, Path]] = None,
+                 data_manager: Optional[DatasetManager] = None):
         """
         Initialize the AbstractExecutor.
 
@@ -53,17 +57,19 @@ class AbstractExecutor:
             verbose: Enable verbose logging
             cache_enabled: Enable result caching for operators
             cache_dir: Directory for cache storage (default: abstract/_cache)
+            data_manager: Optional DatasetManager for dataset transformations and path management
         """
         self.verbose = verbose
         self.cache_enabled = cache_enabled
         self.cache_dir = cache_dir
+        self.data_manager = data_manager
 
-        # Initialize executors with cache configuration
         self.executors = {
             'docetl': DocETLExecutor(
                 verbose=verbose,
                 cache_enabled=cache_enabled,
-                cache_dir=cache_dir
+                cache_dir=cache_dir,
+                data_manager=data_manager
             )
         }
 

@@ -66,14 +66,11 @@ class Pipeline:
         if to_node_id not in self.nodes:
             raise ValueError(f"Target node '{to_node_id}' not found in pipeline")
 
-        # Add edge
         self.edges[from_node_id].append(to_node_id)
         self.nodes[from_node_id].children.append(to_node_id)
         self.nodes[to_node_id].parents.append(from_node_id)
 
-        # Check for cycles
         if self.has_cycle():
-            # Rollback the edge
             self.edges[from_node_id].remove(to_node_id)
             self.nodes[from_node_id].children.remove(to_node_id)
             self.nodes[to_node_id].parents.remove(from_node_id)

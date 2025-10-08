@@ -2,12 +2,11 @@
 DocETL Converter Module
 
 This module provides utilities to convert between DocETL operators and abstract operators.
-It is organized into two sub-modules:
+It is organized into three sub-modules:
 
 - schema: Type and schema tracking utilities
 - converter: Main conversion logic and YAML/JSON handling
-
-All public functions are re-exported here for backward compatibility.
+- path_manager: Path management APIs for dataset and output paths
 """
 
 # Import all public functions from converter
@@ -35,6 +34,19 @@ from .schema import (
     _type_dict_to_docetl_string,
     _extract_input_schema,
     _extract_output_schema
+)
+
+# Import path management APIs
+from .path_manager import (
+    get_dataset_paths,
+    set_dataset_paths,
+    set_dataset_path,
+    get_output_path,
+    set_output_path,
+    get_intermediate_dir,
+    set_intermediate_dir,
+    apply_path_mappings,
+    get_all_file_paths
 )
 
 __all__ = [
@@ -68,4 +80,15 @@ __all__ = [
     '_type_dict_to_docetl_string',
     '_extract_input_schema',
     '_extract_output_schema',
+
+    # Path management APIs
+    'get_dataset_paths',
+    'set_dataset_paths',
+    'set_dataset_path',
+    'get_output_path',
+    'set_output_path',
+    'get_intermediate_dir',
+    'set_intermediate_dir',
+    'apply_path_mappings',
+    'get_all_file_paths',
 ]

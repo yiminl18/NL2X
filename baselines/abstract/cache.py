@@ -45,11 +45,9 @@ class OperatorCacheManager:
         self.cache_dir = Path(cache_dir)
         self.enabled = enabled
 
-        # Create cache directory if it doesn't exist
         if self.enabled:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Statistics
         self.stats = {
             'hits': 0,
             'misses': 0,
@@ -69,19 +67,15 @@ class OperatorCacheManager:
         Returns:
             SHA-512 hash string (hex format)
         """
-        # Create config dict excluding names
         config_dict = {
             'type': operator.type,
-            'source_system': operator.source.get('system', ''),  # Only system, not name
+            'source_system': operator.source.get('system', ''),
             'properties': operator.properties,
             'input': operator.input,
             'output': operator.output
         }
 
-        # Convert to normalized JSON string (sorted keys for consistency)
         config_json = json.dumps(config_dict, sort_keys=True, ensure_ascii=False)
-
-        # Compute SHA-512 hash
         hash_obj = hashlib.sha512(config_json.encode('utf-8'))
         return hash_obj.hexdigest()
 

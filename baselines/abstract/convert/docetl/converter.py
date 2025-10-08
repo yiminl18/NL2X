@@ -124,39 +124,26 @@ def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Di
         ... }
         >>> abstract_op = docetl_to_abstract(docetl_op)
     """
-    # Create a new abstract operator instance
     abstract_op = Operator()
-
-    # Copy the operator to avoid modifying the original
     docetl_op = copy.deepcopy(docetl_operator)
 
-    # Set the name
     abstract_op.name = docetl_op.get("name", "")
 
-    # Map the type
     docetl_type = docetl_op.get("type", "")
     abstract_op.type = DOCETL_TO_ABSTRACT_TYPE_MAP.get(docetl_type, docetl_type.capitalize())
 
-    # Set the source information
     abstract_op.source = {
         "system": "docetl",
         "name": docetl_op.get("name", "")
     }
 
-    # Extract and process properties
-    # All fields except 'name' and 'type' go into properties
     properties = {}
     for key, value in docetl_op.items():
         if key not in ["name", "type"]:
             properties[key] = value
 
-    # Special handling for output schema structure
-    # DocETL uses nested format: {"output": {"schema": {...}}}
-    # We'll keep it in properties as is for now
-
     abstract_op.properties = properties
 
-    # Handle input/output schemas
     abstract_op.input = _extract_input_schema(docetl_op, field_types, dataset_schema)
     abstract_op.output = _extract_output_schema(docetl_op, field_types)
 
@@ -317,41 +304,29 @@ def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
     """
     docetl_op = {}
 
-    # Set the name
     docetl_op["name"] = abstract_operator.name
 
-    # Reverse map the type
-    # Create reverse mapping
     abstract_to_docetl_type = {v: k for k, v in DOCETL_TO_ABSTRACT_TYPE_MAP.items()}
-
-    # Use the first matching DocETL type for each abstract type
-    # For types that map to multiple DocETL types (e.g., Map -> map/code_map),
-    # we'll need to check properties to determine which one to use
     abstract_type = abstract_operator.type
 
     if abstract_type == "Map":
-        # Check if there's code in properties to determine map vs code_map
         if "code" in abstract_operator.properties:
             docetl_op["type"] = "code_map"
         else:
             docetl_op["type"] = "map"
     elif abstract_type == "Filter":
-        # Check if there's code in properties to determine filter vs code_filter
         if "code" in abstract_operator.properties:
             docetl_op["type"] = "code_filter"
         else:
             docetl_op["type"] = "filter"
     elif abstract_type == "Reduce":
-        # Check if there's code in properties to determine reduce vs code_reduce
         if "code" in abstract_operator.properties:
             docetl_op["type"] = "code_reduce"
         else:
             docetl_op["type"] = "reduce"
     else:
-        # For other types, use the direct mapping
         docetl_op["type"] = abstract_to_docetl_type.get(abstract_type, abstract_type.lower())
 
-    # Copy all properties back
     for key, value in abstract_operator.properties.items():
         docetl_op[key] = value
 
@@ -587,30 +562,24 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
         else:
             raise ValueError("dataset_schema must be a dict or path to JSON file")
 
-    # Read the complete YAML structure to preserve all fields
     print(f"Reading YAML pipeline from: {yaml_path}")
     with open(yaml_path, 'r') as f:
         complete_yaml = yaml.safe_load(f)
 
-    # Convert YAML operators to abstract operators
     abstract_operators = yaml_to_abstract_pipeline(yaml_path, schema_dict, verbose=verbose)
     print(f"Converted {len(abstract_operators)} operators to abstract representation")
 
-    # Serialize operators to dictionaries
     operators_data = {
         "operators": [operator_to_dict(op) for op in abstract_operators]
     }
 
-    # Include dataset schema in output if provided
     if schema_dict:
         operators_data["dataset_schema"] = schema_dict
 
-    # Preserve all other fields from the original YAML (except operations)
     for key, value in complete_yaml.items():
-        if key != "operations":  # Skip operations as they're already converted
+        if key != "operations":
             operators_data[key] = value
 
-    # Validate if requested
     if validate:
         print("\n" + "=" * 60)
         print("VALIDATING ABSTRACT PIPELINE")
@@ -653,10 +622,8 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
 
         print("=" * 60 + "\n")
 
-    # Create output directory if it doesn't exist
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save to JSON file
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(operators_data, f, indent=2, ensure_ascii=False)
 
@@ -735,7 +702,7 @@ def abstract_json_to_yaml(json_path: Union[str, Path], output_path: Union[str, P
     with open(output_path, 'w', encoding='utf-8') as f:
         yaml.dump(pipeline_yaml, f, Dumper=LiteralDumper,
                   default_flow_style=False, sort_keys=False, allow_unicode=True)
-
+    # print(pipeline_yaml)
     print(f"Saved complete DocETL pipeline to: {output_path}")
 
 

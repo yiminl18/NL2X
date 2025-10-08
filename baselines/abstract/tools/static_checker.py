@@ -45,7 +45,6 @@ def validate_operator_fields(operators: List[Dict[str, Any]]) -> Tuple[bool, Lis
     for i, op in enumerate(operators):
         op_name = op.get('name', f'<unnamed operator {i}>')
 
-        # Check required fields
         for field in required_fields:
             if field not in op:
                 errors.append(f"Operator '{op_name}' missing required field: {field}")

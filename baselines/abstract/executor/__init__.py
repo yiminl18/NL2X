@@ -11,7 +11,7 @@ Available Utilities:
 - ExecutionResult: Container for execution results with metadata
 """
 
-from .docetl import DocETLExecutor, ExecutionResult
+from .docetl_executor import DocETLExecutor, ExecutionResult
 
 __all__ = [
     'DocETLExecutor',

@@ -20,7 +20,7 @@ def list_baselines():
 from .gpt4o_base import GPT4oBaseBaseline
 from .gpt4o_zero_shot import GPT4oZeroShotBaseline
 from .dummy import DummyBaseline
-from .docetl import DocETLBaseline
+from .docetl_baseline import DocETLBaseline
 from .docetl_step import DocETLStepBaseline
 from .docetl_abstract import DocETLAbstractBaseline
 from .lotus import LOTUSBaseline

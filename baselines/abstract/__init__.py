@@ -5,6 +5,7 @@ This module provides:
 - Abstract operator definitions (ops)
 - Pipeline class for building DAGs
 - Conversion utilities for system-specific operators
+- Data management layer for dataset transformations and path management
 """
 
 from .ops import (
@@ -29,10 +30,10 @@ from .ops import (
 
 from .pipeline import Pipeline, PipelineNode
 
+from .data_management import DatasetManager, SamplingConfig
+
 __all__ = [
-    # Base operator
     "Operator",
-    # Operators
     "Map",
     "Filter",
     "Reduce",
@@ -49,7 +50,8 @@ __all__ = [
     "Index",
     "Search",
     "Project",
-    # Pipeline
     "Pipeline",
     "PipelineNode",
+    "DatasetManager",
+    "SamplingConfig",
 ]
