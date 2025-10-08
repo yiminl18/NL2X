@@ -6,12 +6,13 @@ This module provides data management capabilities for the abstract layer to:
 2. Apply transformations (sampling, filtering, etc.)
 3. Store processed datasets in temporary locations
 4. Manage dataset path and output path modifications for underlying systems
+5. Track multiple data sources with lineage (tree-based tracking)
 
 The DatasetManager class acts as a proxy between the abstract layer and
 underlying execution systems, allowing pre-processing and path management.
 """
 
-from typing import Any, Dict, List, Optional, Union, Literal
+from typing import Any, Dict, List, Optional, Union, Literal, Set
 from pathlib import Path
 import json
 import tempfile
@@ -19,6 +20,7 @@ import os
 import random
 import shutil
 from datetime import datetime
+import uuid
 
 
 class SamplingConfig:
@@ -59,6 +61,86 @@ class SamplingConfig:
             raise ValueError("size must be positive")
 
 
+class DataSource:
+    """
+    Represents a data source node in the lineage tree.
+
+    Tracks:
+    - Source identity and location
+    - Parent-child relationships (transformations)
+    - Metadata (creation time, size, transformation type)
+
+    This enables:
+    - Querying data lineage and history
+    - Selecting specific sources for pipeline input
+    - Tracking transformations across multiple pipelines
+    """
+
+    def __init__(
+        self,
+        path: Union[str, Path],
+        source_id: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        transformation: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Initialize a DataSource node.
+
+        Args:
+            path: Path to the data file
+            source_id: Unique identifier (auto-generated if None)
+            parent_id: ID of parent source (None for root sources)
+            transformation: Type of transformation applied (e.g., "sample", "filter")
+            metadata: Additional metadata about the source
+        """
+        self.id = source_id or str(uuid.uuid4())
+        self.path = str(Path(path).resolve())
+        self.parent_id = parent_id
+        self.children_ids: Set[str] = set()
+        self.transformation = transformation
+        self.metadata = metadata or {}
+        self.created_at = datetime.now().isoformat()
+
+        # Auto-populate metadata
+        if os.path.exists(self.path):
+            self.metadata['file_size'] = os.path.getsize(self.path)
+            self.metadata['file_mtime'] = os.path.getmtime(self.path)
+
+    def add_child(self, child_id: str):
+        """Add a child source ID to this node."""
+        self.children_ids.add(child_id)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary."""
+        return {
+            'id': self.id,
+            'path': self.path,
+            'parent_id': self.parent_id,
+            'children_ids': list(self.children_ids),
+            'transformation': self.transformation,
+            'metadata': self.metadata,
+            'created_at': self.created_at
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'DataSource':
+        """Deserialize from dictionary."""
+        source = cls(
+            path=data['path'],
+            source_id=data['id'],
+            parent_id=data.get('parent_id'),
+            transformation=data.get('transformation'),
+            metadata=data.get('metadata', {})
+        )
+        source.children_ids = set(data.get('children_ids', []))
+        source.created_at = data.get('created_at', datetime.now().isoformat())
+        return source
+
+    def __repr__(self):
+        return f"DataSource(id={self.id[:8]}..., path={self.path}, parent={self.parent_id[:8] if self.parent_id else None}...)"
+
+
 class DatasetManager:
     """
     Manager for dataset operations in the abstract pipeline layer.
@@ -67,18 +149,23 @@ class DatasetManager:
     - Loading datasets from various formats
     - Applying transformations (sampling, etc.)
     - Storing processed datasets in temporary or persistent locations
-    - Tracking original and processed dataset paths
+    - Tracking multiple data sources with lineage (tree structure)
     - Managing output paths for pipeline execution
+    - Selecting specific sources for pipeline input
 
     Example:
         >>> manager = DatasetManager()
-        >>> # Apply sampling
-        >>> processed_path = manager.sample_dataset(
-        ...     "data/input.json",
+        >>> # Register and track a source
+        >>> source_id = manager.register_source("data/input.json")
+        >>> # Apply sampling (creates child source in tree)
+        >>> processed_id = manager.sample_dataset(
+        ...     source_id,
         ...     SamplingConfig(mode="ratio", ratio=0.1)
         ... )
-        >>> # Use processed path in pipeline
-        >>> manager.get_processed_path("data/input.json")
+        >>> # Get lineage
+        >>> lineage = manager.get_source_lineage(processed_id)
+        >>> # Use source in pipeline
+        >>> data_path = manager.get_source_path(processed_id)
     """
 
     def __init__(
@@ -107,7 +194,11 @@ class DatasetManager:
             self._temp_dir_obj = tempfile.TemporaryDirectory(prefix="abstract_data_")
             self.temp_dir = Path(self._temp_dir_obj.name)
 
-        # Track path mappings: original_path -> processed_path
+        # Multi-source tracking registry
+        self.sources: Dict[str, DataSource] = {}  # source_id -> DataSource
+        self.path_to_source_id: Dict[str, str] = {}  # path -> source_id (for quick lookup)
+
+        # Legacy support: Track path mappings: original_path -> processed_path
         self.path_mappings: Dict[str, str] = {}
 
         # Track processed files for cleanup
@@ -231,12 +322,12 @@ class DatasetManager:
         Uses equal-weighted random sampling (each item has equal probability).
 
         Args:
-            source_path: Path to the source dataset
+            source_path: Path to the source dataset (or source_id if using multi-source tracking)
             config: Sampling configuration
             output_path: Optional output path (default: temp file)
 
         Returns:
-            Path to the sampled dataset
+            Path to the sampled dataset (or source_id if source was tracked)
 
         Example:
             >>> manager = DatasetManager()
@@ -251,13 +342,33 @@ class DatasetManager:
             ...     SamplingConfig(mode="ratio", ratio=0.2)
             ... )
         """
+        # Check if source_path is a tracked source_id
+        parent_source_id = None
+        actual_source_path = source_path
+
+        if isinstance(source_path, str) and source_path in self.sources:
+            # It's a source_id
+            parent_source_id = source_path
+            actual_source_path = self.sources[source_path].path
+
         # Read source dataset
-        data = self.read_dataset(source_path)
+        data = self.read_dataset(actual_source_path)
 
         if len(data) == 0:
             if self.verbose:
                 print("Warning: Source dataset is empty")
-            return self.write_dataset(data, output_path)
+            output_path_str = self.write_dataset(data, output_path)
+            # Still track as a transformation even if empty
+            if parent_source_id:
+                new_source = DataSource(
+                    path=output_path_str,
+                    parent_id=parent_source_id,
+                    transformation="sample",
+                    metadata={'config': config.__dict__, 'sample_size': 0, 'original_size': 0}
+                )
+                self._register_source_internal(new_source, parent_source_id)
+                return new_source.id
+            return output_path_str
 
         # Set random seed if specified
         if config.random_seed is not None:
@@ -280,9 +391,26 @@ class DatasetManager:
         # Write sampled dataset
         output_path_str = self.write_dataset(sampled_data, output_path)
 
-        # Track the mapping
-        source_path_str = str(Path(source_path).resolve())
+        # Track the mapping (legacy)
+        source_path_str = str(Path(actual_source_path).resolve())
         self.path_mappings[source_path_str] = output_path_str
+
+        # If parent is tracked, create child source in tree
+        if parent_source_id:
+            new_source = DataSource(
+                path=output_path_str,
+                parent_id=parent_source_id,
+                transformation="sample",
+                metadata={
+                    'config': config.__dict__,
+                    'sample_size': sample_size,
+                    'original_size': len(data)
+                }
+            )
+            self._register_source_internal(new_source, parent_source_id)
+            if self.verbose:
+                print(f"Registered sampled source: {new_source.id}")
+            return new_source.id
 
         return output_path_str
 
@@ -371,6 +499,233 @@ class DatasetManager:
             List of output items
         """
         return self.read_dataset(path)
+
+    # ===== Multi-Source Tracking Methods =====
+
+    def register_source(
+        self,
+        path: Union[str, Path],
+        source_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Register a data source for tracking.
+
+        Args:
+            path: Path to the data file
+            source_id: Optional custom ID (auto-generated if None)
+            metadata: Optional metadata about the source
+
+        Returns:
+            Source ID
+
+        Example:
+            >>> manager = DatasetManager()
+            >>> source_id = manager.register_source("data/input.json")
+            >>> print(f"Registered: {source_id}")
+        """
+        path_str = str(Path(path).resolve())
+
+        # Check if already registered by path
+        if path_str in self.path_to_source_id:
+            existing_id = self.path_to_source_id[path_str]
+            if self.verbose:
+                print(f"Source already registered: {existing_id}")
+            return existing_id
+
+        # Create new source
+        source = DataSource(
+            path=path_str,
+            source_id=source_id,
+            parent_id=None,
+            transformation=None,
+            metadata=metadata
+        )
+
+        self.sources[source.id] = source
+        self.path_to_source_id[path_str] = source.id
+
+        if self.verbose:
+            print(f"Registered new source: {source.id} at {path_str}")
+
+        return source.id
+
+    def _register_source_internal(self, source: DataSource, parent_id: Optional[str] = None):
+        """Internal method to register a source and update parent-child relationships."""
+        self.sources[source.id] = source
+        self.path_to_source_id[source.path] = source.id
+
+        # Update parent's children list
+        if parent_id and parent_id in self.sources:
+            self.sources[parent_id].add_child(source.id)
+
+    def get_source(self, source_id: str) -> Optional[DataSource]:
+        """
+        Get a data source by ID.
+
+        Args:
+            source_id: Source ID
+
+        Returns:
+            DataSource object or None if not found
+        """
+        return self.sources.get(source_id)
+
+    def get_source_by_path(self, path: Union[str, Path]) -> Optional[DataSource]:
+        """
+        Get a data source by path.
+
+        Args:
+            path: Path to the data file
+
+        Returns:
+            DataSource object or None if not found
+        """
+        path_str = str(Path(path).resolve())
+        source_id = self.path_to_source_id.get(path_str)
+        return self.sources.get(source_id) if source_id else None
+
+    def get_source_path(self, source_id: str) -> Optional[str]:
+        """
+        Get the path for a source ID.
+
+        Args:
+            source_id: Source ID
+
+        Returns:
+            Path to the data file or None if not found
+        """
+        source = self.sources.get(source_id)
+        return source.path if source else None
+
+    def get_all_sources(self) -> Dict[str, DataSource]:
+        """
+        Get all registered sources.
+
+        Returns:
+            Dictionary of source_id -> DataSource
+        """
+        return self.sources.copy()
+
+    def get_root_sources(self) -> List[DataSource]:
+        """
+        Get all root sources (sources with no parent).
+
+        Returns:
+            List of root DataSource objects
+        """
+        return [source for source in self.sources.values() if source.parent_id is None]
+
+    def get_source_lineage(self, source_id: str) -> List[DataSource]:
+        """
+        Get the lineage (ancestry path) of a source from root to current.
+
+        Args:
+            source_id: Source ID
+
+        Returns:
+            List of DataSource objects from root to current source
+
+        Example:
+            >>> lineage = manager.get_source_lineage(processed_id)
+            >>> for i, source in enumerate(lineage):
+            ...     print(f"  {i}: {source.transformation or 'original'} -> {source.path}")
+        """
+        if source_id not in self.sources:
+            return []
+
+        lineage = []
+        current_id = source_id
+
+        # Walk backwards to root
+        while current_id:
+            source = self.sources[current_id]
+            lineage.insert(0, source)  # Insert at beginning to maintain order
+            current_id = source.parent_id
+
+        return lineage
+
+    def get_source_descendants(self, source_id: str) -> List[DataSource]:
+        """
+        Get all descendants of a source (breadth-first).
+
+        Args:
+            source_id: Source ID
+
+        Returns:
+            List of descendant DataSource objects
+
+        Example:
+            >>> descendants = manager.get_source_descendants(root_id)
+            >>> print(f"Found {len(descendants)} derived sources")
+        """
+        if source_id not in self.sources:
+            return []
+
+        descendants = []
+        queue = [source_id]
+
+        while queue:
+            current_id = queue.pop(0)
+            source = self.sources[current_id]
+
+            for child_id in source.children_ids:
+                if child_id in self.sources:
+                    descendants.append(self.sources[child_id])
+                    queue.append(child_id)
+
+        return descendants
+
+    def get_source_children(self, source_id: str) -> List[DataSource]:
+        """
+        Get immediate children of a source.
+
+        Args:
+            source_id: Source ID
+
+        Returns:
+            List of child DataSource objects
+        """
+        if source_id not in self.sources:
+            return []
+
+        source = self.sources[source_id]
+        return [self.sources[child_id] for child_id in source.children_ids if child_id in self.sources]
+
+    def export_lineage_tree(self, source_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Export the lineage tree structure as a dictionary.
+
+        Args:
+            source_id: Optional source ID to export subtree (default: all sources)
+
+        Returns:
+            Dictionary representation of the lineage tree
+        """
+        if source_id:
+            # Export subtree
+            if source_id not in self.sources:
+                return {}
+            return self._export_subtree(source_id)
+        else:
+            # Export all roots and their subtrees
+            roots = self.get_root_sources()
+            return {
+                'roots': [self._export_subtree(root.id) for root in roots]
+            }
+
+    def _export_subtree(self, source_id: str) -> Dict[str, Any]:
+        """Recursively export a source subtree."""
+        if source_id not in self.sources:
+            return {}
+
+        source = self.sources[source_id]
+        children = [self._export_subtree(child_id) for child_id in source.children_ids]
+
+        return {
+            **source.to_dict(),
+            'children': children
+        }
 
     def cleanup(self):
         """Clean up temporary files and directories."""

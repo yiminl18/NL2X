@@ -18,7 +18,7 @@ from ..ops.base import Operator
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
-    from ..data_management import DatasetManager
+    from ..db import DatasetManager
 
 
 class LotusExecutor(BaseSystemExecutor):

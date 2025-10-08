@@ -33,7 +33,7 @@ from .pipeline import Pipeline, PipelineNode
 from .executor import DocETLExecutor, LotusExecutor, ExecutionResult
 
 # Import data management
-from .data_management import DatasetManager
+from .db import DatasetManager
 
 # Import conversion utilities
 try:

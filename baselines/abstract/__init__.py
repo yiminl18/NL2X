@@ -30,7 +30,7 @@ from .ops import (
 
 from .pipeline import Pipeline, PipelineNode
 
-from .data_management import DatasetManager, SamplingConfig
+from .db import DatasetManager, SamplingConfig, DataSource
 
 __all__ = [
     "Operator",
@@ -54,4 +54,5 @@ __all__ = [
     "PipelineNode",
     "DatasetManager",
     "SamplingConfig",
+    "DataSource",
 ]
