@@ -384,8 +384,8 @@ def apply_extract_operator_transformation(type_system: TypeSystem, operator: Dic
     produced_fields = []
     if 'document_keys' in operator and operator['document_keys']:
         for doc_key in operator['document_keys']:
-            suffix = operator.get('extraction_key_suffix', f"_extracted_{operator.get('name', 'extract')}")
-            extracted_field = f"{doc_key}{suffix}"
+            # Ground truth: suffix is always "_extracted_findings"
+            extracted_field = f"{doc_key}_extracted_findings"
             # Extract operations typically produce strings
             new_system.add_field_with_source(extracted_field, {'type': 'String'}, operator_name)
             produced_fields.append(extracted_field)
@@ -413,24 +413,36 @@ def apply_unnest_operator_transformation(type_system: TypeSystem, operator: Dict
         new_system.record_field_usage(field, operator_name)
 
     produced_fields = []
-    if 'unnest_key' in operator and operator['unnest_key']:
-        unnest_type = type_system.get_field_type(operator['unnest_key'])
+    unnest_key = operator.get('unnest_key')
+
+    if unnest_key:
+        unnest_type = type_system.get_field_type(unnest_key)
 
         if unnest_type:
             if unnest_type.get('type') == 'List':
-                # For list unnest: preserve element types as new fields
+                # Ground truth: For list unnest, change list[T] to T
                 element_type = unnest_type.get('element_type')
-                if element_type and element_type.get('type') == 'Dict':
-                    # Add all fields from the nested dict
-                    for field_name, field_type in element_type.get('fields', {}).items():
-                        new_system.add_field_with_source(field_name, field_type, operator_name)
-                        produced_fields.append(field_name)
+                if element_type:
+                    if element_type.get('type') == 'Dict':
+                        # list[{name: str, age: int}] becomes name: str, age: int
+                        for field_name, field_type in element_type.get('fields', {}).items():
+                            new_system.add_field_with_source(field_name, field_type, operator_name)
+                            produced_fields.append(field_name)
+                    else:
+                        # list[str] becomes the unnest_key field with type str
+                        new_system.add_field_with_source(unnest_key, element_type, operator_name)
+                        produced_fields.append(unnest_key)
 
             elif unnest_type.get('type') == 'Dict':
-                # For dict unnest: flatten all nested fields to top level
+                # Ground truth: For dict unnest, flatten all nested fields to top level
+                # The unnest_key field itself is removed, fields are promoted
                 for field_name, field_type in unnest_type.get('fields', {}).items():
                     new_system.add_field_with_source(field_name, field_type, operator_name)
                     produced_fields.append(field_name)
+
+        # Ground truth: REMOVE the unnest_key field from the type system
+        if unnest_key in new_system.root_fields:
+            del new_system.root_fields[unnest_key]
 
     # Record operation in history with both produced and consumed fields
     new_system.operation_history.append({
@@ -438,7 +450,7 @@ def apply_unnest_operator_transformation(type_system: TypeSystem, operator: Dict
         'type': 'unnest',
         'produced_fields': produced_fields,
         'consumed_fields': list(used_fields),
-        'unnest_key': operator.get('unnest_key'),
+        'unnest_key': unnest_key,
         'timestamp': len(new_system.operation_history)
     })
 
@@ -484,6 +496,37 @@ def apply_reduce_operator_transformation(type_system: TypeSystem, operator: Dict
     return new_system
 
 
+def apply_resolve_operator_transformation(type_system: TypeSystem, operator: Dict[str, Any]) -> TypeSystem:
+    """Apply resolve operator transformation to type system."""
+    new_system = type_system.copy()
+    operator_name = operator.get('name', f"resolve_{operator.get('type', 'unknown')}")
+
+    # Track which fields this operator uses
+    used_fields = parse_operator_used_fields(operator)
+    for field in used_fields:
+        new_system.record_field_usage(field, operator_name)
+
+    produced_fields = []
+    # Ground truth: Resolve uses output.schema fields like Map
+    if 'output_schema' in operator:
+        if isinstance(operator['output_schema'], dict):
+            for field_name, field_type in operator['output_schema'].items():
+                type_dict = infer_type_from_schema_type(field_type)
+                new_system.add_field_with_source(field_name, type_dict, operator_name)
+                produced_fields.append(field_name)
+
+    # Record operation in history with both produced and consumed fields
+    new_system.operation_history.append({
+        'operator': operator_name,
+        'type': 'resolve',
+        'produced_fields': produced_fields,
+        'consumed_fields': list(used_fields),
+        'timestamp': len(new_system.operation_history)
+    })
+
+    return new_system
+
+
 def apply_split_operator_transformation(type_system: TypeSystem, operator: Dict[str, Any]) -> TypeSystem:
     """Apply split operator transformation to type system."""
     new_system = type_system.copy()
@@ -494,15 +537,29 @@ def apply_split_operator_transformation(type_system: TypeSystem, operator: Dict[
     for field in used_fields:
         new_system.record_field_usage(field, operator_name)
 
-    # Split operations add these standard fields
-    new_system.add_field_with_source('_split_id', {'type': 'String'}, operator_name)
-    new_system.add_field_with_source('_split_index', {'type': 'Integer'}, operator_name)
+    # Ground truth: Split operations add:
+    # 1. {split_key}_chunk: string
+    # 2. {op_name}_id: string (unique identifier for each original document)
+    # 3. {op_name}_chunk_num: integer (sequential number of chunk)
+    produced_fields = []
+
+    if 'split_key' in operator and operator['split_key']:
+        split_key = operator['split_key']
+        chunk_field = f"{split_key}_chunk"
+        new_system.add_field_with_source(chunk_field, {'type': 'String'}, operator_name)
+        produced_fields.append(chunk_field)
+
+    id_field = f"{operator_name}_id"
+    chunk_num_field = f"{operator_name}_chunk_num"
+    new_system.add_field_with_source(id_field, {'type': 'String'}, operator_name)
+    new_system.add_field_with_source(chunk_num_field, {'type': 'Integer'}, operator_name)
+    produced_fields.extend([id_field, chunk_num_field])
 
     # Record operation in history with both produced and consumed fields
     new_system.operation_history.append({
         'operator': operator_name,
         'type': 'split',
-        'produced_fields': ['_split_id', '_split_index'],
+        'produced_fields': produced_fields,
         'consumed_fields': list(used_fields),
         'timestamp': len(new_system.operation_history)
     })
@@ -521,11 +578,12 @@ def apply_gather_operator_transformation(type_system: TypeSystem, operator: Dict
         new_system.record_field_usage(field, operator_name)
 
     produced_fields = []
-    if 'output_key' in operator:
-        # Gather typically produces a list of strings
-        list_type = {'type': 'List', 'element_type': {'type': 'String'}}
-        new_system.add_field_with_source(operator['output_key'], list_type, operator_name)
-        produced_fields.append(operator['output_key'])
+    # Ground truth: Gather produces {content_key}_rendered field
+    if 'content_key' in operator and operator['content_key']:
+        rendered_field = f"{operator['content_key']}_rendered"
+        # Gather typically produces a string
+        new_system.add_field_with_source(rendered_field, {'type': 'String'}, operator_name)
+        produced_fields.append(rendered_field)
 
     # Record operation in history with both produced and consumed fields
     new_system.operation_history.append({
@@ -564,7 +622,11 @@ def apply_operator_transformation(type_system: TypeSystem, operator: Dict[str, A
         return apply_split_operator_transformation(type_system, operator)
     elif op_type == 'gather':
         return apply_gather_operator_transformation(type_system, operator)
-    elif op_type in ['filter', 'rank', 'resolve', 'cluster', 'sample', 'topk']:
+    elif op_type == 'resolve':
+        # Ground truth: Resolve uses output.schema like Map
+        return apply_resolve_operator_transformation(type_system, operator)
+
+    elif op_type in ['filter', 'sample', 'topk', 'join']:
         # These operators don't change the type system structure but may use fields
         new_system = type_system.copy()
         operator_name = operator.get('name', f"{op_type}_{len(type_system.operation_history)}")
@@ -579,6 +641,69 @@ def apply_operator_transformation(type_system: TypeSystem, operator: Dict[str, A
             'operator': operator_name,
             'type': op_type,
             'produced_fields': [],  # These operators don't produce new fields
+            'consumed_fields': list(used_fields),
+            'timestamp': len(new_system.operation_history)
+        })
+        return new_system
+
+    elif op_type == 'rank':
+        # Ground truth: Rank adds _rank field (with underscore prefix) to each item
+        new_system = type_system.copy()
+        operator_name = operator.get('name', f"rank_{len(type_system.operation_history)}")
+
+        # Track field usage
+        used_fields = parse_operator_used_fields(operator)
+        for field in used_fields:
+            new_system.record_field_usage(field, operator_name)
+
+        # Add _rank field (with underscore prefix)
+        new_system.add_field_with_source('_rank', {'type': 'Integer'}, operator_name)
+
+        # Record operation in history
+        new_system.operation_history.append({
+            'operator': operator_name,
+            'type': 'rank',
+            'produced_fields': ['_rank'],
+            'consumed_fields': list(used_fields),
+            'timestamp': len(new_system.operation_history)
+        })
+        return new_system
+
+    elif op_type == 'cluster':
+        # Ground truth: Cluster creates a dict with summary_schema fields + distance field
+        new_system = type_system.copy()
+        operator_name = operator.get('name', f"cluster_{len(type_system.operation_history)}")
+
+        # Track field usage
+        used_fields = parse_operator_used_fields(operator)
+        for field in used_fields:
+            new_system.record_field_usage(field, operator_name)
+
+        produced_fields = []
+        # Default output_key is "clusters" if not specified
+        output_key = operator.get('output_key', 'clusters')
+
+        # Build the cluster output type: dict with summary_schema fields + distance
+        cluster_fields = {}
+
+        # Add fields from summary_schema
+        if 'summary_schema' in operator and isinstance(operator['summary_schema'], dict):
+            for field_name, field_type in operator['summary_schema'].items():
+                cluster_fields[field_name] = infer_type_from_schema_type(field_type)
+
+        # Add distance field
+        cluster_fields['distance'] = {'type': 'Float'}
+
+        # Create the dict type
+        cluster_type = {'type': 'Dict', 'fields': cluster_fields}
+        new_system.add_field_with_source(output_key, cluster_type, operator_name)
+        produced_fields.append(output_key)
+
+        # Record operation in history
+        new_system.operation_history.append({
+            'operator': operator_name,
+            'type': 'cluster',
+            'produced_fields': produced_fields,
             'consumed_fields': list(used_fields),
             'timestamp': len(new_system.operation_history)
         })
@@ -739,16 +864,13 @@ def parse_operator_output_fields(operator: Dict[str, Any]) -> List[str]:
     op_type = operator.get('type', '')
 
     if op_type == 'extract':
+        # Ground truth: Extract always uses "_extracted_findings" suffix
         if 'document_keys' in operator and operator['document_keys'] != "TO_BE_GENERATED":
             if isinstance(operator['document_keys'], list) and operator['document_keys']:
                 for doc_key in operator['document_keys']:
-                    suffix = operator.get('extraction_key_suffix',
-                                        f"_extracted_{operator.get('name', 'extract')}")
-                    output_fields.append(f"{doc_key}{suffix}")
+                    output_fields.append(f"{doc_key}_extracted_findings")
             else:
-                suffix = operator.get('extraction_key_suffix',
-                                   f"_extracted_{operator.get('name', 'extract')}")
-                output_fields.append(f"src{suffix}")
+                output_fields.append(f"src_extracted_findings")
         return output_fields
 
     # Handle operators with output schema
@@ -762,11 +884,27 @@ def parse_operator_output_fields(operator: Dict[str, Any]) -> List[str]:
 
     # Handle specific operator types
     if op_type == 'split':
-        output_fields.append('_split_id')
-        output_fields.append('_split_index')
+        # Ground truth: Split creates {split_key}_chunk, {op_name}_id, {op_name}_chunk_num
+        operator_name = operator.get('name', 'split')
+        if 'split_key' in operator and operator['split_key']:
+            output_fields.append(f"{operator['split_key']}_chunk")
+        output_fields.append(f"{operator_name}_id")
+        output_fields.append(f"{operator_name}_chunk_num")
+
     elif op_type == 'gather':
-        if 'output_key' in operator:
-            output_fields.append(operator['output_key'])
+        # Ground truth: Gather creates {content_key}_rendered
+        if 'content_key' in operator and operator['content_key']:
+            output_fields.append(f"{operator['content_key']}_rendered")
+
+    elif op_type == 'rank':
+        # Ground truth: Rank adds _rank field
+        output_fields.append('_rank')
+
+    elif op_type == 'cluster':
+        # Ground truth: Cluster adds output_key field (default "clusters")
+        output_key = operator.get('output_key', 'clusters')
+        output_fields.append(output_key)
+
     elif op_type == 'unnest' and 'unnest_key' in operator:
         # Unnest expands existing fields, handled by apply_unnest_operator_transformation
         pass

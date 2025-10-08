@@ -112,10 +112,62 @@ class AbstractExecutor:
             if hasattr(executor, 'cache_enabled'):
                 executor.cache_enabled = True
 
+    def inject_cache(self,
+                    operator: Union[Operator, Dict[str, Any]],
+                    input_data: Union[str, List[Dict], Path],
+                    output_data: Any,
+                    metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Manually inject a result into cache without execution.
+
+        This allows bypassing specific operators with externally computed results,
+        useful for integrating external processing or optimization steps.
+
+        Args:
+            operator: Abstract operator (Operator instance or dict)
+            input_data: Input data that triggers this operator
+            output_data: Output data to cache (externally computed)
+            metadata: Optional metadata about the cached result
+
+        Returns:
+            True if injection successful, False otherwise
+
+        Example:
+            >>> executor = AbstractExecutor()
+            >>> # Process data externally
+            >>> external_result = custom_processing(input_data)
+            >>> # Inject as cached output for operator
+            >>> executor.inject_cache(
+            ...     operator=my_operator,
+            ...     input_data=input_to_operator,
+            ...     output_data=external_result,
+            ...     metadata={'source': 'external_processing'}
+            ... )
+        """
+        # Convert dict to Operator if needed
+        if isinstance(operator, dict):
+            operator = dict_to_operator(operator)
+
+        # Determine which system to use
+        system = operator.source.get('system', 'docetl')
+
+        if system not in self.executors:
+            return False
+
+        # Inject into cache using the system executor
+        executor = self.executors[system]
+        if hasattr(executor, 'cache_manager'):
+            return executor.cache_manager.inject_cached_result(
+                operator, input_data, output_data, metadata
+            )
+
+        return False
+
     def execute_operator(self,
                         operator: Union[Operator, Dict[str, Any]],
                         input_data: Union[str, List[Dict], Path],
-                        config: Optional[Dict[str, Any]] = None) -> ExecutionResult:
+                        config: Optional[Dict[str, Any]] = None,
+                        force_execute: bool = False) -> ExecutionResult:
         """
         Execute a single abstract operator.
 
@@ -123,6 +175,7 @@ class AbstractExecutor:
             operator: Abstract operator (Operator instance or dict)
             input_data: Input data (file path, list of dicts, or Path object)
             config: Optional execution configuration
+            force_execute: If True, bypass cache and re-execute (default: False)
 
         Returns:
             ExecutionResult with output data and metadata
@@ -151,7 +204,7 @@ class AbstractExecutor:
             )
 
         # Execute using appropriate executor
-        return self.executors[system].execute_operator(operator, input_data, config or {})
+        return self.executors[system].execute_operator(operator, input_data, config or {}, force_execute=force_execute)
 
     def execute_pipeline(self,
                         pipeline: Union[str, Path, List[Operator], Dict[str, Any]],
@@ -335,4 +388,123 @@ class AbstractExecutor:
             return ExecutionResult(
                 success=False,
                 error=f"Tracked execution failed: {str(e)}\n{traceback.format_exc()}"
+            )
+
+    def execute_pipeline_range(self,
+                              pipeline: Union[str, Path, List[Operator], Dict[str, Any]],
+                              input_data: Union[str, Path, List[Dict]],
+                              start_index: int = 0,
+                              end_index: Optional[int] = None,
+                              config: Optional[Dict[str, Any]] = None) -> ExecutionResult:
+        """
+        Execute a pipeline from start_index to end_index (inclusive).
+
+        This allows executing a subset of operators in a pipeline, useful for:
+        - Debugging specific pipeline segments
+        - Re-executing only modified operators
+        - Skipping expensive operators with cached/external results
+
+        Args:
+            pipeline: Pipeline specification (JSON file path, operators list, or complete config dict)
+            input_data: Input data (file path, list of dicts, or Path object)
+            start_index: Index of first operator to execute (0-based, inclusive)
+            end_index: Index of last operator to execute (0-based, inclusive).
+                      If None, executes to the end of pipeline.
+            config: Optional execution configuration
+
+        Returns:
+            ExecutionResult with output data from the last executed operator
+
+        Example:
+            >>> executor = AbstractExecutor()
+            >>> # Execute only operators 1-3 (indices 1, 2, 3)
+            >>> result = executor.execute_pipeline_range(
+            ...     pipeline="abstract_pipeline.json",
+            ...     input_data=[{"text": "example"}],
+            ...     start_index=1,
+            ...     end_index=3,
+            ...     config={"default_model": "gpt-4o-mini"}
+            ... )
+        """
+        try:
+            # Load pipeline
+            if isinstance(pipeline, (str, Path)):
+                pipeline_path = Path(pipeline)
+                with open(pipeline_path, 'r') as f:
+                    pipeline_data = json.load(f)
+            elif isinstance(pipeline, list):
+                pipeline_data = {'operators': [operator_to_dict(op) if isinstance(op, Operator) else op
+                                              for op in pipeline]}
+            else:
+                pipeline_data = pipeline
+
+            # Extract operators
+            operators = pipeline_data.get('operators', [])
+
+            if not operators:
+                return ExecutionResult(
+                    success=False,
+                    error="No operators found in pipeline"
+                )
+
+            # Validate indices
+            if start_index < 0 or start_index >= len(operators):
+                return ExecutionResult(
+                    success=False,
+                    error=f"Invalid start_index {start_index}. Must be 0 <= start_index < {len(operators)}"
+                )
+
+            if end_index is None:
+                end_index = len(operators) - 1
+
+            if end_index < start_index or end_index >= len(operators):
+                return ExecutionResult(
+                    success=False,
+                    error=f"Invalid end_index {end_index}. Must be {start_index} <= end_index < {len(operators)}"
+                )
+
+            # Execute operators sequentially
+            current_data = input_data
+
+            for i in range(start_index, end_index + 1):
+                op_dict = operators[i]
+                operator = dict_to_operator(op_dict)
+
+                if self.verbose:
+                    print(f"Executing operator {i}: {operator.name} ({operator.type})")
+
+                result = self.execute_operator(
+                    operator=operator,
+                    input_data=current_data,
+                    config=config
+                )
+
+                if not result.success:
+                    return ExecutionResult(
+                        success=False,
+                        error=f"Operator {i} ({operator.name}) failed: {result.error}",
+                        metadata={
+                            'failed_operator_index': i,
+                            'failed_operator_name': operator.name
+                        }
+                    )
+
+                # Use this operator's output as next operator's input
+                current_data = result.data
+
+            # Return final result
+            return ExecutionResult(
+                success=True,
+                data=current_data,
+                metadata={
+                    'start_index': start_index,
+                    'end_index': end_index,
+                    'operators_executed': end_index - start_index + 1
+                }
+            )
+
+        except Exception as e:
+            return ExecutionResult(
+                success=False,
+                error=f"Pipeline range execution failed: {str(e)}\n{traceback.format_exc()}"
             )

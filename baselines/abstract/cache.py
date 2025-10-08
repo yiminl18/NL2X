@@ -133,10 +133,14 @@ class OperatorCacheManager:
             input_data: Input data
 
         Returns:
-            Cache key string: {operator_hash}_{input_hash}
+            Cache key string: {operator_hash_32}_{input_hash_32}
+
+        Note:
+            Uses first 32 characters of each SHA-512 hash to keep filenames
+            under filesystem limits (255 chars) while maintaining uniqueness.
         """
-        operator_hash = self._compute_operator_hash(operator)
-        input_hash = self._compute_input_hash(input_data)
+        operator_hash = self._compute_operator_hash(operator)[:32]
+        input_hash = self._compute_input_hash(input_data)[:32]
         return f"{operator_hash}_{input_hash}"
 
     def _get_cache_path(self, cache_key: str) -> Path:
@@ -166,13 +170,15 @@ class OperatorCacheManager:
 
     def get_cached_result(self,
                          operator: Operator,
-                         input_data: Union[str, List[Dict], Path]) -> Optional[Dict[str, Any]]:
+                         input_data: Union[str, List[Dict], Path],
+                         force_execute: bool = False) -> Optional[Dict[str, Any]]:
         """
         Retrieve cached result if available.
 
         Args:
             operator: Abstract operator instance
             input_data: Input data
+            force_execute: If True, bypass cache and return None to force re-execution
 
         Returns:
             Cached result dictionary if found, None otherwise.
@@ -186,6 +192,10 @@ class OperatorCacheManager:
                 }
             }
         """
+        # Force execution bypasses cache
+        if force_execute:
+            return None
+
         if not self.enabled:
             return None
 
@@ -204,6 +214,16 @@ class OperatorCacheManager:
             # Verify cache version
             if cached_entry.get('version') != self.CACHE_VERSION:
                 # Cache version mismatch, invalidate
+                self.stats['misses'] += 1
+                return None
+
+            # Verify full hashes match (prevent collisions on truncated filenames)
+            current_operator_hash = self._compute_operator_hash(operator)
+            current_input_hash = self._compute_input_hash(input_data)
+
+            if (cached_entry.get('operator_hash') != current_operator_hash or
+                cached_entry.get('input_hash') != current_input_hash):
+                # Hash mismatch - this is a collision on the truncated filename
                 self.stats['misses'] += 1
                 return None
 
@@ -280,6 +300,46 @@ class OperatorCacheManager:
         except Exception as e:
             # If cache write fails, don't crash - just log and continue
             return False
+
+    def inject_cached_result(self,
+                             operator: Operator,
+                             input_data: Union[str, List[Dict], Path],
+                             output_data: Any,
+                             metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Manually inject a result into cache without execution.
+
+        Useful for integrating external processing results or bypassing
+        specific operators with pre-computed outputs.
+
+        Args:
+            operator: Abstract operator instance
+            input_data: Input data that triggers this operator
+            output_data: Output data to cache (externally computed)
+            metadata: Optional metadata about the cached result
+
+        Returns:
+            True if injection successful, False otherwise
+
+        Example:
+            >>> # Process data externally
+            >>> external_result = custom_processing(input_data)
+            >>>
+            >>> # Inject as cached output for op3
+            >>> cache_mgr.inject_cached_result(
+            ...     operator=op3,
+            ...     input_data=input_to_op3,
+            ...     output_data=external_result,
+            ...     metadata={'source': 'external_processing'}
+            ... )
+        """
+        # Use the same logic as set_cached_result
+        # This ensures consistency in cache format
+        custom_metadata = metadata or {}
+        custom_metadata['injected'] = True
+        custom_metadata['injection_time'] = datetime.now().isoformat()
+
+        return self.set_cached_result(operator, input_data, output_data, custom_metadata)
 
     def _serialize_input_data(self, input_data: Union[str, List[Dict], Path]) -> Any:
         """

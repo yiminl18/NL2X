@@ -92,7 +92,8 @@ class DocETLExecutor:
     def execute_operator(self,
                         operator: Operator,
                         input_data: Union[str, List[Dict], Path],
-                        config: Optional[Dict[str, Any]] = None) -> ExecutionResult:
+                        config: Optional[Dict[str, Any]] = None,
+                        force_execute: bool = False) -> ExecutionResult:
         """
         Execute a single abstract operator using DocETL with caching support.
 
@@ -103,6 +104,7 @@ class DocETLExecutor:
             operator: Abstract operator to execute
             input_data: Input data (file path, list of dicts, or Path object)
             config: Optional configuration (model, settings, etc.)
+            force_execute: If True, bypass cache and re-execute (default: False)
 
         Returns:
             ExecutionResult with output data and metadata.
@@ -110,16 +112,24 @@ class DocETLExecutor:
 
         Example:
             >>> executor = DocETLExecutor(cache_enabled=True)
+            >>> # Normal execution (uses cache)
             >>> result = executor.execute_operator(
             ...     operator=my_operator,
             ...     input_data=[{"text": "example"}],
             ...     config={"default_model": "gpt-4o-mini"}
             ... )
-            >>> print(f"Cache hit: {result.metadata.get('cache_hit', False)}")
+            >>> # Force re-execution (bypasses cache)
+            >>> result = executor.execute_operator(
+            ...     operator=my_operator,
+            ...     input_data=[{"text": "example"}],
+            ...     force_execute=True
+            ... )
         """
-        # Check cache first
+        # Check cache first (unless force_execute is True)
         if self.cache_enabled:
-            cached_result = self.cache_manager.get_cached_result(operator, input_data)
+            cached_result = self.cache_manager.get_cached_result(
+                operator, input_data, force_execute=force_execute
+            )
             if cached_result:
                 if self.verbose:
                     print(f"✓ Cache hit for operator: {operator.name}")
@@ -137,21 +147,28 @@ class DocETLExecutor:
                     }
                 )
             elif self.verbose:
-                print(f"✗ Cache miss for operator: {operator.name}")
+                if force_execute:
+                    print(f"🔄 Force execution for operator: {operator.name}")
+                else:
+                    print(f"✗ Cache miss for operator: {operator.name}")
 
-        # Execute normally (cache miss or caching disabled)
+        # Execute normally (cache miss, caching disabled, or force_execute)
         result = self._execute_operator_impl(operator, input_data, config)
 
-        # Cache successful results
+        # Cache successful results (always cache, even for force_execute)
         if result.success and self.cache_enabled:
             self.cache_manager.set_cached_result(
                 operator, input_data, result.data, result.metadata
             )
             if self.verbose:
-                print(f"✓ Cached result for operator: {operator.name}")
+                if force_execute:
+                    print(f"✓ Updated cache for operator: {operator.name}")
+                else:
+                    print(f"✓ Cached result for operator: {operator.name}")
 
         # Add cache metadata
         result.metadata['cache_hit'] = False
+        result.metadata['force_execute'] = force_execute
 
         return result
 
