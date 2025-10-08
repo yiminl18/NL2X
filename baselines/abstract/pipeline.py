@@ -1,6 +1,7 @@
 from collections import defaultdict, deque
 from typing import List, Dict, Set, Optional, Any
 from .ops.base import Operator
+from .optimizer import PipelineOptimizer
 
 
 class PipelineNode:
@@ -185,3 +186,20 @@ class Pipeline:
 
     def __repr__(self):
         return f"Pipeline(name='{self.name}', nodes={len(self.nodes)}, edges={sum(len(c) for c in self.edges.values())})"
+
+
+def optimize_pipeline(pipeline: Pipeline) -> List[Pipeline]:
+    """
+    Optimize the given abstract pipeline.
+
+    Args:
+        pipeline: The pipeline to optimize
+
+    Returns:
+        List[Pipeline]: List of optimized pipeline variants
+    """
+    optimizer = PipelineOptimizer(pipeline)
+    if optimizer.should_optimize():
+        return optimizer.optimize()
+    else:
+        return [pipeline]

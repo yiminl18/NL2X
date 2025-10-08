@@ -28,7 +28,9 @@ from .ops import (
     Project,
 )
 
-from .pipeline import Pipeline, PipelineNode
+from .pipeline import Pipeline, PipelineNode, optimize_pipeline
+
+from .optimizer import PipelineOptimizer
 
 from .db import DatasetManager, SamplingConfig, DataSource
 
@@ -52,6 +54,8 @@ __all__ = [
     "Project",
     "Pipeline",
     "PipelineNode",
+    "optimize_pipeline",
+    "PipelineOptimizer",
     "DatasetManager",
     "SamplingConfig",
     "DataSource",
