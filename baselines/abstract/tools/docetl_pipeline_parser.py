@@ -20,7 +20,7 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 
-def parse_pipeline_operators(yaml_file_path: str) -> List[Dict[str, Any]]:
+def parse_pipeline_operators(yaml_path: Path) -> List[Dict[str, Any]]:
     """
     Parse a DocETL YAML pipeline file and extract operators in execution order.
 
@@ -33,9 +33,8 @@ def parse_pipeline_operators(yaml_file_path: str) -> List[Dict[str, Any]]:
 
     """
     # Read YAML file
-    yaml_path = Path(yaml_file_path)
     if not yaml_path.exists():
-        raise FileNotFoundError(f"YAML file not found: {yaml_file_path}")
+        raise FileNotFoundError(f"YAML file not found: {yaml_path}")
 
     with open(yaml_path, 'r') as f:
         pipeline_config = yaml.safe_load(f)

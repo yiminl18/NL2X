@@ -14,62 +14,109 @@ import json
 import argparse
 from pathlib import Path
 
-# Add parent directory to path to import Operator class
+# Setup path for standalone execution
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _parent_dir = os.path.dirname(os.path.dirname(_current_dir))
 sys.path.insert(0, _parent_dir)
 sys.path.insert(0, os.path.join(_parent_dir, 'tools'))
 
-# Try relative imports first, fall back to absolute
+# Import core dependencies
 try:
     from ...ops.base import Operator
+    from ...pipeline import Pipeline
     from ...tools.docetl_pipeline_parser import parse_pipeline_operators
     from ...tools.static_checker import validate_pipeline
-    from ...pipeline import Pipeline, PipelineNode
 except ImportError:
-    # Fallback for direct script execution
-    # Import Operator directly
     from ops.base import Operator
-
-    # Import parser from tools
+    from pipeline import Pipeline
     from docetl_pipeline_parser import parse_pipeline_operators
-
-    # Try to import static checker
     try:
         from static_checker import validate_pipeline
     except ImportError:
-        # Define a stub if not available
         def validate_pipeline(operators, verbose=False):
             return {'is_valid': True, 'errors': [], 'warnings': [], 'summary': {}}
 
-    # For Pipeline, we need to manually create a minimal version
-    # since it has relative imports that can't be resolved in standalone mode
-    # We'll only use operators in standalone mode, not the full DAG
-    try:
-        from pipeline import Pipeline, PipelineNode
-    except:
-        # Define minimal stubs if pipeline can't be imported
-        Pipeline = None
-        PipelineNode = None
-
-# Import schema functions and type mapper from schema.py
+# Import schema and type utilities
 try:
-    from .schema import (
-        _extract_input_schema,
-        _extract_output_schema,
-        DocETLTypeMapper
-    )
-    from ..type import serialize_type_dict
+    from .schema import _extract_input_schema, _extract_output_schema, DocETLTypeMapper
 except ImportError:
-    # For standalone execution, import from same directory
-    from schema import (
-        _extract_input_schema,
-        _extract_output_schema,
-        DocETLTypeMapper
-    )
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    from type import serialize_type_dict
+    from schema import _extract_input_schema, _extract_output_schema, DocETLTypeMapper
+
+
+# ============================================================================
+# Schema Inference Functions
+# ============================================================================
+
+def infer_docetl_type_from_value(value: Any) -> str:
+    """Infer DocETL type string from a Python value.
+
+    Args:
+        value: A Python value to infer the type from
+
+    Returns:
+        A DocETL type string (e.g., 'str', 'int', 'list', 'dict')
+    """
+    if value is None:
+        return 'str'  # Default to string for None values
+
+    if isinstance(value, bool):
+        return 'bool'
+    elif isinstance(value, int):
+        return 'int'
+    elif isinstance(value, float):
+        return 'float'
+    elif isinstance(value, str):
+        return 'str'
+    elif isinstance(value, list):
+        if len(value) == 0:
+            return 'list'
+        # Try to infer element type from first element
+        first_elem_type = infer_docetl_type_from_value(value[0])
+        return f'list[{first_elem_type}]'
+    elif isinstance(value, dict):
+        return 'dict'
+    else:
+        return 'str'  # Default fallback
+
+
+def infer_schema_from_dataset(file_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
+    """Infer dataset schema from a DocETL data file.
+
+    DocETL datasets are List[Dict] format. This function reads the first dict
+    and infers the schema from its fields.
+
+    Args:
+        file_path: Path to the dataset file (JSON format)
+
+    Returns:
+        A schema dict in the format {'fields': {field_name: docetl_type_str}}
+        or None if the file cannot be read or is empty
+    """
+    try:
+        file_path = Path(file_path)
+
+        # Read JSON file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # Check if data is a list and has at least one element
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+
+        # Get the first dict element
+        first_item = data[0]
+        if not isinstance(first_item, dict):
+            return None
+
+        # Infer types for each field
+        fields = {}
+        for field_name, field_value in first_item.items():
+            fields[field_name] = infer_docetl_type_from_value(field_value)
+
+        return {'fields': fields}
+
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, IndexError):
+        return None
 
 
 # Mapping from DocETL operator types to Abstract operator types
@@ -133,8 +180,11 @@ def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Di
     return abstract_op
 
 
-def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], pipeline_config: Optional[Dict[str, Any]] = None, dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
-    """Convert DocETL operator list to abstract Pipeline, tracking field types through pipeline."""
+def docetl_pipeline_to_abstract(yaml_path: Union[str, Path], pipeline_config: Optional[Dict[str, Any]] = None, dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
+    """Convert DocETL YAML to abstract Pipeline, tracking field types through pipeline."""
+    # Parse DocETL operators from YAML
+    docetl_pipeline = parse_pipeline_operators(str(yaml_path))
+
     abstract_operators = []
     cumulative_field_types = {}
 
@@ -267,7 +317,8 @@ def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], pipeline_
         name=pipeline_name,
         input_path=input_path,
         output_path=output_path,
-        properties=properties
+        properties=properties,
+        dataset_schema=dataset_schema
     )
 
 
@@ -303,16 +354,89 @@ def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
 
     return docetl_op
 
+def _load_and_convert_yaml(yaml_path: Union[str, Path], dataset_schema: Optional[Union[Dict[str, Any], str, Path]] = None, verbose: bool = False) -> Dict[str, Any]:
+    """Core function: load YAML and convert to unified abstract format."""
+    yaml_path = Path(yaml_path)
+
+    # Load YAML pipeline
+    with open(yaml_path, 'r') as f:
+        complete_yaml = yaml.safe_load(f)
+
+    # Load and convert dataset schema to abstract layer format
+    schema_dict = None
+    converted_schema = None
+    if dataset_schema:
+        if isinstance(dataset_schema, (str, Path)):
+            with open(Path(dataset_schema), 'r') as f:
+                schema_dict = json.load(f)
+        elif isinstance(dataset_schema, dict):
+            schema_dict = dataset_schema
+
+        # Convert to abstract layer types
+        if schema_dict and 'fields' in schema_dict:
+            converted_schema = {'fields': {}}
+            for field, field_type in schema_dict['fields'].items():
+                if isinstance(field_type, str):
+                    converted_schema['fields'][field] = DocETLTypeMapper.to_abstract_type_string(field_type)
+                else:
+                    converted_schema['fields'][field] = field_type
+
+    # If schema_dict is still None, try to infer from input path
+    if not schema_dict:
+        datasets = complete_yaml.get('datasets', {})
+        if datasets:
+            first_dataset = next(iter(datasets.values()), {})
+            input_path = first_dataset.get('path')
+            if input_path:
+                # Resolve input path relative to YAML file location
+                input_file = yaml_path.parent / input_path
+                if input_file.exists():
+                    schema_dict = infer_schema_from_dataset(input_file)
+                    if schema_dict and 'fields' in schema_dict:
+                        # Convert inferred DocETL types to abstract layer types
+                        converted_schema = {'fields': {}}
+                        for field, field_type in schema_dict['fields'].items():
+                            converted_schema['fields'][field] = DocETLTypeMapper.to_abstract_type_string(field_type)
+
+                        if verbose:
+                            print("\n" + "=" * 60)
+                            print("INFERRED DATASET SCHEMA FROM INPUT FILE")
+                            print(f"File: {input_file}")
+                            print("=" * 60)
+                            print("Fields:")
+                            for field, field_type in sorted(converted_schema['fields'].items()):
+                                print(f"  - {field}: {field_type}")
+                            print("=" * 60 + "\n")
+
+    # Parse and convert operators (parse_pipeline_operators called inside)
+    abstract_pipeline = docetl_pipeline_to_abstract(yaml_path, complete_yaml, converted_schema, verbose=verbose)
+    abstract_operators = abstract_pipeline.to_operators()
+
+    # Perform static validation (always)
+    operators_list = [operator_to_dict(op) for op in abstract_operators]
+    validation_result = validate_pipeline(operators_list, dataset_schema=converted_schema)
+
+    return {
+        "input_path": abstract_pipeline.input_path,
+        "output_path": abstract_pipeline.output_path,
+        "dataset_schema": converted_schema,
+        "properties": abstract_pipeline.properties,
+        "operators": operators_list,
+        "pipeline": abstract_pipeline,
+        "validation": validation_result
+    }
+
 
 def yaml_to_abstract_pipeline(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
     """Convert DocETL YAML file to abstract Pipeline."""
-    with open(yaml_file_path, 'r') as f:
-        pipeline_config = yaml.safe_load(f)
-
-    docetl_operators = parse_pipeline_operators(str(yaml_file_path))
-    abstract_pipeline = docetl_pipeline_to_abstract(docetl_operators, pipeline_config, dataset_schema, verbose=verbose)
-
-    return abstract_pipeline
+    result = _load_and_convert_yaml(yaml_file_path, dataset_schema, verbose)
+    if result["validation"]["errors"]:
+        print("Validation errors found:")
+        for error in result["validation"]["errors"]:
+            print(f"- {error}")
+        raise ValueError("Pipeline validation failed")
+    
+    return result["pipeline"]
 
 
 # ============================================================================
@@ -347,91 +471,65 @@ def dict_to_operator(op_dict: Dict[str, Any]) -> Operator:
 # Standalone Conversion Functions
 # ============================================================================
 
-def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, Path], validate: bool = False, dataset_schema: Optional[Union[Dict[str, Any], str, Path]] = None, verbose: bool = False) -> None:
+def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, Path], dataset_schema: Optional[Union[Dict[str, Any], str, Path]] = None, verbose: bool = False) -> None:
     """Convert DocETL YAML pipeline to abstract JSON representation."""
     yaml_path = Path(yaml_path)
     output_path = Path(output_path)
 
-    schema_dict = None
-    if dataset_schema:
-        if isinstance(dataset_schema, (str, Path)):
-            schema_path = Path(dataset_schema)
-            if schema_path.exists():
-                with open(schema_path, 'r') as f:
-                    schema_dict = json.load(f)
-                print(f"Loaded dataset schema from: {schema_path}")
-            else:
-                raise FileNotFoundError(f"Dataset schema file not found: {schema_path}")
-        elif isinstance(dataset_schema, dict):
-            schema_dict = dataset_schema
-        else:
-            raise ValueError("dataset_schema must be a dict or path to JSON file")
+    if dataset_schema and isinstance(dataset_schema, (str, Path)):
+        if not Path(dataset_schema).exists():
+            raise FileNotFoundError(f"Dataset schema file not found: {dataset_schema}")
+        print(f"Loaded dataset schema from: {dataset_schema}")
 
     print(f"Reading YAML pipeline from: {yaml_path}")
-    with open(yaml_path, 'r') as f:
-        complete_yaml = yaml.safe_load(f)
 
-    abstract_pipeline = yaml_to_abstract_pipeline(yaml_path, schema_dict, verbose=verbose)
-    abstract_operators = abstract_pipeline.to_operators()
-    print(f"Converted {len(abstract_operators)} operators to abstract representation")
+    # Use core conversion function (includes validation)
+    result = _load_and_convert_yaml(yaml_path, dataset_schema, verbose)
+    validation_result = result.pop("validation")
+    result.pop("pipeline")  # Remove pipeline object from output
 
-    operators_data = {
-        "name": abstract_pipeline.name,
-        "input_path": abstract_pipeline.input_path,
-        "output_path": abstract_pipeline.output_path,
-        "properties": abstract_pipeline.properties,
-        "operators": [operator_to_dict(op) for op in abstract_operators]
-    }
+    print(f"Converted {len(result['operators'])} operators to abstract representation")
 
-    if schema_dict:
-        operators_data["dataset_schema"] = schema_dict
+    # Display validation results
+    print("\n" + "=" * 60)
+    print("VALIDATING ABSTRACT PIPELINE")
+    if result["dataset_schema"]:
+        print("Mode: STRICT (dataset schema provided)")
+    else:
+        print("Mode: NORMAL")
+    print("=" * 60)
 
-    for key, value in complete_yaml.items():
-        if key != "operations":
-            operators_data[key] = value
+    print(f"\nValidation Result: {'VALID ✓' if validation_result['is_valid'] else 'INVALID ✗'}")
+    print(f"Total Errors: {len(validation_result['errors'])}")
+    print(f"Total Warnings: {len(validation_result['warnings'])}")
 
-    if validate:
-        print("\n" + "=" * 60)
-        print("VALIDATING ABSTRACT PIPELINE")
-        if schema_dict:
-            print("Mode: STRICT (dataset schema provided)")
-        else:
-            print("Mode: NORMAL")
-        print("=" * 60)
+    if validation_result['errors']:
+        print("\nERRORS:")
+        for i, error in enumerate(validation_result['errors'], 1):
+            print(f"  {i}. {error}")
 
-        validation_result = validate_pipeline(operators_data["operators"], dataset_schema=schema_dict)
+    if validation_result['warnings']:
+        print("\nWARNINGS:")
+        for i, warning in enumerate(validation_result['warnings'], 1):
+            print(f"  {i}. {warning}")
 
-        print(f"\nValidation Result: {'VALID ✓' if validation_result['is_valid'] else 'INVALID ✗'}")
-        print(f"Total Errors: {len(validation_result['errors'])}")
-        print(f"Total Warnings: {len(validation_result['warnings'])}")
-
-        if validation_result['errors']:
-            print("\nERRORS:")
-            for i, error in enumerate(validation_result['errors'], 1):
-                print(f"  {i}. {error}")
-
-        if validation_result['warnings']:
-            print("\nWARNINGS:")
-            for i, warning in enumerate(validation_result['warnings'], 1):
-                print(f"  {i}. {warning}")
-
-        if not validation_result['is_valid']:
-            print("\n⚠️  Pipeline validation failed!")
-            try:
-                response = input("Do you want to save the pipeline anyway? (y/N): ")
-                if response.lower() != 'y':
-                    print("Aborting save operation.")
-                    return
-            except (EOFError, KeyboardInterrupt):
-                print("\nAborting save operation due to validation errors.")
+    if not validation_result['is_valid']:
+        print("\n⚠️  Pipeline validation failed!")
+        try:
+            response = input("Do you want to save the pipeline anyway? (y/N): ")
+            if response.lower() != 'y':
+                print("Aborting save operation.")
                 return
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborting save operation due to validation errors.")
+            return
 
-        print("=" * 60 + "\n")
+    print("=" * 60 + "\n")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(operators_data, f, indent=2, ensure_ascii=False)
+        json.dump(result, f, indent=2, ensure_ascii=False)
 
     print(f"Saved abstract pipeline to: {output_path}")
 
@@ -458,13 +556,17 @@ LiteralDumper.add_representer(str, literal_presenter)
 def abstract_json_to_yaml(json_path: Union[str, Path], output_path: Union[str, Path]) -> None:
     """Convert abstract JSON representation back to DocETL YAML pipeline."""
     json_path = Path(json_path)
-    output_path = Path(output_path)
+    output_yaml_path = Path(output_path)
 
     print(f"Reading abstract pipeline from: {json_path}")
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
+    pipeline_input_path = data.get("input_path")
+    pipeline_output_path = data.get("output_path")
     dataset_schema = data.get("dataset_schema")
+    properties = data.get("properties", {})
+
     if dataset_schema:
         print(f"Found dataset schema with {len(dataset_schema.get('fields', {}))} fields")
 
@@ -475,19 +577,42 @@ def abstract_json_to_yaml(json_path: Union[str, Path], output_path: Union[str, P
 
     pipeline_yaml = {}
 
-    for key, value in data.items():
-        if key not in ["operators", "dataset_schema"]:
-            pipeline_yaml[key] = value
+    # Build datasets from input_path
+    if pipeline_input_path:
+        pipeline_yaml["datasets"] = {
+            "input_data": {
+                "type": "file",
+                "path": pipeline_input_path
+            }
+        }
 
+    # Add properties
+    pipeline_yaml.update(properties)
+
+    # Add operations
     pipeline_yaml["operations"] = docetl_operators
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Build pipeline.output from output_path
+    if pipeline_output_path:
+        pipeline_yaml["pipeline"] = {
+            "steps": [{
+                "name": "main",
+                "input": "input_data",
+                "operations": [op["name"] for op in docetl_operators]
+            }],
+            "output": {
+                "type": "file",
+                "path": pipeline_output_path
+            }
+        }
 
-    with open(output_path, 'w', encoding='utf-8') as f:
+    output_yaml_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_yaml_path, 'w', encoding='utf-8') as f:
         yaml.dump(pipeline_yaml, f, Dumper=LiteralDumper,
                   default_flow_style=False, sort_keys=False, allow_unicode=True)
 
-    print(f"Saved complete DocETL pipeline to: {output_path}")
+    print(f"Saved complete DocETL pipeline to: {output_yaml_path}")
 
 
 # ============================================================================
@@ -522,13 +647,6 @@ Examples:
         help='Convert abstract JSON to DocETL YAML (operations only)'
     )
 
-    # Add validation flag
-    parser.add_argument(
-        '--validate',
-        action='store_true',
-        help='Validate the abstract pipeline after conversion (only with --to-abstract)'
-    )
-
     # Add verbose flag
     parser.add_argument(
         '--verbose',
@@ -540,7 +658,7 @@ Examples:
     parser.add_argument(
         '--dataset-schema',
         type=str,
-        help='Path to JSON file containing dataset schema (enables strict validation when used with --validate)'
+        help='Path to JSON file containing dataset schema (enables strict validation)'
     )
 
     # Add positional arguments for input and output files
@@ -561,13 +679,10 @@ Examples:
         if args.to_abstract:
             # Convert YAML to abstract JSON
             yaml_to_abstract_json(args.input_file, args.output_file,
-                                validate=args.validate,
                                 dataset_schema=args.dataset_schema,
                                 verbose=args.verbose)
         elif args.to_docetl:
             # Convert abstract JSON to YAML
-            if args.validate:
-                print("Warning: --validate flag is only supported with --to-abstract, ignoring.")
             if args.dataset_schema:
                 print("Warning: --dataset-schema flag is only supported with --to-abstract, ignoring.")
             if args.verbose:

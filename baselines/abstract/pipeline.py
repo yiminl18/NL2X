@@ -20,11 +20,13 @@ class Pipeline:
     """Pipeline class for building and managing a DAG of operators."""
 
     def __init__(self, name: str = "", input_path: Optional[str] = None,
-                 output_path: Optional[str] = None, properties: Optional[Dict[str, Any]] = None):
+                 output_path: Optional[str] = None, properties: Optional[Dict[str, Any]] = None,
+                 dataset_schema: Optional[Dict[str, Any]] = None):
         self.name = name
         self.input_path = input_path  # Input data path
         self.output_path = output_path  # Output data path
         self.properties = properties or {}  # Other metadata from pipeline config
+        self.dataset_schema = dataset_schema  # Dataset schema in abstract layer format
         self.nodes: Dict[str, PipelineNode] = {}
         self.edges: Dict[str, List[str]] = defaultdict(list)  # node_id -> [child_ids]
 
@@ -32,10 +34,12 @@ class Pipeline:
     def from_operators(cls, operators: List[Operator], name: str = "",
                       input_path: Optional[str] = None,
                       output_path: Optional[str] = None,
-                      properties: Optional[Dict[str, Any]] = None) -> 'Pipeline':
+                      properties: Optional[Dict[str, Any]] = None,
+                      dataset_schema: Optional[Dict[str, Any]] = None) -> 'Pipeline':
         """Create linear pipeline from list of operators."""
         pipeline = cls(name=name, input_path=input_path,
-                      output_path=output_path, properties=properties)
+                      output_path=output_path, properties=properties,
+                      dataset_schema=dataset_schema)
 
         if not operators:
             return pipeline
