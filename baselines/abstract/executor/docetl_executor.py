@@ -49,7 +49,7 @@ except ImportError:
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
-    from ..db import DatasetManager
+    from ..db import DatasetManager, DataSource
 
 
 class DocETLExecutor(BaseSystemExecutor):
@@ -98,44 +98,14 @@ class DocETLExecutor(BaseSystemExecutor):
 
     def execute_operator(self,
                         operator: Operator,
-                        input_data: Union[str, List[Dict], Path],
+                        data_source: 'DataSource',
                         config: Optional[Dict[str, Any]] = None,
                         force_execute: bool = False) -> ExecutionResult:
-        """
-        Execute a single abstract operator using DocETL with caching support.
-
-        Checks cache first. If cache hit, returns cached result immediately.
-        Otherwise executes normally and caches the result for future use.
-
-        Args:
-            operator: Abstract operator to execute
-            input_data: Input data (file path, list of dicts, or Path object)
-            config: Optional configuration (model, settings, etc.)
-            force_execute: If True, bypass cache and re-execute (default: False)
-
-        Returns:
-            ExecutionResult with output data and metadata.
-            Metadata includes 'cache_hit': True if result was from cache.
-
-        Example:
-            >>> executor = DocETLExecutor(cache_enabled=True)
-            >>> # Normal execution (uses cache)
-            >>> result = executor.execute_operator(
-            ...     operator=my_operator,
-            ...     input_data=[{"text": "example"}],
-            ...     config={"default_model": "gpt-4o-mini"}
-            ... )
-            >>> # Force re-execution (bypasses cache)
-            >>> result = executor.execute_operator(
-            ...     operator=my_operator,
-            ...     input_data=[{"text": "example"}],
-            ...     force_execute=True
-            ... )
-        """
+        """Execute single abstract operator using DocETL with caching support."""
         # Check cache first (unless force_execute is True)
         if self.cache_enabled:
             cached_result = self.cache_manager.get_cached_result(
-                operator, input_data, force_execute=force_execute
+                operator, data_source, force_execute=force_execute
             )
             if cached_result:
                 cached_data = cached_result['output_data']
@@ -163,12 +133,12 @@ class DocETLExecutor(BaseSystemExecutor):
                     print(f"✗ Cache miss for operator: {operator.name}")
 
         # Execute normally (cache miss, caching disabled, or force_execute)
-        result = self._execute_operator_impl(operator, input_data, config)
+        result = self._execute_operator_impl(operator, data_source, config)
 
         # Cache successful results (always cache, even for force_execute)
         if result.success and self.cache_enabled:
             self.cache_manager.set_cached_result(
-                operator, input_data, result.data, result.metadata
+                operator, data_source, result.data, result.metadata
             )
             if self.verbose:
                 if force_execute:
@@ -184,32 +154,21 @@ class DocETLExecutor(BaseSystemExecutor):
 
     def _execute_operator_impl(self,
                                operator: Operator,
-                               input_data: Union[str, List[Dict], Path],
+                               data_source: 'DataSource',
                                config: Optional[Dict[str, Any]] = None) -> ExecutionResult:
-        """
-        Internal implementation of operator execution (without caching).
-
-        Args:
-            operator: Abstract operator to execute
-            input_data: Input data
-            config: Optional configuration
-
-        Returns:
-            ExecutionResult with output data and metadata
-        """
+        """Internal implementation of operator execution (without caching)."""
         if not self._docetl_available:
             return ExecutionResult(
                 success=False,
                 error="DocETL is not available. Please install docetl package."
             )
 
-        temp_input_file = None
         try:
             from docetl.runner import DSLRunner
 
             docetl_op = abstract_to_docetl(operator)
-            temp_pipeline, temp_input_file = self._create_temp_pipeline(
-                docetl_op, input_data, config or {}
+            temp_pipeline = self._create_temp_pipeline(
+                docetl_op, data_source, config or {}
             )
 
             start_time = time.time()
@@ -247,8 +206,6 @@ class DocETLExecutor(BaseSystemExecutor):
                 # Clean up temp files
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
-                if temp_input_file and os.path.exists(temp_input_file):
-                    os.remove(temp_input_file)
 
         except Exception as e:
             return ExecutionResult(
@@ -262,33 +219,10 @@ class DocETLExecutor(BaseSystemExecutor):
 
     def execute_pipeline(self,
                         pipeline_config: Dict[str, Any],
-                        input_data: Optional[Union[str, Path]] = None,
+                        data_source: Optional['DataSource'] = None,
                         save_intermediates: bool = False,
                         intermediate_dir: Optional[str] = None) -> ExecutionResult:
-        """
-        Execute a complete DocETL pipeline.
-
-        If a DatasetManager is configured, it will be used to apply any registered
-        path mappings before execution and to manage output paths.
-
-        Args:
-            pipeline_config: Complete pipeline configuration (with datasets, operations, pipeline sections)
-            input_data: Optional override for input data path
-            save_intermediates: Whether to save intermediate results
-            intermediate_dir: Directory to save intermediate results
-
-        Returns:
-            ExecutionResult with final output and metadata
-
-        Example:
-            >>> executor = DocETLExecutor()
-            >>> result = executor.execute_pipeline(
-            ...     pipeline_config=my_pipeline,
-            ...     input_data="data.json",
-            ...     save_intermediates=True,
-            ...     intermediate_dir="./checkpoints"
-            ... )
-        """
+        """Execute complete DocETL pipeline with optional DataSource override."""
         if not self._docetl_available:
             return ExecutionResult(
                 success=False,
@@ -324,9 +258,9 @@ class DocETLExecutor(BaseSystemExecutor):
                             print(f"Using custom output path: {new_output_path}")
 
             # Override input data if provided (takes precedence over DatasetManager)
-            if input_data:
+            if data_source:
                 for dataset_name in pipeline_config.get('datasets', {}).keys():
-                    pipeline_config['datasets'][dataset_name]['path'] = str(input_data)
+                    pipeline_config['datasets'][dataset_name]['path'] = data_source.path
 
             # Configure intermediate directory if requested
             if save_intermediates and intermediate_dir:
@@ -383,33 +317,12 @@ class DocETLExecutor(BaseSystemExecutor):
 
     def _create_temp_pipeline(self,
                             docetl_op: Dict[str, Any],
-                            input_data: Union[str, List[Dict], Path],
-                            config: Dict[str, Any]) -> tuple[Dict[str, Any], Optional[str]]:
-        """
-        Create a temporary pipeline for executing a single operator.
-
-        Args:
-            docetl_op: DocETL operator dictionary
-            input_data: Input data (path or list)
-            config: Configuration options
-
-        Returns:
-            Tuple of (pipeline configuration dictionary, temp input file path or None)
-            The temp input file path should be cleaned up by the caller if not None
-        """
-        # Handle input data
-        temp_input_file = None
-        if isinstance(input_data, (str, Path)):
-            input_path = str(input_data)
-            dataset_type = 'file'
-        else:
-            # Save data to temp file - use mktemp to get path, then write to it
-            # This gives us control over cleanup
-            temp_input_file = tempfile.mktemp(suffix='.json')
-            with open(temp_input_file, 'w') as f:
-                json.dump(input_data, f)
-            input_path = temp_input_file
-            dataset_type = 'file'
+                            data_source: 'DataSource',
+                            config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create temporary pipeline for executing single operator."""
+        # Use DataSource path directly
+        input_path = data_source.path
+        dataset_type = 'file'
 
         # Create output path
         output_path = tempfile.mktemp(suffix='.json')
@@ -444,7 +357,7 @@ class DocETLExecutor(BaseSystemExecutor):
         if 'system_prompt' in config:
             pipeline['system_prompt'] = config['system_prompt']
 
-        return pipeline, temp_input_file
+        return pipeline
 
     def _collect_intermediate_results(self, intermediate_dir: str) -> Dict[str, Any]:
         """

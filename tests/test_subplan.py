@@ -29,10 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "baselines"))
 # Import abstract layer components
 from abstract import DatasetManager, SamplingConfig
 from abstract.engine import AbstractExecutor
-from abstract.convert.docetl import (
-    yaml_to_abstract_pipeline,
-    operator_to_dict
-)
+from abstract.convert.docetl import yaml_to_abstract_pipeline
 
 
 class SubplanTestRunner:
@@ -83,11 +80,14 @@ class SubplanTestRunner:
 
             self.log(f"Loading YAML pipeline from: {self.yaml_path}")
 
-            # Convert YAML to abstract operators
-            self.abstract_operators = yaml_to_abstract_pipeline(
+            # Convert YAML to abstract pipeline
+            self.abstract_pipeline = yaml_to_abstract_pipeline(
                 self.yaml_path,
                 verbose=False
             )
+
+            # Extract operators from pipeline
+            self.abstract_operators = self.abstract_pipeline.to_operators()
 
             self.log(f"Converted {len(self.abstract_operators)} operators to abstract representation")
 
@@ -175,11 +175,6 @@ class SubplanTestRunner:
             if not self.sampled_dataset_path:
                 raise RuntimeError("Sampled dataset not available")
 
-            # Create pipeline config with operators
-            pipeline_data = {
-                'operators': [operator_to_dict(op) for op in self.abstract_operators]
-            }
-
             # Load sampled input data
             input_data = self.data_manager.read_dataset(self.sampled_dataset_path)
             self.log(f"Input: {len(input_data)} records from sampled dataset")
@@ -191,7 +186,7 @@ class SubplanTestRunner:
             self.log("Executing operators 0-1: extract_medications, unnest_medications")
 
             result = executor.execute_pipeline_range(
-                pipeline=pipeline_data,
+                pipeline=self.abstract_pipeline,
                 input_data=input_data,
                 start_index=0,
                 end_index=1,
@@ -241,11 +236,6 @@ class SubplanTestRunner:
             if not self.subplan_1_output:
                 raise RuntimeError("Subplan 1 output not available")
 
-            # Create pipeline config with operators
-            pipeline_data = {
-                'operators': [operator_to_dict(op) for op in self.abstract_operators]
-            }
-
             # Use output from subplan 1 as input
             input_data = self.subplan_1_output
             self.log(f"Input: {len(input_data)} records from subplan_1.json")
@@ -257,7 +247,7 @@ class SubplanTestRunner:
             self.log("Executing operators 2-3: resolve_medications, summarize_prescriptions")
 
             result = executor.execute_pipeline_range(
-                pipeline=pipeline_data,
+                pipeline=self.abstract_pipeline,
                 input_data=input_data,
                 start_index=2,
                 end_index=3,

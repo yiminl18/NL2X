@@ -18,7 +18,7 @@ from ..ops.base import Operator
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
-    from ..db import DatasetManager
+    from ..db import DatasetManager, DataSource
 
 
 class LotusExecutor(BaseSystemExecutor):
@@ -63,23 +63,10 @@ class LotusExecutor(BaseSystemExecutor):
 
     def execute_operator(self,
                         operator: Operator,
-                        input_data: Union[str, List[Dict], Path],
+                        data_source: 'DataSource',
                         config: Optional[Dict[str, Any]] = None,
                         force_execute: bool = False) -> ExecutionResult:
-        """
-        Execute a single abstract operator using Lotus.
-
-        TODO: Implement actual Lotus execution logic
-
-        Args:
-            operator: Abstract operator to execute
-            input_data: Input data (file path, list of dicts, or Path object)
-            config: Optional configuration (model, settings, etc.)
-            force_execute: If True, bypass cache and re-execute
-
-        Returns:
-            ExecutionResult with output data and metadata
-        """
+        """Execute single abstract operator using Lotus (STUB)."""
         if not self._lotus_available:
             return ExecutionResult(
                 success=False,
@@ -98,17 +85,6 @@ class LotusExecutor(BaseSystemExecutor):
         )
 
     def supports_operator_type(self, op_type: str) -> bool:
-        """
-        Check if this executor supports a given operator type.
-
-        TODO: Define which operator types Lotus supports
-
-        Args:
-            op_type: The operator type to check
-
-        Returns:
-            True if the operator type is supported, False otherwise
-        """
+        """Check if executor supports given operator type (STUB)."""
         # TODO: Define supported operator types for Lotus
-        # For now, return False since it's not implemented
         return False

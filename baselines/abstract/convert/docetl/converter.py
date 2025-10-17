@@ -104,26 +104,7 @@ DOCETL_TO_ABSTRACT_TYPE_MAP = {
 
 
 def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Dict[str, str]] = None, dataset_schema: Optional[Dict[str, Any]] = None) -> Operator:
-    """
-    Convert a DocETL operator to an abstract operator.
-
-    Args:
-        docetl_operator: A dictionary representing a DocETL operator
-        field_types: Optional dictionary mapping field names to their types
-        dataset_schema: Optional dataset schema with field definitions
-
-    Returns:
-        An abstract Operator instance
-
-    Example:
-        >>> docetl_op = {
-        ...     "name": "extract_info",
-        ...     "type": "map",
-        ...     "prompt": "Extract information from the text",
-        ...     "output": {"schema": {"title": "string", "summary": "string"}}
-        ... }
-        >>> abstract_op = docetl_to_abstract(docetl_op)
-    """
+    """Convert DocETL operator dict to abstract Operator instance."""
     abstract_op = Operator()
     docetl_op = copy.deepcopy(docetl_operator)
 
@@ -150,21 +131,8 @@ def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Di
     return abstract_op
 
 
-def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> List[Operator]:
-    """
-    Convert a list of DocETL operators (a pipeline) to abstract operators.
-
-    This function tracks field types as they flow through the pipeline,
-    ensuring that types defined in outputs are propagated to downstream inputs.
-
-    Args:
-        docetl_pipeline: List of DocETL operator dictionaries
-        dataset_schema: Optional dataset schema with field definitions
-        verbose: If True, print detailed information about schema transformations
-
-    Returns:
-        List of abstract Operator instances with proper type tracking
-    """
+def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], pipeline_config: Optional[Dict[str, Any]] = None, dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
+    """Convert DocETL operator list to abstract Pipeline, tracking field types through pipeline."""
     abstract_operators = []
     cumulative_field_types = {}  # Track all field types available at each step
 
@@ -284,24 +252,51 @@ def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], dataset_s
                 print("  (no fields available)")
             print()
 
-    return abstract_operators
+    # Parse metadata from pipeline config
+    input_path = None
+    output_path = None
+    properties = {}
+    pipeline_name = "docetl_pipeline"
+
+    if pipeline_config:
+        # Extract pipeline name
+        pipeline_name = pipeline_config.get('name', 'docetl_pipeline')
+
+        # Extract input_path from datasets
+        datasets = pipeline_config.get('datasets', {})
+        if datasets:
+            first_dataset = next(iter(datasets.values()), {})
+            input_path = first_dataset.get('path')
+
+        # Extract output_path from pipeline.output
+        pipeline_output = pipeline_config.get('pipeline', {}).get('output', {})
+        output_path = pipeline_output.get('path')
+
+        # Save all other fields as properties
+        for key, value in pipeline_config.items():
+            if key not in ['operations', 'datasets', 'pipeline', 'name']:
+                properties[key] = value
+
+        # Save pipeline-level config (excluding output and steps)
+        if 'pipeline' in pipeline_config:
+            pipeline_props = pipeline_config['pipeline'].copy()
+            pipeline_props.pop('output', None)  # output_path saved separately
+            pipeline_props.pop('steps', None)   # steps are execution order
+            if pipeline_props:
+                properties['pipeline'] = pipeline_props
+
+    # Create Pipeline from operators with metadata
+    return Pipeline.from_operators(
+        abstract_operators,
+        name=pipeline_name,
+        input_path=input_path,
+        output_path=output_path,
+        properties=properties
+    )
 
 
 def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
-    """
-    Convert an abstract operator back to a DocETL operator.
-
-    Args:
-        abstract_operator: An abstract Operator instance
-
-    Returns:
-        A dictionary representing a DocETL operator
-
-    Note:
-        This is a reverse conversion that may not perfectly recreate
-        the original DocETL operator if information was lost during
-        the initial conversion.
-    """
+    """Convert abstract Operator to DocETL operator dict."""
     docetl_op = {}
 
     docetl_op["name"] = abstract_operator.name
@@ -333,59 +328,23 @@ def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
     return docetl_op
 
 
-def yaml_to_abstract_pipeline(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> List[Operator]:
-    """
-    Convert a DocETL YAML pipeline file to a list of abstract operators.
+def yaml_to_abstract_pipeline(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
+    """Convert DocETL YAML file to abstract Pipeline."""
+    # Read complete YAML configuration
+    with open(yaml_file_path, 'r') as f:
+        pipeline_config = yaml.safe_load(f)
 
-    This function uses the docetl_pipeline_parser to extract operators
-    from a YAML file and converts each to an abstract Operator instance.
-
-    Args:
-        yaml_file_path: Path to the DocETL YAML pipeline file
-        dataset_schema: Optional dataset schema with field definitions
-        verbose: If True, print detailed information about schema transformations
-
-    Returns:
-        List of abstract Operator instances in pipeline execution order
-
-    Raises:
-        FileNotFoundError: If the YAML file doesn't exist
-        ValueError: If the YAML structure is invalid
-
-    Example:
-        >>> operators = yaml_to_abstract_pipeline("pipeline.yaml")
-        >>> for op in operators:
-        ...     print(f"{op.name}: {op.type}")
-    """
     # Parse operators from YAML file using the parser tool
     docetl_operators = parse_pipeline_operators(str(yaml_file_path))
 
-    # Convert each DocETL operator to abstract operator
-    abstract_operators = docetl_pipeline_to_abstract(docetl_operators, dataset_schema, verbose=verbose)
+    # Convert DocETL operators to abstract Pipeline with full config
+    abstract_pipeline = docetl_pipeline_to_abstract(docetl_operators, pipeline_config, dataset_schema, verbose=verbose)
 
-    return abstract_operators
+    return abstract_pipeline
 
 
-def yaml_to_abstract_pipeline_dag(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> tuple[List[Operator], Pipeline]:
-    """
-    Convert a DocETL YAML pipeline file to abstract operators and a Pipeline DAG.
-
-    This function reads the complete YAML structure and creates:
-    1. A list of abstract operators
-    2. A Pipeline instance representing the DAG structure
-
-    Args:
-        yaml_file_path: Path to the DocETL YAML pipeline file
-        dataset_schema: Optional dataset schema with field definitions
-        verbose: If True, print detailed information about schema transformations
-
-    Returns:
-        Tuple of (operators list, Pipeline instance)
-
-    Raises:
-        FileNotFoundError: If the YAML file doesn't exist
-        ValueError: If the YAML structure is invalid
-    """
+def yaml_to_abstract_pipeline_dag(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
+    """Convert DocETL YAML to Pipeline with DAG structure."""
     yaml_path = Path(yaml_file_path)
     if not yaml_path.exists():
         raise FileNotFoundError(f"YAML file not found: {yaml_file_path}")
@@ -396,10 +355,16 @@ def yaml_to_abstract_pipeline_dag(yaml_file_path: Union[str, Path], dataset_sche
 
     # Extract operators and convert to abstract format
     docetl_operators = parse_pipeline_operators(str(yaml_file_path))
-    abstract_operators = docetl_pipeline_to_abstract(docetl_operators, dataset_schema, verbose=verbose)
+    abstract_pipeline_temp = docetl_pipeline_to_abstract(docetl_operators, pipeline_config, dataset_schema, verbose=verbose)
+    abstract_operators = abstract_pipeline_temp.to_operators()
 
-    # Create Pipeline instance
-    pipeline = Pipeline(name=pipeline_config.get('name', 'docetl_pipeline'))
+    # Create Pipeline instance with metadata from temp pipeline
+    pipeline = Pipeline(
+        name=abstract_pipeline_temp.name,
+        input_path=abstract_pipeline_temp.input_path,
+        output_path=abstract_pipeline_temp.output_path,
+        properties=abstract_pipeline_temp.properties
+    )
 
     # Extract pipeline steps to understand the DAG structure
     pipeline_steps = pipeline_config.get('pipeline', {}).get('steps', [])
@@ -434,29 +399,11 @@ def yaml_to_abstract_pipeline_dag(yaml_file_path: Union[str, Path], dataset_sche
             # Store dataset info in pipeline metadata if needed
             pass
 
-    return abstract_operators, pipeline
+    return pipeline
 
 
-def convert_yaml_or_operators(input_data: Union[str, Path, List[Dict[str, Any]]], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> List[Operator]:
-    """
-    Flexible conversion function that handles both YAML files and operator lists.
-
-    Args:
-        input_data: Either a path to a YAML file or a list of DocETL operators
-        dataset_schema: Optional dataset schema with field definitions
-        verbose: If True, print detailed information about schema transformations
-
-    Returns:
-        List of abstract Operator instances
-
-    Example:
-        >>> # From YAML file
-        >>> operators = convert_yaml_or_operators("pipeline.yaml")
-        >>>
-        >>> # From operator list
-        >>> docetl_ops = [{"name": "map_op", "type": "map", ...}]
-        >>> operators = convert_yaml_or_operators(docetl_ops)
-    """
+def convert_yaml_or_operators(input_data: Union[str, Path, List[Dict[str, Any]]], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
+    """Convert YAML file or DocETL operator list to abstract Pipeline."""
     if isinstance(input_data, (str, Path)):
         # It's a file path, convert from YAML
         return yaml_to_abstract_pipeline(input_data, dataset_schema, verbose=verbose)
@@ -472,21 +419,7 @@ def convert_yaml_or_operators(input_data: Union[str, Path, List[Dict[str, Any]]]
 # ============================================================================
 
 def operator_to_dict(operator: Operator) -> Dict[str, Any]:
-    """
-    Convert an Operator instance to a dictionary for JSON serialization.
-
-    Args:
-        operator: An Operator instance
-
-    Returns:
-        Dictionary representation of the operator
-
-    Example:
-        >>> op = Operator()
-        >>> op.name = "my_op"
-        >>> op.type = "Map"
-        >>> op_dict = operator_to_dict(op)
-    """
+    """Convert Operator instance to dict for JSON serialization."""
     return {
         "name": operator.name,
         "type": operator.type,
@@ -498,19 +431,7 @@ def operator_to_dict(operator: Operator) -> Dict[str, Any]:
 
 
 def dict_to_operator(op_dict: Dict[str, Any]) -> Operator:
-    """
-    Convert a dictionary to an Operator instance.
-
-    Args:
-        op_dict: Dictionary representation of an operator
-
-    Returns:
-        Operator instance
-
-    Example:
-        >>> op_dict = {"name": "my_op", "type": "Map", ...}
-        >>> op = dict_to_operator(op_dict)
-    """
+    """Convert dict to Operator instance."""
     operator = Operator()
     operator.name = op_dict.get("name", "")
     operator.type = op_dict.get("type", "")
@@ -566,10 +487,15 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
     with open(yaml_path, 'r') as f:
         complete_yaml = yaml.safe_load(f)
 
-    abstract_operators = yaml_to_abstract_pipeline(yaml_path, schema_dict, verbose=verbose)
+    abstract_pipeline = yaml_to_abstract_pipeline(yaml_path, schema_dict, verbose=verbose)
+    abstract_operators = abstract_pipeline.to_operators()
     print(f"Converted {len(abstract_operators)} operators to abstract representation")
 
     operators_data = {
+        "name": abstract_pipeline.name,
+        "input_path": abstract_pipeline.input_path,
+        "output_path": abstract_pipeline.output_path,
+        "properties": abstract_pipeline.properties,
         "operators": [operator_to_dict(op) for op in abstract_operators]
     }
 

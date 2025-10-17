@@ -10,7 +10,7 @@ Cache Key Design:
 - Cache key: {operator_hash}_{input_hash}.json
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union, TYPE_CHECKING
 from pathlib import Path
 import json
 import hashlib
@@ -21,20 +21,17 @@ import copy
 # Import abstract operator classes
 from .ops.base import Operator
 
+if TYPE_CHECKING:
+    from .db import DataSource
 
+ 
 class OperatorCacheManager:
     """Manager for caching abstract operator execution results."""
 
     CACHE_VERSION = "1.0"
 
     def __init__(self, cache_dir: Optional[Union[str, Path]] = None, enabled: bool = True):
-        """
-        Initialize the cache manager.
-
-        Args:
-            cache_dir: Directory for cache storage. Defaults to abstract/_cache
-            enabled: Whether caching is enabled
-        """
+        """Initialize cache manager with optional cache directory."""
         if cache_dir is None:
             # Default to abstract/_cache directory
             cache_dir = os.path.join(
@@ -55,18 +52,7 @@ class OperatorCacheManager:
         }
 
     def _compute_operator_hash(self, operator: Operator) -> str:
-        """
-        Compute SHA-512 hash of operator configuration.
-
-        Excludes operator.name and operator.source['name'] from hash computation,
-        as these can differ while the operator configuration remains the same.
-
-        Args:
-            operator: Abstract operator instance
-
-        Returns:
-            SHA-512 hash string (hex format)
-        """
+        """Compute SHA-512 hash of operator configuration (excludes name fields)."""
         config_dict = {
             'type': operator.type,
             'source_system': operator.source.get('system', ''),
@@ -79,20 +65,14 @@ class OperatorCacheManager:
         hash_obj = hashlib.sha512(config_json.encode('utf-8'))
         return hash_obj.hexdigest()
 
-    def _compute_input_hash(self, input_data: Union[str, List[Dict], Path]) -> str:
-        """
-        Compute SHA-512 hash of input data.
-
-        Args:
-            input_data: Input data (file path, list of dicts, or Path object)
-
-        Returns:
-            SHA-512 hash string (hex format)
-        """
-        # Normalize input data to JSON-serializable format
-        if isinstance(input_data, (str, Path)):
-            # For file paths, read the file content
-            file_path = Path(input_data)
+    def _compute_input_hash(self, data_source: 'DataSource') -> str:
+        """Compute SHA-512 hash of input data from DataSource."""
+        # Use data from DataSource directly if available
+        if data_source.data is not None:
+            data_to_hash = data_source.data
+        else:
+            # Fallback: read from file if data not loaded
+            file_path = Path(data_source.path)
             if file_path.exists():
                 with open(file_path, 'r') as f:
                     try:
@@ -103,10 +83,7 @@ class OperatorCacheManager:
                         data_to_hash = f.read()
             else:
                 # File doesn't exist, hash the path itself
-                data_to_hash = str(input_data)
-        else:
-            # For list/dict data, use directly
-            data_to_hash = input_data
+                data_to_hash = data_source.path
 
         # Convert to normalized JSON string
         if isinstance(data_to_hash, str):
@@ -118,37 +95,14 @@ class OperatorCacheManager:
         hash_obj = hashlib.sha512(input_json.encode('utf-8'))
         return hash_obj.hexdigest()
 
-    def _get_cache_key(self, operator: Operator, input_data: Union[str, List[Dict], Path]) -> str:
-        """
-        Generate cache key from operator and input data.
-
-        Args:
-            operator: Abstract operator instance
-            input_data: Input data
-
-        Returns:
-            Cache key string: {operator_hash_32}_{input_hash_32}
-
-        Note:
-            Uses first 32 characters of each SHA-512 hash to keep filenames
-            under filesystem limits (255 chars) while maintaining uniqueness.
-        """
+    def _get_cache_key(self, operator: Operator, data_source: 'DataSource') -> str:
+        """Generate cache key from operator and data source."""
         operator_hash = self._compute_operator_hash(operator)[:32]
-        input_hash = self._compute_input_hash(input_data)[:32]
+        input_hash = self._compute_input_hash(data_source)[:32]
         return f"{operator_hash}_{input_hash}"
 
     def _get_cache_path(self, cache_key: str) -> Path:
-        """
-        Get file path for a cache entry.
-
-        Uses first 16 characters of operator hash as subdirectory for organization.
-
-        Args:
-            cache_key: Cache key string
-
-        Returns:
-            Path to cache file
-        """
+        """Get file path for cache entry using operator hash subdirectory."""
         # Extract operator hash (first part before underscore)
         operator_hash = cache_key.split('_')[0]
 
@@ -164,28 +118,9 @@ class OperatorCacheManager:
 
     def get_cached_result(self,
                          operator: Operator,
-                         input_data: Union[str, List[Dict], Path],
+                         data_source: 'DataSource',
                          force_execute: bool = False) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve cached result if available.
-
-        Args:
-            operator: Abstract operator instance
-            input_data: Input data
-            force_execute: If True, bypass cache and return None to force re-execution
-
-        Returns:
-            Cached result dictionary if found, None otherwise.
-            Result format:
-            {
-                'output_data': [...],
-                'metadata': {
-                    'cached_at': '...',
-                    'execution_time': ...,
-                    'original_operator_name': '...'
-                }
-            }
-        """
+        """Retrieve cached result if available."""
         # Force execution bypasses cache
         if force_execute:
             return None
@@ -194,7 +129,7 @@ class OperatorCacheManager:
             return None
 
         try:
-            cache_key = self._get_cache_key(operator, input_data)
+            cache_key = self._get_cache_key(operator, data_source)
             cache_path = self._get_cache_path(cache_key)
 
             if not cache_path.exists():
@@ -213,7 +148,7 @@ class OperatorCacheManager:
 
             # Verify full hashes match (prevent collisions on truncated filenames)
             current_operator_hash = self._compute_operator_hash(operator)
-            current_input_hash = self._compute_input_hash(input_data)
+            current_input_hash = self._compute_input_hash(data_source)
 
             if (cached_entry.get('operator_hash') != current_operator_hash or
                 cached_entry.get('input_hash') != current_input_hash):
@@ -230,38 +165,27 @@ class OperatorCacheManager:
             self.stats['hits'] += 1
             return result
 
-        except Exception as e:
+        except Exception:
             # If any error occurs during cache read, treat as cache miss
             self.stats['misses'] += 1
             return None
 
     def set_cached_result(self,
                          operator: Operator,
-                         input_data: Union[str, List[Dict], Path],
+                         data_source: 'DataSource',
                          output_data: Any,
                          metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """
-        Store execution result in cache.
-
-        Args:
-            operator: Abstract operator instance
-            input_data: Input data
-            output_data: Output data from execution
-            metadata: Optional execution metadata
-
-        Returns:
-            True if cache write successful, False otherwise
-        """
+        """Store execution result in cache."""
         if not self.enabled:
             return False
 
         try:
-            cache_key = self._get_cache_key(operator, input_data)
+            cache_key = self._get_cache_key(operator, data_source)
             cache_path = self._get_cache_path(cache_key)
 
             # Compute hashes
             operator_hash = self._compute_operator_hash(operator)
-            input_hash = self._compute_input_hash(input_data)
+            input_hash = self._compute_input_hash(data_source)
 
             # Prepare cache entry
             cache_entry = {
@@ -275,7 +199,7 @@ class OperatorCacheManager:
                     'input': copy.deepcopy(operator.input),
                     'output': copy.deepcopy(operator.output)
                 },
-                'input_data': self._serialize_input_data(input_data),
+                'input_data': self._serialize_input_data(data_source),
                 'output_data': output_data,
                 'metadata': {
                     **(metadata or {}),
@@ -291,63 +215,50 @@ class OperatorCacheManager:
             self.stats['writes'] += 1
             return True
 
-        except Exception as e:
+        except Exception:
             # If cache write fails, don't crash - just log and continue
             return False
 
     def inject_cached_result(self,
                              operator: Operator,
-                             input_data: Union[str, List[Dict], Path],
+                             data_source: 'DataSource',
                              output_data: Any,
                              metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """
-        Manually inject a result into cache without execution.
-
-        Useful for integrating external processing results or bypassing
-        specific operators with pre-computed outputs.
-
-        Args:
-            operator: Abstract operator instance
-            input_data: Input data that triggers this operator
-            output_data: Output data to cache (externally computed)
-            metadata: Optional metadata about the cached result
-
-        Returns:
-            True if injection successful, False otherwise
-
-        Example:
-            >>> # Process data externally
-            >>> external_result = custom_processing(input_data)
-            >>>
-            >>> # Inject as cached output for op3
-            >>> cache_mgr.inject_cached_result(
-            ...     operator=op3,
-            ...     input_data=input_to_op3,
-            ...     output_data=external_result,
-            ...     metadata={'source': 'external_processing'}
-            ... )
-        """
+        """Manually inject result into cache without execution."""
         # Use the same logic as set_cached_result
         # This ensures consistency in cache format
         custom_metadata = metadata or {}
         custom_metadata['injected'] = True
         custom_metadata['injection_time'] = datetime.now().isoformat()
 
-        return self.set_cached_result(operator, input_data, output_data, custom_metadata)
+        return self.set_cached_result(operator, data_source, output_data, custom_metadata)
 
-    def _serialize_input_data(self, input_data: Union[str, List[Dict], Path]) -> Any:
-        """
-        Serialize input data for storage in cache.
-
-        Args:
-            input_data: Input data
-
-        Returns:
-            Serializable representation of input data
-        """
-        if isinstance(input_data, (str, Path)):
-            # For file paths, store the path and a sample
-            file_path = Path(input_data)
+    def _serialize_input_data(self, data_source: 'DataSource') -> Any:
+        """Serialize input data from DataSource for storage in cache."""
+        # Use data from DataSource if available
+        if data_source.data is not None:
+            data = data_source.data
+            # Store first few items as sample for list data
+            if isinstance(data, list):
+                return {
+                    '_type': 'data_source',
+                    'path': data_source.path,
+                    'source_id': data_source.id,
+                    'data_type': data_source.data_type,
+                    'sample': data[:5] if len(data) > 5 else data,
+                    'total_items': len(data)
+                }
+            else:
+                return {
+                    '_type': 'data_source',
+                    'path': data_source.path,
+                    'source_id': data_source.id,
+                    'data_type': data_source.data_type,
+                    'data': data
+                }
+        else:
+            # Fallback: try to read from file
+            file_path = Path(data_source.path)
             if file_path.exists():
                 try:
                     with open(file_path, 'r') as f:
@@ -355,49 +266,39 @@ class OperatorCacheManager:
                     # Store first few items as sample
                     if isinstance(data, list):
                         return {
-                            '_type': 'file_path',
-                            'path': str(input_data),
+                            '_type': 'data_source',
+                            'path': data_source.path,
+                            'source_id': data_source.id,
+                            'data_type': data_source.data_type,
                             'sample': data[:5] if len(data) > 5 else data,
                             'total_items': len(data)
                         }
                     else:
                         return {
-                            '_type': 'file_path',
-                            'path': str(input_data),
+                            '_type': 'data_source',
+                            'path': data_source.path,
+                            'source_id': data_source.id,
+                            'data_type': data_source.data_type,
                             'data': data
                         }
                 except:
                     return {
-                        '_type': 'file_path',
-                        'path': str(input_data)
+                        '_type': 'data_source',
+                        'path': data_source.path,
+                        'source_id': data_source.id,
+                        'data_type': data_source.data_type
                     }
             else:
                 return {
-                    '_type': 'file_path',
-                    'path': str(input_data),
+                    '_type': 'data_source',
+                    'path': data_source.path,
+                    'source_id': data_source.id,
+                    'data_type': data_source.data_type,
                     'exists': False
                 }
-        else:
-            # For list/dict data, store directly (with sample if large)
-            if isinstance(input_data, list) and len(input_data) > 100:
-                return {
-                    '_type': 'large_list',
-                    'sample': input_data[:10],
-                    'total_items': len(input_data)
-                }
-            return input_data
 
     def clear_cache(self, operator_hash: Optional[str] = None) -> int:
-        """
-        Clear cache entries.
-
-        Args:
-            operator_hash: Optional operator hash to clear specific operator cache.
-                          If None, clears all cache.
-
-        Returns:
-            Number of cache entries deleted
-        """
+        """Clear cache entries (all if operator_hash=None, else specific operator)."""
         if not self.enabled or not self.cache_dir.exists():
             return 0
 
@@ -436,20 +337,7 @@ class OperatorCacheManager:
         return deleted_count
 
     def get_cache_stats(self) -> Dict[str, Any]:
-        """
-        Get cache statistics.
-
-        Returns:
-            Dictionary with cache statistics:
-            {
-                'hits': int,
-                'misses': int,
-                'writes': int,
-                'hit_rate': float,
-                'total_entries': int,
-                'cache_size_mb': float
-            }
-        """
+        """Get cache statistics including hits, misses, and total size."""
         stats = self.stats.copy()
 
         # Calculate hit rate
@@ -473,15 +361,7 @@ class OperatorCacheManager:
         return stats
 
     def get_cache_info(self, cache_key: str) -> Optional[Dict[str, Any]]:
-        """
-        Get information about a specific cache entry.
-
-        Args:
-            cache_key: Cache key
-
-        Returns:
-            Cache entry information or None if not found
-        """
+        """Get information about specific cache entry by key."""
         if not self.enabled:
             return None
 

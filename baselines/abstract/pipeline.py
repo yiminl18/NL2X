@@ -1,7 +1,9 @@
 from collections import defaultdict, deque
-from typing import List, Dict, Set, Optional, Any
+from typing import List, Dict, Set, Optional, Any, TYPE_CHECKING
 from .ops.base import Operator
-from .optimizer import PipelineOptimizer
+
+if TYPE_CHECKING:
+    from .optimizer import PipelineOptimizer
 
 
 class PipelineNode:
@@ -21,26 +23,46 @@ class PipelineNode:
 class Pipeline:
     """Pipeline class for building and managing a DAG of operators."""
 
-    def __init__(self, name: str = ""):
+    def __init__(self, name: str = "", input_path: Optional[str] = None,
+                 output_path: Optional[str] = None, properties: Optional[Dict[str, Any]] = None):
         self.name = name
+        self.input_path = input_path  # Input data path
+        self.output_path = output_path  # Output data path
+        self.properties = properties or {}  # Other metadata from pipeline config
         self.nodes: Dict[str, PipelineNode] = {}
         self.edges: Dict[str, List[str]] = defaultdict(list)  # node_id -> [child_ids]
 
+    @classmethod
+    def from_operators(cls, operators: List[Operator], name: str = "",
+                      input_path: Optional[str] = None,
+                      output_path: Optional[str] = None,
+                      properties: Optional[Dict[str, Any]] = None) -> 'Pipeline':
+        """Create linear pipeline from list of operators."""
+        pipeline = cls(name=name, input_path=input_path,
+                      output_path=output_path, properties=properties)
+
+        if not operators:
+            return pipeline
+
+        # Add all operators as nodes
+        for i, op in enumerate(operators):
+            node_id = f"op_{i}_{op.name}" if op.name else f"op_{i}"
+            pipeline.add_operator(op, node_id)
+
+        # Connect them linearly
+        node_ids = list(pipeline.nodes.keys())
+        for i in range(len(node_ids) - 1):
+            pipeline.add_edge(node_ids[i], node_ids[i + 1])
+
+        return pipeline
+
+    def to_operators(self) -> List[Operator]:
+        """Extract operators in topological execution order."""
+        execution_order = self.get_execution_order()
+        return [self.nodes[node_id].operator for node_id in execution_order]
+
     def add_operator(self, operator: Operator, node_id: str, metadata: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Add an operator to the pipeline.
-
-        Args:
-            operator: The operator instance to add
-            node_id: Unique identifier for this node
-            metadata: Optional metadata for the node
-
-        Returns:
-            The node_id of the added operator
-
-        Raises:
-            ValueError: If node_id already exists
-        """
+        """Add operator to pipeline with unique node_id."""
         if node_id in self.nodes:
             raise ValueError(f"Node with id '{node_id}' already exists in pipeline")
 
@@ -52,16 +74,7 @@ class Pipeline:
         return node_id
 
     def add_edge(self, from_node_id: str, to_node_id: str):
-        """
-        Add a directed edge from one node to another.
-
-        Args:
-            from_node_id: Source node ID
-            to_node_id: Target node ID
-
-        Raises:
-            ValueError: If either node doesn't exist or edge would create a cycle
-        """
+        """Add directed edge between nodes. Raises ValueError if creates cycle."""
         if from_node_id not in self.nodes:
             raise ValueError(f"Source node '{from_node_id}' not found in pipeline")
         if to_node_id not in self.nodes:
@@ -78,12 +91,7 @@ class Pipeline:
             raise ValueError(f"Adding edge from '{from_node_id}' to '{to_node_id}' would create a cycle")
 
     def has_cycle(self) -> bool:
-        """
-        Check if the pipeline contains a cycle using DFS.
-
-        Returns:
-            True if a cycle is detected, False otherwise
-        """
+        """Check if pipeline contains cycle using DFS."""
         visited = set()
         rec_stack = set()
 
@@ -109,15 +117,7 @@ class Pipeline:
         return False
 
     def get_execution_order(self) -> List[str]:
-        """
-        Get the topological order of nodes for execution.
-
-        Returns:
-            List of node IDs in topological order
-
-        Raises:
-            ValueError: If the pipeline contains a cycle
-        """
+        """Get topological order of node IDs for execution."""
         if self.has_cycle():
             raise ValueError("Cannot get execution order: pipeline contains a cycle")
 
@@ -157,12 +157,7 @@ class Pipeline:
         return [node_id for node_id, node in self.nodes.items() if not node.children]
 
     def visualize(self) -> str:
-        """
-        Create a simple text visualization of the pipeline.
-
-        Returns:
-            String representation of the pipeline structure
-        """
+        """Create text visualization of pipeline structure."""
         lines = [f"Pipeline: {self.name or '(unnamed)'}"]
         lines.append(f"Nodes: {len(self.nodes)}")
         lines.append(f"Edges: {sum(len(children) for children in self.edges.values())}")
@@ -189,15 +184,9 @@ class Pipeline:
 
 
 def optimize_pipeline(pipeline: Pipeline) -> List[Pipeline]:
-    """
-    Optimize the given abstract pipeline.
+    """Optimize pipeline and return variants."""
+    from .optimizer import PipelineOptimizer
 
-    Args:
-        pipeline: The pipeline to optimize
-
-    Returns:
-        List[Pipeline]: List of optimized pipeline variants
-    """
     optimizer = PipelineOptimizer(pipeline)
     if optimizer.should_optimize():
         return optimizer.optimize()
