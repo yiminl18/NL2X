@@ -37,10 +37,7 @@ except ImportError:
             return {'is_valid': True, 'errors': [], 'warnings': [], 'summary': {}}
 
 # Import schema and type utilities
-try:
-    from .schema import _extract_input_schema, _extract_output_schema, DocETLTypeMapper
-except ImportError:
-    from schema import _extract_input_schema, _extract_output_schema, DocETLTypeMapper
+from .schema import _extract_input_schema, _extract_output_schema, DocETLTypeMapper
 
 
 # ============================================================================
@@ -183,7 +180,8 @@ def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Di
 def docetl_pipeline_to_abstract(yaml_path: Union[str, Path], pipeline_config: Optional[Dict[str, Any]] = None, dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
     """Convert DocETL YAML to abstract Pipeline, tracking field types through pipeline."""
     # Parse DocETL operators from YAML
-    docetl_pipeline = parse_pipeline_operators(str(yaml_path))
+    yaml_path = Path(yaml_path)
+    docetl_pipeline = parse_pipeline_operators(yaml_path)
 
     abstract_operators = []
     cumulative_field_types = {}
@@ -491,7 +489,7 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
     print(f"Converted {len(result['operators'])} operators to abstract representation")
 
     # Display validation results
-    print("\n" + "=" * 60)
+    print("=" * 60)
     print("VALIDATING ABSTRACT PIPELINE")
     if result["dataset_schema"]:
         print("Mode: STRICT (dataset schema provided)")
@@ -499,16 +497,16 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
         print("Mode: NORMAL")
     print("=" * 60)
 
-    print(f"\nValidation Result: {'VALID ✓' if validation_result['is_valid'] else 'INVALID ✗'}")
-    print(f"Total Errors: {len(validation_result['errors'])}")
-    print(f"Total Warnings: {len(validation_result['warnings'])}")
+    print(f"Validation Result: {'VALID ✓' if validation_result['is_valid'] else 'INVALID ✗'}")
 
     if validation_result['errors']:
+        print(f"Total Errors: {len(validation_result['errors'])}")
         print("\nERRORS:")
         for i, error in enumerate(validation_result['errors'], 1):
             print(f"  {i}. {error}")
 
     if validation_result['warnings']:
+        print(f"Total Warnings: {len(validation_result['warnings'])}")
         print("\nWARNINGS:")
         for i, warning in enumerate(validation_result['warnings'], 1):
             print(f"  {i}. {warning}")
@@ -524,7 +522,7 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
             print("\nAborting save operation due to validation errors.")
             return
 
-    print("=" * 60 + "\n")
+    print("=" * 60)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -689,7 +687,7 @@ Examples:
                 print("Warning: --verbose flag is only supported with --to-abstract, ignoring.")
             abstract_json_to_yaml(args.input_file, args.output_file)
 
-        print("\n✓ Conversion completed successfully!")
+        print("✓ Conversion completed successfully!")
 
     except FileNotFoundError as e:
         print(f"\n✗ Error: {e}", file=sys.stderr)
