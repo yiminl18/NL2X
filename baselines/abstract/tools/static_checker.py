@@ -1,17 +1,6 @@
 #!/usr/bin/env python3
 """
-Static Syntax Checker for Abstract Pipeline
-
-This tool validates the correctness of abstract pipeline operators after conversion.
-It performs comprehensive checks including field validation, type checking, and schema consistency.
-
-Usage:
-    As a library:
-        from static_checker import validate_pipeline
-        result = validate_pipeline(operators)
-
-    As CLI tool:
-        python static_checker.py pipeline.json [--verbose] [--quiet] [--format text|json]
+Static validation tool for abstract pipeline operators.
 """
 
 import json
@@ -22,21 +11,17 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from pathlib import Path
 from collections import defaultdict
 
+# Import abstract type system
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from type import TypeSystem, parse_type_string, check_type_compatibility, validate_type_syntax
+
 
 # ============================================================================
 # Core Validation Functions
 # ============================================================================
 
 def validate_operator_fields(operators: List[Dict[str, Any]]) -> Tuple[bool, List[str], List[str]]:
-    """
-    Validate that each operator has all required fields with correct structure.
-
-    Args:
-        operators: List of operator dictionaries
-
-    Returns:
-        Tuple of (is_valid, errors, warnings)
-    """
+    """Validate that each operator has all required fields with correct structure."""
     errors = []
     warnings = []
 
@@ -91,15 +76,7 @@ def validate_operator_fields(operators: List[Dict[str, Any]]) -> Tuple[bool, Lis
 
 
 def validate_unique_names(operators: List[Dict[str, Any]]) -> Tuple[bool, List[str]]:
-    """
-    Check that all operator names are unique within the pipeline.
-
-    Args:
-        operators: List of operator dictionaries
-
-    Returns:
-        Tuple of (is_valid, errors)
-    """
+    """Check that all operator names are unique within the pipeline."""
     errors = []
     name_counts = defaultdict(int)
 
@@ -117,85 +94,8 @@ def validate_unique_names(operators: List[Dict[str, Any]]) -> Tuple[bool, List[s
     is_valid = len(duplicates) == 0
     return is_valid, errors
 
-
-def parse_type_string(type_str: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
-    """
-    Parse a type string and validate its syntax.
-
-    Args:
-        type_str: Type string to parse
-
-    Returns:
-        Tuple of (is_valid, parsed_type, error_message)
-    """
-    if not type_str:
-        return False, None, "Empty type string"
-
-    # Basic types
-    basic_types = ['String', 'Integer', 'Float', 'Boolean', 'Unknown', 'Array', 'Object', 'Null']
-    if type_str in basic_types:
-        return True, {'type': type_str}, None
-
-    # List type: List[ElementType]
-    list_match = re.match(r'^List\[(.+)\]$', type_str)
-    if list_match:
-        element_type_str = list_match.group(1)
-        # Recursively parse element type
-        is_valid, element_type, error = parse_type_string(element_type_str)
-        if not is_valid:
-            return False, None, f"Invalid List element type: {error}"
-        return True, {'type': 'List', 'element_type': element_type}, None
-
-    # Dict type with fields: Dict[{field1: Type1, field2: Type2}]
-    dict_match = re.match(r'^Dict\[\{(.+)\}\]$', type_str)
-    if dict_match:
-        fields_str = dict_match.group(1)
-        fields = {}
-
-        # Parse field definitions
-        # Simple parser for field: Type pairs
-        field_pairs = re.findall(r'(\w+)\s*:\s*([^,}]+)', fields_str)
-        for field_name, field_type_str in field_pairs:
-            field_type_str = field_type_str.strip()
-            is_valid, field_type, error = parse_type_string(field_type_str)
-            if not is_valid:
-                return False, None, f"Invalid type for field '{field_name}': {error}"
-            fields[field_name] = field_type
-
-        if not fields:
-            return False, None, "Dict type must have at least one field"
-
-        return True, {'type': 'Dict', 'fields': fields}, None
-
-    # Simple Dict without fields
-    if type_str == 'Dict':
-        return True, {'type': 'Dict'}, None
-
-    # Check for common mistakes
-    if type_str.startswith('list[') or type_str.startswith('array['):
-        return False, None, f"Type should use 'List' not '{type_str.split('[')[0]}'"
-
-    if type_str.startswith('dict[') or type_str.startswith('object['):
-        return False, None, f"Type should use 'Dict' not '{type_str.split('[')[0]}'"
-
-    if '{' in type_str or '}' in type_str:
-        if not type_str.startswith('Dict[{'):
-            return False, None, "Dict fields must be wrapped in 'Dict[{...}]'"
-
-    # Unknown type format
-    return False, None, f"Unrecognized type format: {type_str}"
-
-
 def validate_type_representations(operators: List[Dict[str, Any]]) -> Tuple[bool, List[str], List[str]]:
-    """
-    Validate that all type representations in the pipeline are correctly formatted.
-
-    Args:
-        operators: List of operator dictionaries
-
-    Returns:
-        Tuple of (is_valid, errors, warnings)
-    """
+    """Validate that all type representations in the pipeline are correctly formatted."""
     errors = []
     warnings = []
 
@@ -225,72 +125,8 @@ def validate_type_representations(operators: List[Dict[str, Any]]) -> Tuple[bool
     return is_valid, errors, warnings
 
 
-def check_type_compatibility(type1: str, type2: str) -> Tuple[bool, Optional[str]]:
-    """
-    Check if two types are compatible.
-
-    Args:
-        type1: First type string
-        type2: Second type string
-
-    Returns:
-        Tuple of (is_compatible, reason_if_not)
-    """
-    # Unknown type is compatible with anything
-    if type1 == 'Unknown' or type2 == 'Unknown':
-        return True, None
-
-    # Exact match
-    if type1 == type2:
-        return True, None
-
-    # Parse both types
-    is_valid1, parsed1, _ = parse_type_string(type1)
-    is_valid2, parsed2, _ = parse_type_string(type2)
-
-    if not is_valid1 or not is_valid2:
-        return False, "Invalid type format"
-
-    # Check base type compatibility
-    base_type1 = parsed1.get('type')
-    base_type2 = parsed2.get('type')
-
-    if base_type1 != base_type2:
-        # Array is compatible with List
-        if {base_type1, base_type2} == {'Array', 'List'}:
-            return True, None
-        # Object is compatible with Dict
-        if {base_type1, base_type2} == {'Object', 'Dict'}:
-            return True, None
-        return False, f"Type mismatch: {base_type1} vs {base_type2}"
-
-    # For List types, check element type compatibility
-    if base_type1 == 'List':
-        elem1 = parsed1.get('element_type', {})
-        elem2 = parsed2.get('element_type', {})
-        elem_type1 = elem1.get('type', 'Unknown') if isinstance(elem1, dict) else 'Unknown'
-        elem_type2 = elem2.get('type', 'Unknown') if isinstance(elem2, dict) else 'Unknown'
-
-        if elem_type1 != elem_type2 and elem_type1 != 'Unknown' and elem_type2 != 'Unknown':
-            return False, f"List element type mismatch: {elem_type1} vs {elem_type2}"
-
-    # For Dict types, would need more complex field checking
-    # For now, we'll consider them compatible if both are Dict
-
-    return True, None
-
-
 def validate_schema_consistency(operators: List[Dict[str, Any]], dataset_schema: Optional[Dict[str, Any]] = None) -> Tuple[bool, List[str], List[str]]:
-    """
-    Validate schema consistency through the pipeline.
-
-    Args:
-        operators: List of operator dictionaries
-        dataset_schema: Optional dataset schema for strict mode
-
-    Returns:
-        Tuple of (is_valid, errors, warnings)
-    """
+    """Validate schema consistency through the pipeline."""
     errors = []
     warnings = []
     strict_mode = dataset_schema is not None
@@ -362,20 +198,7 @@ def validate_schema_consistency(operators: List[Dict[str, Any]], dataset_schema:
 
 
 def validate_dataset_compliance(operators: List[Dict[str, Any]], dataset_schema: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """
-    Validate strict compliance with dataset schema.
-
-    In strict mode:
-    - No fields with Unknown types are allowed
-    - All fields must originate from dataset or be generated by an operator
-
-    Args:
-        operators: List of operator dictionaries
-        dataset_schema: Dataset schema with field definitions
-
-    Returns:
-        Tuple of (is_valid, errors)
-    """
+    """Validate strict compliance with dataset schema (no Unknown types allowed)."""
     errors = []
     dataset_fields = dataset_schema.get('fields', {})
 
@@ -407,15 +230,7 @@ def validate_dataset_compliance(operators: List[Dict[str, Any]], dataset_schema:
 
 
 def extract_fields_from_operator(operator: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
-    """
-    Extract all input and output fields from an operator.
-
-    Args:
-        operator: Operator dictionary
-
-    Returns:
-        Dictionary with 'input' and 'output' keys containing field mappings
-    """
+    """Extract all input and output fields from an operator."""
     result = {'input': {}, 'output': {}}
 
     # Extract input fields
@@ -438,17 +253,7 @@ def extract_fields_from_operator(operator: Dict[str, Any]) -> Dict[str, Dict[str
 # ============================================================================
 
 def validate_pipeline(operators: List[Dict[str, Any]], verbose: bool = False, dataset_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Perform comprehensive validation of an abstract pipeline.
-
-    Args:
-        operators: List of operator dictionaries
-        verbose: Whether to include detailed information
-        dataset_schema: Optional dataset schema for strict mode validation
-
-    Returns:
-        Validation report with is_valid, errors, warnings, and summary
-    """
+    """Perform comprehensive validation of an abstract pipeline."""
     all_errors = []
     all_warnings = []
     validation_results = {}
@@ -540,16 +345,7 @@ def validate_pipeline(operators: List[Dict[str, Any]], verbose: bool = False, da
 # ============================================================================
 
 def format_validation_report(report: Dict[str, Any], format: str = 'text') -> str:
-    """
-    Format validation report for display.
-
-    Args:
-        report: Validation report dictionary
-        format: Output format ('text' or 'json')
-
-    Returns:
-        Formatted string
-    """
+    """Format validation report for display."""
     if format == 'json':
         return json.dumps(report, indent=2)
 

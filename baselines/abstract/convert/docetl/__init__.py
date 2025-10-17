@@ -16,8 +16,6 @@ from .converter import (
     docetl_pipeline_to_abstract,
     abstract_to_docetl,
     yaml_to_abstract_pipeline,
-    yaml_to_abstract_pipeline_dag,
-    convert_yaml_or_operators,
     operator_to_dict,
     dict_to_operator,
     yaml_to_abstract_json,
@@ -25,13 +23,11 @@ from .converter import (
     LiteralDumper
 )
 
-# Import schema functions (these are typically used internally, but exposed for advanced usage)
+# Import schema functions and type mapper
 from .schema import (
     _extract_fields_from_jinja2,
     _extract_fields_from_python_code,
-    _parse_docetl_type,
-    _parse_docetl_schema_to_type_dict,
-    _type_dict_to_docetl_string,
+    DocETLTypeMapper,
     _extract_input_schema,
     _extract_output_schema
 )
@@ -57,8 +53,6 @@ __all__ = [
 
     # YAML/Pipeline conversion
     'yaml_to_abstract_pipeline',
-    'yaml_to_abstract_pipeline_dag',
-    'convert_yaml_or_operators',
 
     # Serialization
     'operator_to_dict',
@@ -72,12 +66,10 @@ __all__ = [
     'DOCETL_TO_ABSTRACT_TYPE_MAP',
     'LiteralDumper',
 
-    # Schema functions (advanced)
+    # Schema functions and type mapping (advanced)
     '_extract_fields_from_jinja2',
     '_extract_fields_from_python_code',
-    '_parse_docetl_type',
-    '_parse_docetl_schema_to_type_dict',
-    '_type_dict_to_docetl_string',
+    'DocETLTypeMapper',
     '_extract_input_schema',
     '_extract_output_schema',
 

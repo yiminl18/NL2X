@@ -4,36 +4,24 @@ Schema and Type Tracking Module for DocETL Conversion
 This module provides utilities for extracting, parsing, and tracking type information
 from DocETL operators. It handles:
 - Field extraction from Jinja2 templates and Python code
-- Type parsing and normalization
+- DocETL-specific type mapping to abstract layer types
 - Input/output schema extraction from operators
 """
 
 from typing import Any, Dict, Set, Optional
 import re
 
+# Import abstract type system
+from ..type import TypeSystem, serialize_type_dict
+
 
 def _extract_fields_from_jinja2(template: str) -> Set[str]:
-    """
-    Extract field names from Jinja2 template patterns.
-
-    This function identifies field references in various Jinja2 patterns:
-    - {{ input.field }} - single input field access
-    - {{ input1.field }}, {{ input2.field }} - comparison inputs
-    - {{ inputs[0].field }} - array index access
-    - {% for item in inputs %} {{ item.field }} - loop variable access
-
-    Args:
-        template: Jinja2 template string
-
-    Returns:
-        Set of unique field names found in the template
-    """
+    """Extract field names from Jinja2 template patterns."""
     if not template:
         return set()
 
     fields = set()
 
-    # Pattern for {{ input.field }} or {{ input["field"] }}
     input_pattern = r'\{\{\s*input\.(\w+)'
     fields.update(re.findall(input_pattern, template))
     input_bracket_pattern = r'\{\{\s*input\["([^"]+)"\]'
@@ -41,22 +29,17 @@ def _extract_fields_from_jinja2(template: str) -> Set[str]:
     input_bracket_single_pattern = r"\{\{\s*input\['([^']+)'\]"
     fields.update(re.findall(input_bracket_single_pattern, template))
 
-    # Pattern for {{ input1.field }}, {{ input2.field }} (resolve comparison)
     input_n_pattern = r'\{\{\s*input[12]\.(\w+)'
     fields.update(re.findall(input_n_pattern, template))
     input_n_bracket_pattern = r'\{\{\s*input[12]\["([^"]+)"\]'
     fields.update(re.findall(input_n_bracket_pattern, template))
 
-    # Pattern for {{ inputs[0].field }} (reduce/resolve)
     inputs_idx_pattern = r'\{\{\s*inputs\[\d+\]\.(\w+)'
     fields.update(re.findall(inputs_idx_pattern, template))
 
-    # Pattern for {% for item in inputs %} ... {{ item.field }}
-    # First find loop variables
     for_loop_pattern = r'\{%\s*for\s+(\w+)\s+in\s+inputs\s*%\}'
     loop_vars = re.findall(for_loop_pattern, template)
 
-    # Then find fields accessed through loop variables
     for var in loop_vars:
         escaped_var = re.escape(var)
         var_pattern = r'\{\{?\s*' + escaped_var + r'\.(\w+)'
@@ -64,11 +47,10 @@ def _extract_fields_from_jinja2(template: str) -> Set[str]:
         var_bracket_pattern = r'\{\{?\s*' + escaped_var + r'\["([^"]+)"\]'
         fields.update(re.findall(var_bracket_pattern, template))
 
-    # Pattern for {% for entry in inputs %} or similar variations
     for_entry_pattern = r'\{%\s*for\s+(\w+)\s+in\s+\w+\s*%\}'
     entry_vars = re.findall(for_entry_pattern, template)
     for var in entry_vars:
-        if var not in loop_vars:  # Avoid duplicates
+        if var not in loop_vars:
             escaped_var = re.escape(var)
             var_pattern = r'\{\{?\s*' + escaped_var + r'\.(\w+)'
             fields.update(re.findall(var_pattern, template))
@@ -77,173 +59,40 @@ def _extract_fields_from_jinja2(template: str) -> Set[str]:
 
 
 def _extract_fields_from_python_code(code: str) -> Set[str]:
-    """
-    Extract field names from Python code patterns.
-
-    This function identifies field references in Python code:
-    - doc['field'] or doc["field"]
-    - doc.get('field') or doc.get("field")
-    - input['field'] or input.field
-
-    Args:
-        code: Python code string
-
-    Returns:
-        Set of unique field names found in the code
-    """
+    """Extract field names from Python code patterns."""
     if not code:
         return set()
 
     fields = set()
 
-    # Pattern for doc['field'] or doc["field"]
     doc_bracket_pattern = r'doc\[[\'"]([\w_]+)[\'"]\]'
     fields.update(re.findall(doc_bracket_pattern, code))
 
-    # Pattern for doc.get('field') or doc.get("field") - must be before doc.field pattern
     doc_get_pattern = r'doc\.get\([\'"]([^\'",]+)[\'"]'
     fields.update(re.findall(doc_get_pattern, code))
 
-    # Pattern for doc.field (but exclude .get method)
-    # Use negative lookahead to exclude 'get'
     doc_dot_pattern = r'doc\.(?!get\b)(\w+)'
     fields.update(re.findall(doc_dot_pattern, code))
 
-    # Pattern for input['field'] or input["field"]
     input_bracket_pattern = r'input\[[\'"]([\w_]+)[\'"]\]'
     fields.update(re.findall(input_bracket_pattern, code))
 
-    # Pattern for input.field
     input_dot_pattern = r'input\.(\w+)'
     fields.update(re.findall(input_dot_pattern, code))
 
     return fields
 
 
-def _parse_docetl_type(type_str: str) -> str:
-    """
-    Parse DocETL type strings to a simplified string format.
+class DocETLTypeMapper:
+    """Maps DocETL type strings to abstract layer types."""
 
-    Handles types like:
-    - "string" or "str" -> "String"
-    - "number" or "int" or "integer" -> "Integer"
-    - "float" -> "Float"
-    - "list[str]" -> "Array"
-    - "list[{theme: str, viewpoints: str}]" -> "Array"
-    - Complex nested types -> simplified representation
-
-    Args:
-        type_str: DocETL type string
-
-    Returns:
-        Normalized type string compatible with TypeSystem
-    """
-    if not type_str:
-        return "Unknown"
-
-    # Normalize the type string
-    type_str = str(type_str).strip()
-
-    # Handle list types
-    if type_str.startswith("list[") or type_str.startswith("List["):
-        return "Array"
-
-    # Handle basic type mappings (matching TypeSystem format)
-    type_mappings = {
+    DOCETL_TO_ABSTRACT = {
         "str": "String",
         "string": "String",
         "int": "Integer",
         "integer": "Integer",
-        "float": "Float",
         "number": "Integer",  # Default number to Integer
-        "bool": "Boolean",
-        "boolean": "Boolean",
-        "dict": "Dict",
-        "object": "Dict",
-        "array": "Array",
-        "list": "Array"
-    }
-
-    # Check for exact match
-    lower_type = type_str.lower()
-    if lower_type in type_mappings:
-        return type_mappings[lower_type]
-
-    # If it contains dictionary-like structure
-    if "{" in type_str and "}" in type_str:
-        return "Dict"
-
-    # Default to Unknown for unrecognized types
-    return "Unknown"
-
-
-def _parse_docetl_schema_to_type_dict(schema_str: str) -> Dict[str, Any]:
-    """
-    Parse DocETL schema strings to type dict format compatible with TypeSystem.
-
-    Examples:
-    - "str" -> {'type': 'String'}
-    - "list[str]" -> {'type': 'List', 'element_type': {'type': 'String'}}
-    - "list[{theme: str, viewpoints: str}]" ->
-      {'type': 'List', 'element_type': {'type': 'Dict', 'fields': {...}}}
-
-    Args:
-        schema_str: DocETL schema string
-
-    Returns:
-        Type dict in TypeSystem format
-    """
-    if not schema_str:
-        return {'type': 'Unknown'}
-
-    schema_str = str(schema_str).strip()
-
-    # Handle list types with nested structures
-    if schema_str.startswith("list[") or schema_str.startswith("List["):
-        # Extract the element type
-        inner_match = re.search(r'[Ll]ist\[(.+)\]$', schema_str)
-        if inner_match:
-            element_str = inner_match.group(1).strip()
-
-            # Check if element is a dict/object
-            if element_str.startswith("{") and element_str.endswith("}"):
-                # Parse dict fields
-                fields_dict = {}
-                # Extract field:type pairs from {field1: type1, field2: type2}
-                field_pairs = re.findall(r'(\w+)\s*:\s*(\w+)', element_str)
-                for field_name, field_type in field_pairs:
-                    fields_dict[field_name] = _parse_docetl_schema_to_type_dict(field_type)
-
-                return {
-                    'type': 'List',
-                    'element_type': {
-                        'type': 'Dict',
-                        'fields': fields_dict
-                    }
-                }
-            else:
-                # Simple element type
-                return {
-                    'type': 'List',
-                    'element_type': _parse_docetl_schema_to_type_dict(element_str)
-                }
-
-    # Handle dict/object types
-    if schema_str.startswith("{") and schema_str.endswith("}"):
-        fields_dict = {}
-        field_pairs = re.findall(r'(\w+)\s*:\s*(\w+)', schema_str)
-        for field_name, field_type in field_pairs:
-            fields_dict[field_name] = _parse_docetl_schema_to_type_dict(field_type)
-        return {'type': 'Dict', 'fields': fields_dict}
-
-    # Handle basic types
-    type_mappings = {
-        "str": "String",
-        "string": "String",
-        "int": "Integer",
-        "integer": "Integer",
         "float": "Float",
-        "number": "Integer",
         "bool": "Boolean",
         "boolean": "Boolean",
         "dict": "Dict",
@@ -252,70 +101,87 @@ def _parse_docetl_schema_to_type_dict(schema_str: str) -> Dict[str, Any]:
         "list": "List"
     }
 
-    lower_type = schema_str.lower()
-    if lower_type in type_mappings:
-        return {'type': type_mappings[lower_type]}
+    @classmethod
+    def parse_docetl_type(cls, type_str: str) -> str:
+        """Parse simple DocETL type to abstract layer type name."""
+        if not type_str:
+            return "Unknown"
 
-    return {'type': 'Unknown'}
+        type_str = str(type_str).strip()
 
+        # Handle list types (simple check)
+        if type_str.startswith("list[") or type_str.startswith("List["):
+            return "List"
 
-def _type_dict_to_docetl_string(type_dict: Dict[str, Any]) -> str:
-    """
-    Convert type dict to DocETL-style type string representation.
+        # Map basic types
+        lower_type = type_str.lower()
+        if lower_type in cls.DOCETL_TO_ABSTRACT:
+            return cls.DOCETL_TO_ABSTRACT[lower_type]
 
-    Preserves full type information including nested structures.
+        # If it contains dictionary-like structure
+        if "{" in type_str and "}" in type_str:
+            return "Dict"
 
-    Args:
-        type_dict: Type dict in TypeSystem format
-
-    Returns:
-        DocETL-style type string (e.g., "List[String]", "Dict[theme: String, viewpoints: String]")
-    """
-    if not type_dict:
         return "Unknown"
 
-    type_name = type_dict.get('type', 'Unknown')
+    @classmethod
+    def parse_docetl_schema(cls, schema_str: str) -> Dict[str, Any]:
+        """Parse DocETL schema to abstract layer type dict."""
+        if not schema_str:
+            return {'type': 'Unknown'}
 
-    # For simple types, just return the type name
-    if type_name in ['String', 'Integer', 'Float', 'Boolean', 'Unknown', 'Null']:
-        return type_name
+        schema_str = str(schema_str).strip()
 
-    # For lists, include element type
-    if type_name == 'List':
-        element_type = type_dict.get('element_type', {'type': 'Unknown'})
-        element_str = _type_dict_to_docetl_string(element_type)
-        return f"List[{element_str}]"
+        # Handle list types with nested structures
+        if schema_str.startswith("list[") or schema_str.startswith("List["):
+            inner_match = re.search(r'[Ll]ist\[(.+)\]$', schema_str)
+            if inner_match:
+                element_str = inner_match.group(1).strip()
 
-    # For dicts, include field definitions
-    if type_name == 'Dict':
-        fields = type_dict.get('fields', {})
-        if fields:
-            field_strs = []
-            for field_name, field_type in fields.items():
-                field_type_str = _type_dict_to_docetl_string(field_type)
-                field_strs.append(f"{field_name}: {field_type_str}")
-            return f"Dict[{{{', '.join(field_strs)}}}]"
-        return "Dict"
+                # Check if element is a dict/object
+                if element_str.startswith("{") and element_str.endswith("}"):
+                    fields_dict = {}
+                    field_pairs = re.findall(r'(\w+)\s*:\s*(\w+)', element_str)
+                    for field_name, field_type in field_pairs:
+                        fields_dict[field_name] = cls.parse_docetl_schema(field_type)
 
-    return type_name
+                    return {
+                        'type': 'List',
+                        'element_type': {
+                            'type': 'Dict',
+                            'fields': fields_dict
+                        }
+                    }
+                else:
+                    return {
+                        'type': 'List',
+                        'element_type': cls.parse_docetl_schema(element_str)
+                    }
+
+        # Handle dict/object types
+        if schema_str.startswith("{") and schema_str.endswith("}"):
+            fields_dict = {}
+            field_pairs = re.findall(r'(\w+)\s*:\s*(\w+)', schema_str)
+            for field_name, field_type in field_pairs:
+                fields_dict[field_name] = cls.parse_docetl_schema(field_type)
+            return {'type': 'Dict', 'fields': fields_dict}
+
+        # Handle basic types using the mapping
+        lower_type = schema_str.lower()
+        if lower_type in cls.DOCETL_TO_ABSTRACT:
+            return {'type': cls.DOCETL_TO_ABSTRACT[lower_type]}
+
+        return {'type': 'Unknown'}
+
+    @classmethod
+    def to_abstract_type_string(cls, docetl_schema: str) -> str:
+        """Convert DocETL schema to abstract layer type string."""
+        type_dict = cls.parse_docetl_schema(docetl_schema)
+        return serialize_type_dict(type_dict)
 
 
 def _extract_input_schema(docetl_operator: Dict[str, Any], field_types: Dict[str, str] = None, dataset_schema: Dict[str, Any] = None) -> Dict[str, Any]:
-    """
-    Extract input schema from a DocETL operator.
-
-    This function analyzes operator configuration and prompts to identify
-    all input fields required by the operator. It uses template parsing
-    to extract field references from Jinja2 templates.
-
-    Args:
-        docetl_operator: DocETL operator dictionary
-        field_types: Optional dictionary mapping field names to their types
-        dataset_schema: Optional dataset schema with field definitions
-
-    Returns:
-        Input schema dictionary with fields metadata
-    """
+    """Extract input schema from DocETL operator by analyzing configuration and templates."""
     input_schema = {}
     op_type = docetl_operator.get("type", "")
     required_fields = set()
@@ -489,20 +355,7 @@ def _extract_input_schema(docetl_operator: Dict[str, Any], field_types: Dict[str
 
 
 def _extract_output_schema(docetl_operator: Dict[str, Any], cumulative_field_types: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """
-    Extract output schema from a DocETL operator.
-
-    DocETL operators may define output schemas in different ways:
-    - Nested format: {"output": {"schema": {...}}}
-    - Direct output_schema field (after processing in docetl_step.py)
-
-    Args:
-        docetl_operator: DocETL operator dictionary
-        cumulative_field_types: Optional dictionary of all available fields and their types at this point in the pipeline
-
-    Returns:
-        Output schema dictionary with full type information preserved
-    """
+    """Extract output schema from DocETL operator, preserving full type information."""
     output_schema = {}
 
     # Check for nested output.schema format
@@ -510,11 +363,8 @@ def _extract_output_schema(docetl_operator: Dict[str, Any], cumulative_field_typ
         if "schema" in docetl_operator["output"]:
             schema = docetl_operator["output"]["schema"]
             if isinstance(schema, dict):
-                # Convert each field type to preserve nested structure
                 for field, field_type_str in schema.items():
-                    # Parse to type dict and back to DocETL string to normalize
-                    type_dict = _parse_docetl_schema_to_type_dict(field_type_str)
-                    output_schema[field] = _type_dict_to_docetl_string(type_dict)
+                    output_schema[field] = DocETLTypeMapper.to_abstract_type_string(field_type_str)
             else:
                 output_schema = schema
 
@@ -523,8 +373,7 @@ def _extract_output_schema(docetl_operator: Dict[str, Any], cumulative_field_typ
         schema = docetl_operator["output_schema"]
         if isinstance(schema, dict):
             for field, field_type_str in schema.items():
-                type_dict = _parse_docetl_schema_to_type_dict(field_type_str)
-                output_schema[field] = _type_dict_to_docetl_string(type_dict)
+                output_schema[field] = DocETLTypeMapper.to_abstract_type_string(field_type_str)
         else:
             output_schema = schema
 
@@ -574,7 +423,7 @@ def _extract_output_schema(docetl_operator: Dict[str, Any], cumulative_field_typ
 
         if unnest_key and cumulative_field_types and unnest_key in cumulative_field_types:
             field_type_str = cumulative_field_types[unnest_key]
-            type_dict = _parse_docetl_schema_to_type_dict(field_type_str)
+            type_dict = DocETLTypeMapper.parse_docetl_schema(field_type_str)
 
             # Handle List types
             if type_dict.get('type') == 'List':
@@ -582,23 +431,18 @@ def _extract_output_schema(docetl_operator: Dict[str, Any], cumulative_field_typ
 
                 # If List[Dict], unwrap and add dict fields
                 if element_type.get('type') == 'Dict':
-                    # Unwrap to dict element type
-                    output_schema[unnest_key] = _type_dict_to_docetl_string(element_type)
-                    # Also add nested dict fields (flattened)
+                    output_schema[unnest_key] = serialize_type_dict(element_type)
                     element_fields = element_type.get('fields', {})
                     for field_name, field_type_dict in element_fields.items():
-                        output_schema[field_name] = _type_dict_to_docetl_string(field_type_dict)
+                        output_schema[field_name] = serialize_type_dict(field_type_dict)
                 else:
-                    # List[SimpleType] - unwrap to element type
-                    output_schema[unnest_key] = _type_dict_to_docetl_string(element_type)
+                    output_schema[unnest_key] = serialize_type_dict(element_type)
 
             # Handle Dict types
             elif type_dict.get('type') == 'Dict':
-                # Flatten dict fields - remove the dict, add its fields
                 dict_fields = type_dict.get('fields', {})
                 for field_name, field_type_dict in dict_fields.items():
-                    output_schema[field_name] = _type_dict_to_docetl_string(field_type_dict)
-                # Mark that unnest_key should be removed (special marker)
+                    output_schema[field_name] = serialize_type_dict(field_type_dict)
                 output_schema['_removed_fields'] = [unnest_key]
 
     return output_schema

@@ -52,22 +52,24 @@ except ImportError:
         Pipeline = None
         PipelineNode = None
 
-# Import schema functions from schema.py
+# Import schema functions and type mapper from schema.py
 try:
     from .schema import (
         _extract_input_schema,
         _extract_output_schema,
-        _parse_docetl_schema_to_type_dict,
-        _type_dict_to_docetl_string
+        DocETLTypeMapper
     )
+    from ..type import serialize_type_dict
 except ImportError:
     # For standalone execution, import from same directory
     from schema import (
         _extract_input_schema,
         _extract_output_schema,
-        _parse_docetl_schema_to_type_dict,
-        _type_dict_to_docetl_string
+        DocETLTypeMapper
     )
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from type import serialize_type_dict
 
 
 # Mapping from DocETL operator types to Abstract operator types
@@ -134,13 +136,11 @@ def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Di
 def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], pipeline_config: Optional[Dict[str, Any]] = None, dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
     """Convert DocETL operator list to abstract Pipeline, tracking field types through pipeline."""
     abstract_operators = []
-    cumulative_field_types = {}  # Track all field types available at each step
+    cumulative_field_types = {}
 
-    # Initialize cumulative field types from dataset schema if provided
     if dataset_schema and "fields" in dataset_schema:
         cumulative_field_types.update(dataset_schema["fields"])
 
-    # Print initial dataset schema in verbose mode
     if verbose:
         print("\n" + "=" * 60)
         print("INITIAL DATASET SCHEMA")
@@ -154,15 +154,12 @@ def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], pipeline_
         print("=" * 60 + "\n")
 
     for i, docetl_op in enumerate(docetl_pipeline):
-        # Print operator info before processing in verbose mode
         if verbose:
             print(f"=== Processing Operator {i+1}/{len(docetl_pipeline)}: {docetl_op.get('name', 'unknown')} ({docetl_op.get('type', 'unknown')}) ===")
 
-        # Convert operator with current field types and dataset schema
         abstract_op = docetl_to_abstract(docetl_op, cumulative_field_types, dataset_schema)
         abstract_operators.append(abstract_op)
 
-        # Print input schema in verbose mode
         if verbose:
             print("\nInput Schema:")
             if abstract_op.input and isinstance(abstract_op.input, dict):
@@ -174,64 +171,49 @@ def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], pipeline_
             else:
                 print("  (no input schema)")
 
-        # Update cumulative field types based on operator type and output
         op_type = docetl_op.get("type", "")
 
-        # Handle operators with output schemas
         if "output" in docetl_op and isinstance(docetl_op["output"], dict):
             if "schema" in docetl_op["output"]:
                 schema = docetl_op["output"]["schema"]
                 if isinstance(schema, dict):
                     for field, field_type_str in schema.items():
-                        # Parse the schema to type dict, then convert to DocETL string
-                        type_dict = _parse_docetl_schema_to_type_dict(field_type_str)
-                        cumulative_field_types[field] = _type_dict_to_docetl_string(type_dict)
+                        cumulative_field_types[field] = DocETLTypeMapper.to_abstract_type_string(field_type_str)
 
-        # Special handling for unnest operations
         if op_type == "unnest":
-            # The output schema from _extract_output_schema already contains the transformed types
             if abstract_op.output and isinstance(abstract_op.output, dict):
-                # Update cumulative_field_types with the output schema
                 for field, field_type in abstract_op.output.items():
                     if field == '_removed_fields':
-                        # Remove fields marked for removal
                         for removed_field in field_type:
                             if removed_field in cumulative_field_types:
                                 del cumulative_field_types[removed_field]
                     elif field != "type":
                         cumulative_field_types[field] = field_type
 
-                # Clean up the special marker
                 if '_removed_fields' in abstract_op.output:
                     del abstract_op.output['_removed_fields']
 
-        # Handle other special operators
+
         elif op_type == "split":
-            # Split adds standard fields
             cumulative_field_types["_split_id"] = "String"
             cumulative_field_types["_split_index"] = "Integer"
 
         elif op_type == "gather" and "output_key" in docetl_op:
-            # Gather produces a list field
             cumulative_field_types[docetl_op["output_key"]] = "List[String]"
 
         elif op_type == "cluster" and "output_key" in docetl_op:
-            # Cluster adds a cluster ID field
             cumulative_field_types[docetl_op["output_key"]] = "String"
 
         elif op_type == "rank":
-            # Rank adds a rank field
             cumulative_field_types["rank"] = "Integer"
 
-        # Update abstract operator's output if we detected special fields
         if abstract_op.output and isinstance(abstract_op.output, dict):
             for field, field_type in abstract_op.output.items():
-                if field != "type":  # Skip special keys
-                    # Ensure output types are consistent
+                if field != "type":
                     if field in cumulative_field_types:
                         abstract_op.output[field] = cumulative_field_types[field]
 
-        # Print output schema and available fields in verbose mode
+
         if verbose:
             print("\nOutput Schema:")
             if abstract_op.output and isinstance(abstract_op.output, dict):
@@ -252,40 +234,34 @@ def docetl_pipeline_to_abstract(docetl_pipeline: List[Dict[str, Any]], pipeline_
                 print("  (no fields available)")
             print()
 
-    # Parse metadata from pipeline config
     input_path = None
     output_path = None
     properties = {}
     pipeline_name = "docetl_pipeline"
 
     if pipeline_config:
-        # Extract pipeline name
         pipeline_name = pipeline_config.get('name', 'docetl_pipeline')
 
-        # Extract input_path from datasets
         datasets = pipeline_config.get('datasets', {})
         if datasets:
             first_dataset = next(iter(datasets.values()), {})
             input_path = first_dataset.get('path')
 
-        # Extract output_path from pipeline.output
         pipeline_output = pipeline_config.get('pipeline', {}).get('output', {})
         output_path = pipeline_output.get('path')
 
-        # Save all other fields as properties
         for key, value in pipeline_config.items():
             if key not in ['operations', 'datasets', 'pipeline', 'name']:
                 properties[key] = value
 
-        # Save pipeline-level config (excluding output and steps)
         if 'pipeline' in pipeline_config:
             pipeline_props = pipeline_config['pipeline'].copy()
-            pipeline_props.pop('output', None)  # output_path saved separately
-            pipeline_props.pop('steps', None)   # steps are execution order
+            pipeline_props.pop('output', None)
+            pipeline_props.pop('steps', None)
             if pipeline_props:
                 properties['pipeline'] = pipeline_props
 
-    # Create Pipeline from operators with metadata
+
     return Pipeline.from_operators(
         abstract_operators,
         name=pipeline_name,
@@ -330,88 +306,13 @@ def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
 
 def yaml_to_abstract_pipeline(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
     """Convert DocETL YAML file to abstract Pipeline."""
-    # Read complete YAML configuration
     with open(yaml_file_path, 'r') as f:
         pipeline_config = yaml.safe_load(f)
 
-    # Parse operators from YAML file using the parser tool
     docetl_operators = parse_pipeline_operators(str(yaml_file_path))
-
-    # Convert DocETL operators to abstract Pipeline with full config
     abstract_pipeline = docetl_pipeline_to_abstract(docetl_operators, pipeline_config, dataset_schema, verbose=verbose)
 
     return abstract_pipeline
-
-
-def yaml_to_abstract_pipeline_dag(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
-    """Convert DocETL YAML to Pipeline with DAG structure."""
-    yaml_path = Path(yaml_file_path)
-    if not yaml_path.exists():
-        raise FileNotFoundError(f"YAML file not found: {yaml_file_path}")
-
-    # Read the full YAML structure
-    with open(yaml_path, 'r') as f:
-        pipeline_config = yaml.safe_load(f)
-
-    # Extract operators and convert to abstract format
-    docetl_operators = parse_pipeline_operators(str(yaml_file_path))
-    abstract_pipeline_temp = docetl_pipeline_to_abstract(docetl_operators, pipeline_config, dataset_schema, verbose=verbose)
-    abstract_operators = abstract_pipeline_temp.to_operators()
-
-    # Create Pipeline instance with metadata from temp pipeline
-    pipeline = Pipeline(
-        name=abstract_pipeline_temp.name,
-        input_path=abstract_pipeline_temp.input_path,
-        output_path=abstract_pipeline_temp.output_path,
-        properties=abstract_pipeline_temp.properties
-    )
-
-    # Extract pipeline steps to understand the DAG structure
-    pipeline_steps = pipeline_config.get('pipeline', {}).get('steps', [])
-
-    # For linear pipelines (most common in DocETL)
-    if pipeline_steps:
-        first_step = pipeline_steps[0]
-        operation_names = first_step.get('operations', [])
-
-        # Create a mapping of operator names to abstract operators
-        op_name_to_abstract = {op.name: op for op in abstract_operators}
-
-        # Add operators to pipeline in order
-        previous_node_id = None
-        for i, op_name in enumerate(operation_names):
-            if op_name in op_name_to_abstract:
-                abstract_op = op_name_to_abstract[op_name]
-                node_id = f"{op_name}_{i}"
-
-                # Add operator to pipeline
-                pipeline.add_operator(abstract_op, node_id)
-
-                # Connect to previous operator if exists (linear chain)
-                if previous_node_id:
-                    pipeline.add_edge(previous_node_id, node_id)
-
-                previous_node_id = node_id
-
-    # Add metadata about datasets and output
-    if 'datasets' in pipeline_config:
-        for dataset_name, dataset_config in pipeline_config['datasets'].items():
-            # Store dataset info in pipeline metadata if needed
-            pass
-
-    return pipeline
-
-
-def convert_yaml_or_operators(input_data: Union[str, Path, List[Dict[str, Any]]], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
-    """Convert YAML file or DocETL operator list to abstract Pipeline."""
-    if isinstance(input_data, (str, Path)):
-        # It's a file path, convert from YAML
-        return yaml_to_abstract_pipeline(input_data, dataset_schema, verbose=verbose)
-    elif isinstance(input_data, list):
-        # It's already a list of operators
-        return docetl_pipeline_to_abstract(input_data, dataset_schema, verbose=verbose)
-    else:
-        raise TypeError(f"Expected str, Path, or list, got {type(input_data)}")
 
 
 # ============================================================================
@@ -447,27 +348,10 @@ def dict_to_operator(op_dict: Dict[str, Any]) -> Operator:
 # ============================================================================
 
 def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, Path], validate: bool = False, dataset_schema: Optional[Union[Dict[str, Any], str, Path]] = None, verbose: bool = False) -> None:
-    """
-    Convert a DocETL YAML pipeline file to abstract JSON representation.
-
-    This function reads a YAML pipeline file, converts it to abstract operators,
-    optionally validates the pipeline, and saves the result as a JSON file.
-    All non-operator fields from the YAML are preserved in the JSON output.
-
-    Args:
-        yaml_path: Path to the input YAML pipeline file
-        output_path: Path where the output JSON file should be saved
-        validate: Whether to validate the pipeline after conversion
-        dataset_schema: Optional dataset schema (Dict or path to JSON file)
-        verbose: If True, print detailed information about schema transformations
-
-    Example:
-        >>> yaml_to_abstract_json("pipeline.yaml", "abstract_pipeline.json", validate=True)
-    """
+    """Convert DocETL YAML pipeline to abstract JSON representation."""
     yaml_path = Path(yaml_path)
     output_path = Path(output_path)
 
-    # Load dataset schema if provided as a file path
     schema_dict = None
     if dataset_schema:
         if isinstance(dataset_schema, (str, Path)):
@@ -517,24 +401,20 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
 
         validation_result = validate_pipeline(operators_data["operators"], dataset_schema=schema_dict)
 
-        # Print summary
         print(f"\nValidation Result: {'VALID ✓' if validation_result['is_valid'] else 'INVALID ✗'}")
         print(f"Total Errors: {len(validation_result['errors'])}")
         print(f"Total Warnings: {len(validation_result['warnings'])}")
 
-        # Print errors if any
         if validation_result['errors']:
             print("\nERRORS:")
             for i, error in enumerate(validation_result['errors'], 1):
                 print(f"  {i}. {error}")
 
-        # Print warnings if any
         if validation_result['warnings']:
             print("\nWARNINGS:")
             for i, warning in enumerate(validation_result['warnings'], 1):
                 print(f"  {i}. {warning}")
 
-        # If invalid, ask for confirmation to continue
         if not validation_result['is_valid']:
             print("\n⚠️  Pipeline validation failed!")
             try:
@@ -561,74 +441,52 @@ def yaml_to_abstract_json(yaml_path: Union[str, Path], output_path: Union[str, P
 # ============================================================================
 
 def literal_presenter(dumper, data):
-    """Custom presenter to use literal style for multi-line strings."""
+    """Custom presenter for multi-line strings in YAML."""
     if '\n' in data:
         return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
     return dumper.represent_scalar('tag:yaml.org,2002:str', data)
 
 
 class LiteralDumper(yaml.SafeDumper):
-    """Custom YAML dumper that uses literal style for multi-line strings."""
+    """YAML dumper with literal style for multi-line strings."""
     pass
 
 
-# Add the custom representer to the dumper
 LiteralDumper.add_representer(str, literal_presenter)
 
 
 def abstract_json_to_yaml(json_path: Union[str, Path], output_path: Union[str, Path]) -> None:
-    """
-    Convert an abstract JSON representation back to a complete DocETL YAML pipeline.
-
-    This function reads an abstract JSON file, converts it back to DocETL operators,
-    and restores all preserved fields to create a complete, executable YAML pipeline.
-
-    Args:
-        json_path: Path to the input JSON file
-        output_path: Path where the output YAML file should be saved
-    Example:
-        >>> abstract_json_to_yaml("abstract_pipeline.json", "recovered_pipeline.yaml")
-    """
+    """Convert abstract JSON representation back to DocETL YAML pipeline."""
     json_path = Path(json_path)
     output_path = Path(output_path)
 
-    # Load JSON file
     print(f"Reading abstract pipeline from: {json_path}")
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    # Extract dataset schema if present
     dataset_schema = data.get("dataset_schema")
     if dataset_schema:
         print(f"Found dataset schema with {len(dataset_schema.get('fields', {}))} fields")
 
-    # Deserialize operators
     abstract_operators = [dict_to_operator(op_dict) for op_dict in data.get("operators", [])]
     print(f"Loaded {len(abstract_operators)} abstract operators")
 
-    # Convert to DocETL format
     docetl_operators = [abstract_to_docetl(op) for op in abstract_operators]
 
-    # Create complete YAML structure with all preserved fields
     pipeline_yaml = {}
 
-    # Add all preserved fields from JSON (except operators and dataset_schema)
-    # These are the fields that were preserved from the original YAML
     for key, value in data.items():
         if key not in ["operators", "dataset_schema"]:
             pipeline_yaml[key] = value
 
-    # Add the converted operations
     pipeline_yaml["operations"] = docetl_operators
 
-    # Create output directory if it doesn't exist
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save to YAML file
     with open(output_path, 'w', encoding='utf-8') as f:
         yaml.dump(pipeline_yaml, f, Dumper=LiteralDumper,
                   default_flow_style=False, sort_keys=False, allow_unicode=True)
-    # print(pipeline_yaml)
+
     print(f"Saved complete DocETL pipeline to: {output_path}")
 
 
@@ -637,16 +495,7 @@ def abstract_json_to_yaml(json_path: Union[str, Path], output_path: Union[str, P
 # ============================================================================
 
 def main():
-    """
-    Command-line interface for standalone conversion operations.
-
-    Usage:
-        # Convert YAML to abstract JSON
-        python converter.py --to-abstract input.yaml output.json
-
-        # Convert abstract JSON to YAML
-        python converter.py --to-docetl input.json output.yaml
-    """
+    """Command-line interface for standalone conversion operations."""
     parser = argparse.ArgumentParser(
         description="Convert between DocETL YAML pipelines and abstract JSON representations",
         formatter_class=argparse.RawDescriptionHelpFormatter,

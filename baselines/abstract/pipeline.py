@@ -2,10 +2,6 @@ from collections import defaultdict, deque
 from typing import List, Dict, Set, Optional, Any, TYPE_CHECKING
 from .ops.base import Operator
 
-if TYPE_CHECKING:
-    from .optimizer import PipelineOptimizer
-
-
 class PipelineNode:
     """Represents a node in the pipeline DAG."""
 
