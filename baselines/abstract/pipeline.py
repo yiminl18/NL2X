@@ -21,12 +21,14 @@ class Pipeline:
 
     def __init__(self, name: str = "", input_path: Optional[str] = None,
                  output_path: Optional[str] = None, properties: Optional[Dict[str, Any]] = None,
-                 dataset_schema: Optional[Dict[str, Any]] = None):
+                 dataset_schema: Optional[Dict[str, Any]] = None,
+                 subtasks: Optional[List[str]] = None):
         self.name = name
         self.input_path = input_path  # Input data path
         self.output_path = output_path  # Output data path
         self.properties = properties or {}  # Other metadata from pipeline config
         self.dataset_schema = dataset_schema  # Dataset schema in abstract layer format
+        self.subtasks = subtasks  # Subtasks descriptions for each operator
         self.nodes: Dict[str, PipelineNode] = {}
         self.edges: Dict[str, List[str]] = defaultdict(list)  # node_id -> [child_ids]
 
