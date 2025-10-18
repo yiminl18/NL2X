@@ -11,7 +11,7 @@ from .utils import (
     combine_sheets_text,
     read_txt
 )
-from model.azuregpt4o import gpt_4o_azure
+from model.litellm_client import llm_call
 import tiktoken
 
 MODEL_LIMITS = 128000
@@ -50,7 +50,7 @@ def get_gpt_res(text, images):
               ]
             }
           ]
-    return gpt_4o_azure(prompt, max_tokens=2256)
+    return llm_call(prompt, max_tokens=2256)
 
 @register_baseline("gpt4o_base")
 class GPT4oBaseBaseline(BaselineInterface):

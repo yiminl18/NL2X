@@ -21,9 +21,9 @@ class FailedPipeline(NamedTuple):
     error_type: str  # 'execution' or 'validation'
     error_message: str
 
-# Add parent directory to path to import azuregpt4o
+# Add parent directory to path to import llm_call
 sys.path.append('/Users/chiyuh/Workspace/NL2X/model')
-from azuregpt4o import gpt_4o_azure
+from litellm_client import llm_call
 from .prompt import INSTRUCTION_PROMPT, PIPELINE_GENERATION_PROMPT
 
 # Import smart truncation utility  
@@ -257,9 +257,9 @@ def llm_call_with_messages(messages: List[Dict[str, str]]) -> str:
         LLM response string
     """
     try:
-        # Call Azure GPT-4o with message list
-        response = gpt_4o_azure(
-            prompt=messages,
+        # Call LLM with message list
+        response = llm_call(
+            messages=messages,
             max_tokens=4000,
             temperature=0.3
         )

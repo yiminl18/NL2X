@@ -11,7 +11,7 @@ from .base import BaselineInterface, BaselineResult
 from . import register_baseline
 from .docetl_utils.data_utils import DocETLDataProcessor
 from .docetl_step_utils.ui import DocETLUserInterface
-from .docetl_step_utils.cache import LLMCache
+from model.litellm_client import LLMCache
 from .docetl_utils.log_utils import save_prompt, save_messages, save_validation, save_step_output, get_filename_base
 from .docetl_utils.pipeline_utils import (
     load_sample_data,

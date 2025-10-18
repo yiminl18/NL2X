@@ -3,7 +3,7 @@ import os
 from typing import Any, Dict, List
 from pathlib import Path
 
-from model.azuregpt4o import gpt_4o_azure
+from model.litellm_client import llm_call
 from .base import BenchmarkInterface, BenchmarkSample, EvaluationResult, ContentDataType
 from . import register_benchmark
 
@@ -303,7 +303,7 @@ Reply with only "CORRECT" or "INCORRECT".
                 {"role": "user", "content": prompt}
             ]
             
-            response, usage = gpt_4o_azure(messages, return_usage=True, max_tokens=10)
+            response, usage = llm_call(messages, return_usage=True, max_tokens=10)
             
             # Update cost
             input_cost = (usage.prompt_tokens / 1000) * self.input_cost_per_1k

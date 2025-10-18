@@ -2,7 +2,7 @@ import random
 from typing import Any, Dict, List, Optional
 import json
 
-from model.azuregpt4o import gpt_4o_azure
+from model.litellm_client import llm_call
 from .base import BenchmarkInterface, BenchmarkSample, EvaluationResult, BenchmarkConfig, ContentDataType
 from . import register_benchmark
 import os

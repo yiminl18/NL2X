@@ -7,7 +7,7 @@ from .utils import (
     encode_image,
     prepare_context_data
 )
-from model.azuregpt4o import gpt_4o_azure
+from model.litellm_client import llm_call
 import tiktoken
 
 # Model configuration
@@ -122,7 +122,7 @@ Examples of answer formats:
             messages = self._create_prompt(query, text_content, images)
             
             # Call GPT-4o
-            response, usage = gpt_4o_azure(messages, max_tokens=2256, return_usage=True)
+            response, usage = llm_call(messages, max_tokens=2256, return_usage=True)
             
             # Calculate cost
             input_cost = (usage.prompt_tokens / 1000) * self.input_cost_per_1k

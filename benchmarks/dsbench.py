@@ -1,7 +1,7 @@
 import random
 from typing import Any, Dict, List, Optional
 
-from model.azuregpt4o import gpt_4o_azure
+from model.litellm_client import llm_call
 from .base import BenchmarkInterface, BenchmarkSample, EvaluationResult, BenchmarkConfig, ContentDataType
 from . import register_benchmark
 import os
@@ -118,7 +118,7 @@ class DSBenchBenchmark(BenchmarkInterface):
               f"The question is {sample.query}. The true answer is \n {sample.ground_truth}. \n The predicted answer is \n {prediction['answer']}.\n "
               f"If the predicted answer is right, please output True. Otherwise output Flase. "
               f"Don't output any other text content. You only can output True or False.")
-        response = gpt_4o_azure(prompt)
+        response = llm_call(prompt)
         if "True" in response:
             accuracy = 1.0
         else:

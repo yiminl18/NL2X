@@ -2,7 +2,7 @@ import random
 from typing import Any, Dict, List, Optional
 
 from benchmarks.CRAG.local_evaluation import get_system_message, load_data_in_batches, parse_response
-from model.azuregpt4o import gpt_4o_azure
+from model.litellm_client import llm_call
 from .base import BenchmarkInterface, BenchmarkSample, ContentDataType, EvaluationResult, BenchmarkConfig
 from . import register_benchmark
 
@@ -93,7 +93,7 @@ class CRAGBenchmark(BenchmarkInterface):
                 continue
             else:
                 # need to use the OpenAI evaluation model to get the accuracy result (0 means wrong, 1 means correct)
-                response, usage = gpt_4o_azure(messages, return_usage=True)
+                response, usage = llm_call(messages, return_usage=True)
                 # Calculate cost for this API call
                 input_cost = (usage.prompt_tokens / 1000) * self.input_cost_per_1k
                 output_cost = (usage.completion_tokens / 1000) * self.output_cost_per_1k
