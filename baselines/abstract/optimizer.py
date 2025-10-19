@@ -1,8 +1,13 @@
 from typing import List, Optional, Dict, Any
 import json
+import sys
+from pathlib import Path
 from .pipeline import Pipeline
 from .db import DataSource, DatasetManager
 from model.litellm_client import llm_call
+
+sys.path.insert(0, str(Path(__file__).parent / "tools"))
+from static_comparator import compare_pipelines
 
 def _infer_field_type(value: Any, samples: List[Any] = None) -> str:
     """
@@ -30,7 +35,6 @@ def _infer_field_type(value: Any, samples: List[Any] = None) -> str:
         if len(value) == 0:
             return "List[Unknown]"
 
-        # Try to infer element type from first non-null element
         element_type = None
         for item in value:
             if item is not None:
@@ -45,12 +49,10 @@ def _infer_field_type(value: Any, samples: List[Any] = None) -> str:
         if len(value) == 0:
             return "Dict"
 
-        # Infer types for all fields in the dict
         field_types = {}
         for key, val in value.items():
             field_types[key] = _infer_field_type(val)
 
-        # Format as Dict[{field1: Type1, field2: Type2}]
         fields_str = ", ".join([f"{k}: {v}" for k, v in field_types.items()])
         return f"Dict[{{{fields_str}}}]"
     else:
@@ -82,28 +84,19 @@ def _extract_fields_with_types(data_samples: List[Dict], add_sample: bool = Fals
         """Recursively extract fields from a dictionary."""
         for key, value in d.items():
             field_path = f"{prefix}.{key}" if prefix else key
-
-            # Infer type
             field_type = _infer_field_type(value)
-
-            # Initialize field info
             field_info = {"TYPE": field_type}
 
-            # Add sample if requested
             if add_sample:
                 field_info["SAMPLE"] = value
 
-            # Store field info
             fields_info[field_path] = field_info
 
-            # Recursively process nested dicts
             if isinstance(value, dict) and value:
                 extract_from_dict(value, field_path)
             elif isinstance(value, list) and value and isinstance(value[0], dict):
-                # For lists of dicts, extract fields from first dict
                 extract_from_dict(value[0], field_path)
 
-    # Extract from first sample to get all fields
     if data_samples:
         extract_from_dict(data_samples[0])
 
@@ -126,22 +119,16 @@ def _generate_field_descriptions(
     Returns:
         Tuple of (dataset_summary, field_descriptions_dict)
     """
-    # Build field list for prompt
     fields_list = []
     for field_path, info in fields_info.items():
         field_entry = f"- {field_path}: {info['TYPE']}"
         fields_list.append(field_entry)
 
     fields_str = "\n".join(fields_list)
-
-    # Build query section
     query_section = f"Task/Query: {query}\n\n" if query else ""
-
-    # Build data samples section (limit to avoid token overflow)
-    samples_to_show = data_samples[:3]  # Show max 3 samples
+    samples_to_show = data_samples[:3]
     samples_str = json.dumps(samples_to_show, indent=2, ensure_ascii=False)
 
-    # Construct prompt
     prompt = f"""{query_section}Data Samples:
 {samples_str}
 
@@ -154,7 +141,6 @@ Please analyze the data samples and provide:
 
 For nested fields (with dots), explain both the parent context and the specific sub-field meaning."""
 
-    # Define schema for LLM response
     schema = {
         "type": "object",
         "properties": {
@@ -184,7 +170,6 @@ For nested fields (with dots), explain both the parent context and the specific 
         field_descriptions = result.get("field_descriptions", {})
         return dataset_summary, field_descriptions
     except Exception:
-        # On error, return empty descriptions
         return "Dataset summary not available", {}
 
 
@@ -220,25 +205,17 @@ def summarize_dataset(
     if not data_samples:
         return {}
 
-    # Step 1: Extract fields with types and optional samples
     fields_info = _extract_fields_with_types(data_samples, add_sample=add_sample)
-
-    # Step 2: Generate dataset summary and field descriptions using LLM
     dataset_summary, descriptions = _generate_field_descriptions(fields_info, data_samples, query)
 
-    # Step 3: Build result with DATASET_SUMMARY at the top
-    result = {
-        "DATASET_SUMMARY": dataset_summary
-    }
+    result = {"DATASET_SUMMARY": dataset_summary}
 
-    # Step 4: Add field information
     for field_path, info in fields_info.items():
         result[field_path] = {
             "TYPE": info["TYPE"],
             "FIELD_DESCRIPTION": descriptions.get(field_path, f"Field: {field_path}")
         }
 
-        # Add sample if it exists
         if "SAMPLE" in info:
             result[field_path]["SAMPLE"] = info["SAMPLE"]
 
@@ -271,7 +248,6 @@ def summarize_subtasks(
     if data_samples is None:
         data_samples = []
 
-    # Get pipeline operators information
     operators_info = []
     execution_order = pipeline.get_execution_order()
     for node_id in execution_order:
@@ -285,11 +261,7 @@ def summarize_subtasks(
             "properties": op.properties,
         })
 
-    # Construct prompt for LLM
-    # Build task description section
     task_section = f"Task Description: {query}\n\n" if query else ""
-
-    # Build operators description
     operators_desc = ""
     for i, op_info in enumerate(operators_info, 1):
         properties_str = f"\n   Properties: {json.dumps(op_info['properties'], indent=2)}" if op_info['properties'] else ""
@@ -300,15 +272,12 @@ def summarize_subtasks(
    Output Schema: {json.dumps(op_info['output'], indent=2)}{properties_str}
 """
 
-    # Build data samples section
     data_samples_section = f"\n\nData Samples ({len(data_samples)} examples):\n{json.dumps(data_samples, indent=2, ensure_ascii=False)}" if data_samples else ""
 
-    # Construct final prompt
     prompt = f"""{task_section}Pipeline Operators:{operators_desc}{data_samples_section}
 
 Based on the task description (if provided), pipeline operators, and data samples (if provided), infer the specific functionality/purpose of each operator in the pipeline. Provide a concise description for each operator that explains what it does in the context of solving the overall task."""
 
-    # Define response schema
     schema = {
         "type": "object",
         "properties": {
@@ -327,21 +296,17 @@ Based on the task description (if provided), pipeline operators, and data sample
 
     messages = [{"role": "user", "content": prompt}]
 
-    # Call LLM and parse response
     try:
         response = llm_call(messages, schema=schema, system_prompt=system_prompt)
         result = json.loads(response)
         subtasks = result.get("subtasks", [])
 
-        # Validate that we have the right number of subtasks
         if len(subtasks) != len(operators_info):
-            # If mismatch, use generic descriptions
             subtasks = [f"Process data with {op_info['type']} operator" for op_info in operators_info]
 
         return subtasks
 
     except Exception:
-        # On error, return generic descriptions
         return [f"Process data with {op_info['type']} operator" for op_info in operators_info]
 
 
@@ -368,7 +333,6 @@ def summarize_subtasks_step(
     if data_samples is None:
         data_samples = []
 
-    # Get pipeline operators information
     operators_info = []
     execution_order = pipeline.get_execution_order()
     for node_id in execution_order:
@@ -382,24 +346,18 @@ def summarize_subtasks_step(
             "properties": op.properties,
         })
 
-    # Generate subtasks incrementally, one operator at a time
     subtasks = []
-
-    # Build data samples section (shared across all prompts)
     data_samples_section = f"\n\nData Samples ({len(data_samples)} examples):\n{json.dumps(data_samples, indent=2, ensure_ascii=False)}" if data_samples else ""
 
     for i, op_info in enumerate(operators_info):
-        # Build task description section
         task_section = f"Task Description: {query}\n\n" if query else ""
 
-        # Build previous operators' subtasks section
         previous_subtasks_section = ""
         if i > 0:
             previous_subtasks_section = "\n\nPrevious Operators' Subtask:\n"
             for j, prev_subtask in enumerate(subtasks, 1):
                 previous_subtasks_section += f"Op. {j}: {prev_subtask}\n"
 
-        # Build current operator description
         properties_str = f"\n   Properties: {json.dumps(op_info['properties'], indent=2)}" if op_info['properties'] else ""
         current_operator_desc = f"""
 Current Operator (Op. {i + 1}):
@@ -409,12 +367,10 @@ Current Operator (Op. {i + 1}):
    Output Schema: {json.dumps(op_info['output'], indent=2)}{properties_str}
 """
 
-        # Construct prompt for current operator
         prompt = f"""{task_section}{previous_subtasks_section}{current_operator_desc}{data_samples_section}
 
 Based on the task description (if provided), previous operators' subtasks (if any), current operator details, and data samples (if provided), infer the specific functionality/purpose of the current operator. Provide a concise description that explains what this operator does in the context of solving the overall task."""
 
-        # Define response schema for single subtask
         schema = {
             "type": "object",
             "properties": {
@@ -430,14 +386,12 @@ Based on the task description (if provided), previous operators' subtasks (if an
 
         messages = [{"role": "user", "content": prompt}]
 
-        # Call LLM and parse response
         try:
             response = llm_call(messages, schema=schema, system_prompt=system_prompt)
             result = json.loads(response)
             subtask = result.get("subtask", f"Process data with {op_info['type']} operator")
             subtasks.append(subtask)
         except Exception:
-            # On error, use generic description
             subtasks.append(f"Process data with {op_info['type']} operator")
 
     return subtasks
@@ -460,23 +414,19 @@ class PipelineOptimizer:
         self.query = query
         self.num_samples = num_samples
 
-        # If data_source not provided, try to load from pipeline
         if data_source is None and pipeline.input_path and data_manager:
             try:
                 data_source = data_manager.load(pipeline.input_path)
             except Exception:
-                # For optimizer, data is optional, so don't raise error
                 pass
 
         self.data_source = data_source
 
-        # Prepare data samples for subtask inference
         data_samples = []
         if self.data_source and self.data_source.data:
             sample_size = min(self.num_samples, len(self.data_source.data))
             data_samples = self.data_source.data[:sample_size]
 
-        # Infer operator subtasks if not already set
         if self.pipeline.subtasks is None:
             self.pipeline.subtasks = summarize_subtasks(
                 self.pipeline,
@@ -493,3 +443,336 @@ class PipelineOptimizer:
         """Optimize pipeline and return optimized variants."""
         # TODO: Implement pipeline optimization logic
         return [self.pipeline]
+
+
+# ============================================================================
+# Prompt Optimization Function
+# ============================================================================
+
+def optimize_prompt(
+    operator,
+    dataset_summary: Dict[str, Any],
+    operator_subtask: str
+) -> Optional:
+    """
+    Optimize the prompt of an operator for better task completion.
+    Args:
+        operator: Operator object with properties containing 'prompt' field
+        dataset_summary: Dataset summary in the format returned by summarize_dataset,
+            containing DATASET_SUMMARY and field information with TYPE and FIELD_DESCRIPTION
+        operator_subtask: Description of the specific functionality this operator needs to implement
+    Returns:
+        Optimized Operator object with updated prompt, or None if optimization fails
+    """
+    from .ops.base import Operator
+
+    if 'prompt' not in operator.properties:
+        print(f"Error: Operator '{operator.name}' does not have a 'prompt' field in properties")
+        return None
+
+    original_prompt = operator.properties['prompt']
+
+    dataset_info_lines = []
+    dataset_info_lines.append(f"Dataset Summary: {dataset_summary.get('DATASET_SUMMARY', 'N/A')}")
+    dataset_info_lines.append("\nField Descriptions:")
+
+    for field_name, field_info in dataset_summary.items():
+        if field_name == 'DATASET_SUMMARY':
+            continue
+        if isinstance(field_info, dict):
+            field_type = field_info.get('TYPE', 'Unknown')
+            field_desc = field_info.get('FIELD_DESCRIPTION', 'No description')
+            dataset_info_lines.append(f"  - {field_name} ({field_type}): {field_desc}")
+
+    dataset_info = "\n".join(dataset_info_lines)
+
+    meta_prompt = f"""You are an expert prompt engineer tasked with optimizing a data processing prompt for a specific subtask.
+
+Your goal is to create a TASK-SPECIFIC prompt that is tailored to the specific data and task requirements, rather than a generic prompt. The requirements and constraints should be directly related to the actual task and data characteristics.
+
+## Subtask Description
+{operator_subtask}
+
+## Original Operator Information
+Operator Type: {operator.type}
+Operator Name: {operator.name}
+
+Original Prompt:
+{original_prompt}
+
+Input Schema:
+{json.dumps(operator.input, indent=2)}
+
+Output Schema:
+{json.dumps(operator.output, indent=2)}
+
+## Dataset Information
+{dataset_info}
+
+## Task Instructions
+Generate an optimized prompt that:
+1. Is specifically tailored to the subtask: "{operator_subtask}"
+2. Leverages the dataset characteristics and field descriptions
+3. Provides clear, task-specific instructions (not generic ones)
+4. Includes relevant constraints based on the data and task requirements
+
+## Critical Constraints
+1. **Variable Consistency**: You MUST use ONLY the variables that appear in the original prompt. Do NOT introduce any new variables that don't exist in the input schema.
+2. **Schema Consistency**: The output must match the output schema exactly. Do not add or remove output fields.
+3. **Jinja2 Format**: Maintain proper Jinja2 template syntax as demonstrated in the original prompt. Use the same variable reference style (e.g., {{{{ input.field_name }}}}).
+4. **Task-Specific**: Make requirements and instructions specific to THIS task and THIS data, not generic best practices.
+
+The original prompt already demonstrates the correct Jinja2 format and variable usage - maintain this style.
+
+Provide your optimized prompt as a single string."""
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "optimized_prompt": {
+                "type": "string",
+                "description": "The optimized task-specific prompt in Jinja2 format"
+            }
+        },
+        "required": ["optimized_prompt"]
+    }
+
+    system_prompt = "You are an expert prompt engineer specializing in creating task-specific, data-aware prompts for data processing operations. You excel at tailoring prompts to specific tasks and datasets while maintaining technical constraints."
+
+    try:
+        messages = [{"role": "user", "content": meta_prompt}]
+        response = llm_call(
+            messages=messages,
+            schema=schema,
+            system_prompt=system_prompt,
+            temperature=0.3
+        )
+
+        result = json.loads(response)
+        optimized_prompt = result.get("optimized_prompt")
+
+        if not optimized_prompt:
+            print("Error: LLM did not return an optimized prompt")
+            return None
+
+    except Exception as e:
+        print(f"Error calling LLM for prompt optimization: {e}")
+        return None
+
+    new_operator = Operator()
+    new_operator.name = operator.name
+    new_operator.type = operator.type
+    new_operator.source = operator.source.copy() if isinstance(operator.source, dict) else operator.source
+    new_operator.input = operator.input.copy() if isinstance(operator.input, dict) else operator.input
+    new_operator.output = operator.output.copy() if isinstance(operator.output, dict) else operator.output
+    new_operator.properties = operator.properties.copy() if isinstance(operator.properties, dict) else {}
+    new_operator.properties['prompt'] = optimized_prompt
+
+    def operator_to_dict(op):
+        """Convert Operator object to dictionary format."""
+        return {
+            "name": op.name,
+            "type": op.type,
+            "source": op.source,
+            "properties": op.properties,
+            "input": op.input,
+            "output": op.output
+        }
+
+    original_op_dict = operator_to_dict(operator)
+    new_op_dict = operator_to_dict(new_operator)
+
+    try:
+        validation_result = compare_pipelines(
+            operators1=[original_op_dict],
+            operators2=[new_op_dict],
+            verbose=False
+        )
+
+        if not validation_result['is_compatible']:
+            print(f"Error: Optimized prompt failed static validation for operator '{operator.name}'")
+            print(f"Validation errors:")
+            for error in validation_result['errors']:
+                print(f"  - {error}")
+            return None
+
+        print(f"Successfully optimized prompt for operator '{operator.name}'")
+        return new_operator
+
+    except Exception as e:
+        print(f"Error during static validation: {e}")
+        return None
+
+
+# ============================================================================
+# Filter Pushdown Optimization Functions
+# ============================================================================
+
+def should_pushdown_filter(pipeline: Pipeline) -> bool:
+    """
+    Check if any filter operator can be pushed down to an earlier position.
+
+    Args:
+        pipeline: Pipeline object to analyze
+
+    Returns:
+        True if at least one filter can be pushed earlier, False otherwise
+    """
+    try:
+        execution_order = pipeline.get_execution_order()
+
+        if len(execution_order) < 2:
+            return False
+
+        available_fields = set()
+        if pipeline.dataset_schema and 'fields' in pipeline.dataset_schema:
+            available_fields = set(pipeline.dataset_schema['fields'].keys())
+
+        fields_at_position = [available_fields.copy()]
+
+        for node_id in execution_order:
+            operator = pipeline.nodes[node_id].operator
+
+            if hasattr(operator, 'output') and isinstance(operator.output, dict):
+                for field_name in operator.output.keys():
+                    if field_name != 'type':
+                        available_fields.add(field_name)
+
+            fields_at_position.append(available_fields.copy())
+
+        for current_pos, node_id in enumerate(execution_order):
+            operator = pipeline.nodes[node_id].operator
+
+            if operator.type == 'Filter':
+                required_fields = set()
+                if hasattr(operator, 'input') and isinstance(operator.input, dict):
+                    input_fields = operator.input.get('fields', {})
+                    if isinstance(input_fields, dict):
+                        required_fields = set(input_fields.keys())
+
+                if not required_fields:
+                    continue
+
+                earliest_position = None
+                for pos in range(current_pos + 1):
+                    if required_fields.issubset(fields_at_position[pos]):
+                        earliest_position = pos
+                        break
+
+                if earliest_position is not None and earliest_position < current_pos:
+                    return True
+
+        return False
+
+    except Exception as e:
+        print(f"Error in should_pushdown_filter: {e}")
+        return False
+
+
+def _single_pushdown(pipeline: Pipeline) -> Pipeline:
+    """
+    Perform a single filter pushdown optimization.
+
+    Args:
+        pipeline: Pipeline object to optimize
+
+    Returns:
+        New Pipeline with one filter moved to an earlier position
+    """
+    import copy
+
+    execution_order = pipeline.get_execution_order()
+    available_fields = set()
+    if pipeline.dataset_schema and 'fields' in pipeline.dataset_schema:
+        available_fields = set(pipeline.dataset_schema['fields'].keys())
+
+    fields_at_position = [available_fields.copy()]
+
+    for node_id in execution_order:
+        operator = pipeline.nodes[node_id].operator
+
+        if hasattr(operator, 'output') and isinstance(operator.output, dict):
+            for field_name in operator.output.keys():
+                if field_name != 'type':
+                    available_fields.add(field_name)
+
+        fields_at_position.append(available_fields.copy())
+
+    filter_to_move = None
+    current_position = None
+    target_position = None
+
+    for current_pos, node_id in enumerate(execution_order):
+        operator = pipeline.nodes[node_id].operator
+
+        if operator.type == 'Filter':
+            required_fields = set()
+            if hasattr(operator, 'input') and isinstance(operator.input, dict):
+                input_fields = operator.input.get('fields', {})
+                if isinstance(input_fields, dict):
+                    required_fields = set(input_fields.keys())
+
+            if not required_fields:
+                continue
+
+            earliest_pos = None
+            for pos in range(current_pos + 1):
+                if required_fields.issubset(fields_at_position[pos]):
+                    earliest_pos = pos
+                    break
+
+            if earliest_pos is not None and earliest_pos < current_pos:
+                filter_to_move = operator
+                current_position = current_pos
+                target_position = earliest_pos
+                break
+
+    new_pipeline = Pipeline(
+        name=pipeline.name,
+        input_path=pipeline.input_path,
+        output_path=pipeline.output_path,
+        properties=copy.deepcopy(pipeline.properties) if pipeline.properties else None,
+        dataset_schema=copy.deepcopy(pipeline.dataset_schema) if pipeline.dataset_schema else None,
+        subtasks=copy.deepcopy(pipeline.subtasks) if pipeline.subtasks else None
+    )
+
+    operators = [pipeline.nodes[node_id].operator for node_id in execution_order]
+    filter_op = operators.pop(current_position)
+    operators.insert(target_position, filter_op)
+
+    for i, op in enumerate(operators):
+        node_id = f"op_{i}_{op.name}" if op.name else f"op_{i}"
+        new_pipeline.add_operator(op, node_id)
+
+    node_ids = list(new_pipeline.nodes.keys())
+    for i in range(len(node_ids) - 1):
+        new_pipeline.add_edge(node_ids[i], node_ids[i + 1])
+
+    print(f"Filter '{filter_to_move.name}' pushed down from position {current_position} to position {target_position}")
+
+    return new_pipeline
+
+
+def pushdown_filter(pipeline: Pipeline) -> Optional[Pipeline]:
+    """
+    Recursively push down all filter operators to their earliest possible positions.
+
+    Args:
+        pipeline: Pipeline object to optimize
+
+    Returns:
+        Optimized Pipeline if any filters were moved, None otherwise
+    """
+    if not should_pushdown_filter(pipeline):
+        return None
+
+    current_pipeline = pipeline
+    optimization_count = 0
+
+    while should_pushdown_filter(current_pipeline):
+        current_pipeline = _single_pushdown(current_pipeline)
+        optimization_count += 1
+
+    print(f"Filter pushdown completed: {optimization_count} filter(s) optimized")
+
+    return current_pipeline
