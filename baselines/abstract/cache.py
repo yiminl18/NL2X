@@ -22,8 +22,6 @@ if TYPE_CHECKING:
 class OperatorCacheManager:
     """Manager for caching abstract operator execution results."""
 
-    CACHE_VERSION = "1.0"
-
     def __init__(self, cache_dir: Optional[Union[str, Path]] = None, enabled: bool = True):
         """Initialize cache manager with optional cache directory."""
         if cache_dir is None:
@@ -60,7 +58,13 @@ class OperatorCacheManager:
         return hash_obj.hexdigest()
 
     def _compute_input_hash(self, data_source: 'DataSource') -> str:
-        """Compute SHA-512 hash of input data from DataSource."""
+        """
+        Compute SHA-512 hash of input data from DataSource using data fingerprint.
+
+        For large datasets, hashing the entire content is expensive. Instead, we use
+        a fingerprint: total count + sample of first 100 records. This provides
+        good uniqueness while being much faster for large datasets.
+        """
         # Use data from DataSource directly if available
         if data_source.data is not None:
             data_to_hash = data_source.data
@@ -72,17 +76,27 @@ class OperatorCacheManager:
                     try:
                         data_to_hash = json.load(f)
                     except json.JSONDecodeError:
-                        # If not JSON, hash the raw content
+                        # If not JSON, hash the raw content (small text files)
                         f.seek(0)
                         data_to_hash = f.read()
             else:
                 # File doesn't exist, hash the path itself
                 data_to_hash = data_source.path
 
-        # Convert to normalized JSON string
-        if isinstance(data_to_hash, str):
+        # Create fingerprint for efficient hashing
+        if isinstance(data_to_hash, list):
+            # For list data: use count + first 100 items as fingerprint
+            fingerprint = {
+                'type': 'list',
+                'count': len(data_to_hash),
+                'sample': data_to_hash[:100] if len(data_to_hash) > 100 else data_to_hash
+            }
+            input_json = json.dumps(fingerprint, sort_keys=True, ensure_ascii=False)
+        elif isinstance(data_to_hash, str):
+            # For string data: use as-is (typically small)
             input_json = data_to_hash
         else:
+            # For dict or other data: serialize directly (typically small)
             input_json = json.dumps(data_to_hash, sort_keys=True, ensure_ascii=False)
 
         # Compute SHA-512 hash
@@ -134,12 +148,6 @@ class OperatorCacheManager:
             with open(cache_path, 'r', encoding='utf-8') as f:
                 cached_entry = json.load(f)
 
-            # Verify cache version
-            if cached_entry.get('version') != self.CACHE_VERSION:
-                # Cache version mismatch, invalidate
-                self.stats['misses'] += 1
-                return None
-
             # Verify full hashes match (prevent collisions on truncated filenames)
             current_operator_hash = self._compute_operator_hash(operator)
             current_input_hash = self._compute_input_hash(data_source)
@@ -183,7 +191,6 @@ class OperatorCacheManager:
 
             # Prepare cache entry
             cache_entry = {
-                'version': self.CACHE_VERSION,
                 'operator_hash': operator_hash,
                 'input_hash': input_hash,
                 'operator_config': {
@@ -228,18 +235,23 @@ class OperatorCacheManager:
         return self.set_cached_result(operator, data_source, output_data, custom_metadata)
 
     def _serialize_input_data(self, data_source: 'DataSource') -> Any:
-        """Serialize input data from DataSource for storage in cache."""
+        """
+        Serialize input data from DataSource for storage in cache.
+
+        Uses fingerprint approach: stores sample + metadata instead of full data
+        to reduce cache file size for large datasets.
+        """
         # Use data from DataSource if available
         if data_source.data is not None:
             data = data_source.data
-            # Store first few items as sample for list data
+            # Store sample for list data (consistent with hash fingerprint)
             if isinstance(data, list):
                 return {
                     '_type': 'data_source',
                     'path': data_source.path,
                     'source_id': data_source.id,
                     'data_type': data_source.data_type,
-                    'sample': data[:5] if len(data) > 5 else data,
+                    'sample': data[:100] if len(data) > 100 else data,
                     'total_items': len(data)
                 }
             else:
@@ -257,14 +269,14 @@ class OperatorCacheManager:
                 try:
                     with open(file_path, 'r') as f:
                         data = json.load(f)
-                    # Store first few items as sample
+                    # Store sample (consistent with hash fingerprint)
                     if isinstance(data, list):
                         return {
                             '_type': 'data_source',
                             'path': data_source.path,
                             'source_id': data_source.id,
                             'data_type': data_source.data_type,
-                            'sample': data[:5] if len(data) > 5 else data,
+                            'sample': data[:100] if len(data) > 100 else data,
                             'total_items': len(data)
                         }
                     else:
@@ -369,7 +381,6 @@ class OperatorCacheManager:
                 cached_entry = json.load(f)
 
             return {
-                'version': cached_entry.get('version'),
                 'operator_hash': cached_entry.get('operator_hash'),
                 'input_hash': cached_entry.get('input_hash'),
                 'cached_at': cached_entry.get('metadata', {}).get('cached_at'),

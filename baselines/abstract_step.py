@@ -42,19 +42,14 @@ from .abstract.support import (
     BaseSystem,
     get_supported_operators,
     validate_pipeline_compatibility,
-    filter_unsupported_operators,
 )
-
-# Use existing converter from abstract layer
+from .abstract import ops
 from .abstract.ops.base import Operator
-from .abstract.ops import Map, Filter, Reduce, Resolve, Extract
 from .abstract.pipeline import Pipeline
 from .abstract.convert.docetl import (
     abstract_to_docetl,
     operator_to_dict,
 )
-
-# Import executor infrastructure
 from .abstract.executor import DocETLExecutor
 
 
@@ -62,12 +57,6 @@ from .abstract.executor import DocETLExecutor
 class AbstractStepBaseline(BaselineInterface):
     """
     Abstract Layer Step-by-Step Pipeline Generation
-
-    Steps:
-    1. Select abstract operators needed
-    2. Generate details for each operator (abstract format)
-    3. Build abstract Pipeline object
-    5. Execute and validate
     """
 
     def _log(self, message: str, level: str = 'info', force: bool = False):
@@ -93,7 +82,6 @@ class AbstractStepBaseline(BaselineInterface):
         # Set base system (currently only DocETL supported)
         self.base_system = BaseSystem.DOCETL
 
-        # Configure logging
         if not self.config.verbose:
             logging.getLogger("LiteLLM").setLevel(logging.ERROR)
             logging.getLogger("httpcore").setLevel(logging.ERROR)
@@ -104,7 +92,6 @@ class AbstractStepBaseline(BaselineInterface):
             logging.getLogger("httpcore").setLevel(logging.INFO)
             logging.getLogger("openai").setLevel(logging.INFO)
 
-        # Setup output directories
         base_dir = os.getcwd()
         self.output_dirs = {
             'pipeline_output_dir': os.path.join(base_dir, "generated_pipelines", "abstract_step"),
@@ -116,14 +103,12 @@ class AbstractStepBaseline(BaselineInterface):
             setattr(self, attr_name, dir_path)
             os.makedirs(dir_path, exist_ok=True)
 
-        # Initialize data processor
         self.data_processor = DocETLDataProcessor(
             converted_data_dir=self.converted_data_dir,
             verbose=self.config.verbose,
             logger=self.logger
         )
 
-        # Initialize user interface for confirmations
         self.ui = AbstractStepUserInterface(self.config)
 
         # Initialize file manager for centralized file operations
@@ -138,7 +123,6 @@ class AbstractStepBaseline(BaselineInterface):
             verbose=self.config.verbose
         )
 
-        # Initialize executor based on base system
         self.executor = self._create_executor()
 
         self._log(f"Initialized Abstract Step baseline with config: {self.config}")
@@ -164,6 +148,170 @@ class AbstractStepBaseline(BaselineInterface):
             )
         else:
             raise ValueError(f"Unsupported base system: {self.base_system.value}")
+
+    def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> BaselineResult:
+        """Process a single query with optional context using abstract layer pipeline generation."""
+        from .base import BaselineResult as InterfaceBaselineResult
+
+        start_time = time.time()
+        self.total_queries += 1
+
+        try:
+            # Prepare dataset file from context (assume single json dataset)
+            dataset_paths = self.data_processor.prepare_dataset_files(context)
+
+            if not dataset_paths:
+                raise ValueError("No dataset path available")
+
+            dataset_path = dataset_paths[0]
+
+            dataset_samples = load_sample_data([dataset_path])
+
+            success = False
+            result_output = None
+            for attempt in range(self.max_attempts):
+                try:
+                    self._log(f"Attempt {attempt + 1}/{self.max_attempts} for query: {query[:100]}...")
+
+                    abstract_pipeline = self._build_abstract_pipeline(query, dataset_samples, attempt)
+
+                    success, result_output, _ = self._convert_and_execute(
+                        abstract_pipeline, query, dataset_path, attempt
+                    )
+
+                    if success and result_output:
+                        break
+
+                except Exception as e:
+                    self._log(f"Attempt {attempt + 1} failed: {e}", level='error', force=True)
+                    self._log(traceback.format_exc(), level='error', force=True)
+
+            execution_time = time.time() - start_time
+            self.total_time += execution_time
+
+            if success:
+                return InterfaceBaselineResult(
+                    query=query,
+                    response={"answer": result_output},
+                    metadata={},
+                    execution_time=execution_time
+                )
+            else:
+                raise ValueError(f"Pipeline generation failed after {self.max_attempts} attempts")
+
+        except Exception as e:
+            self._log(f"Error processing query with Abstract Step: {e}", level='error', force=True)
+            self._log(f"Full traceback:\n{traceback.format_exc()}", level='error', force=True)
+
+            execution_time = time.time() - start_time
+            self.total_time += execution_time
+
+            return InterfaceBaselineResult(
+                query=query,
+                response={"answer": "", "error": str(e)},
+                metadata={},
+                execution_time=execution_time,
+                error=str(e)
+            )
+
+    def batch_process(self, queries: List[str], contexts: Optional[List[Dict[str, Any]]] = None) -> List[BaselineResult]:
+        """Process multiple queries in batch."""
+        if contexts is None:
+            contexts = [None] * len(queries)
+
+        results = []
+        for query, context in zip(queries, contexts):
+            results.append(self.process(query, context))
+
+        return results
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get baseline metrics."""
+        return {
+            "total_queries": self.total_queries,
+            "total_time": self.total_time,
+            "average_time": self.total_time / max(1, self.total_queries),
+        }
+
+    def _build_abstract_pipeline(
+        self,
+        query: str,
+        dataset_samples: Dict[str, Any],
+        attempt: int = 0
+    ) -> Pipeline:
+        """
+        Build complete abstract pipeline.
+
+        Args:
+            query: User query
+            dataset_samples: Sample data
+            attempt: Attempt number
+
+        Returns:
+            Abstract Pipeline object
+        """
+        if self.config.verbose:
+            self.logger.info("Step 1: Selecting operators...")
+
+        operators = self._select_operators(query, dataset_samples, attempt)
+
+        if not operators:
+            raise ValueError("No operators selected")
+
+        if self.config.verbose:
+            self.logger.info(f"Step 2: Generating details for {len(operators)} operators...")
+
+        # Initialize type system from dataset (assume single json dataset)
+        samples_list = dataset_samples[:10] if dataset_samples else []
+        dataset_schema = infer_schema_from_samples(samples_list if samples_list else [{}])
+        type_system = AbstractTypeSystem(dataset_schema)
+
+        filled_operators = []
+        for i, op in enumerate(operators):
+            filled_op = self._generate_operator_details(
+                operator=op,
+                query=query,
+                dataset_samples=dataset_samples,
+                previous_operators=filled_operators,
+                type_system=type_system,
+                operator_index=i,
+                attempt=attempt,
+                total_operators=len(operators)
+            )
+            filled_operators.append(filled_op)
+
+        # Validate compatibility with base system
+        operator_types = [op.type for op in filled_operators]
+        is_compatible, unsupported = validate_pipeline_compatibility(operator_types, self.base_system)
+        if not is_compatible:
+            raise ValueError(
+                f"Pipeline contains unsupported operators for {self.base_system.value}: {unsupported}"
+            )
+
+        # Display pipeline summary
+        self.ui.display_pipeline_summary(filled_operators, query)
+
+        # Build Pipeline object
+        pipeline_name = f"abstract_pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        dataset_schema = {'fields': dataset_schema}
+
+        abstract_pipeline = Pipeline.from_operators(
+            operators=filled_operators,
+            name=pipeline_name,
+            input_path=None,  # Set later when executing
+            output_path=None,  # Set later when executing
+            properties={
+                "query": query,
+                "base_system": self.base_system.value,
+                "default_model": "gpt-4o-mini",
+            },
+            dataset_schema=dataset_schema
+        )
+
+        if self.config.verbose:
+            self.logger.info(f"Successfully built abstract pipeline with {len(filled_operators)} operators")
+
+        return abstract_pipeline
 
     def _select_operators(
         self,
@@ -235,8 +383,6 @@ class AbstractStepBaseline(BaselineInterface):
             result = json.loads(response)
             operators = result.get("operators", [])
 
-            operators = filter_unsupported_operators(operators, self.base_system)
-
             if collect_messages:
                 messages.append({"role": "assistant", "content": response})
 
@@ -256,14 +402,117 @@ class AbstractStepBaseline(BaselineInterface):
             return operators, messages
         return operators
 
+    def _create_operator_from_response(
+        self,
+        llm_response: Dict[str, Any],
+        operator_index: int,
+        op_type: str
+    ) -> Operator:
+        """
+        Create an Operator object from LLM response.
+
+        Args:
+            llm_response: Parsed JSON response from LLM
+            operator_index: Index of this operator in the pipeline
+            op_type: Type of the operator (e.g., 'Map', 'Filter')
+
+        Returns:
+            Operator object with populated fields
+        """
+        abstract_operator = Operator()
+        abstract_operator.name = f"op_{operator_index}_{op_type.lower()}"
+        abstract_operator.type = op_type
+        abstract_operator.source = {
+            "system": "abstract",
+            "name": abstract_operator.name
+        }
+
+        abstract_operator.input = llm_response.get('input', {})
+        abstract_operator.output = llm_response.get('output', {})
+
+        # Store other properties
+        abstract_operator.properties = {}
+        for key, value in llm_response.items():
+            if key not in ['input', 'output']:
+                abstract_operator.properties[key] = value
+
+        return abstract_operator
+
+    def _validate_operator_schemas(self, operator: Operator, operator_index: int) -> None:
+        """
+        Validate and fix operator input/output schemas in-place.
+
+        Args:
+            operator: Operator object to validate
+            operator_index: Index of this operator (for logging)
+        """
+        # Validate and fix input schema types
+        if 'fields' in operator.input and isinstance(operator.input['fields'], dict):
+            operator.input['fields'] = self._validate_and_fix_types(
+                operator.input['fields'],
+                f"operator_{operator_index}_input"
+            )
+
+        # Validate and fix output schema types
+        if isinstance(operator.output, dict):
+            operator.output = self._validate_and_fix_types(
+                operator.output,
+                f"operator_{operator_index}_output"
+            )
+
+        # Validate and fix prompt if it exists
+        if 'prompt' in operator.properties:
+            input_field_names = set(operator.input.get('fields', {}).keys())
+            fixed_prompt, was_modified = self._validate_and_fix_prompt(
+                operator.properties['prompt'],
+                input_field_names,
+                operator.name
+            )
+            if was_modified:
+                operator.properties['prompt'] = fixed_prompt
+
+        # Remove duplicate input fields from output schema
+        if isinstance(operator.output, dict) and 'fields' in operator.input:
+            input_fields = operator.input['fields']
+            output_fields_to_remove = []
+
+            for field_name in list(operator.output.keys()):
+                if field_name == 'type':  # Skip special keys
+                    continue
+
+                # Check if this field exists in input with same type
+                if field_name in input_fields:
+                    input_type = input_fields[field_name]
+                    output_type = operator.output[field_name]
+
+                    # If types match, this is a duplicate (input fields are preserved automatically)
+                    if input_type == output_type:
+                        output_fields_to_remove.append(field_name)
+                        if self.config.verbose:
+                            self.logger.info(
+                                f"{operator.name}: Removed duplicate field '{field_name}' "
+                                f"from output schema (already in input with same type '{input_type}')"
+                            )
+
+            # Remove duplicate fields
+            for field_name in output_fields_to_remove:
+                del operator.output[field_name]
+
     def _get_abstract_operator_schema(self, op_type: str) -> Dict[str, Any]:
-        # Map operator types to their corresponding classes
         operator_schema_map = {
-            'Map': Map,
-            'Filter': Filter,
-            'Reduce': Reduce,
-            'Resolve': Resolve,
-            'Extract': Extract,
+            'Map': ops.Map,
+            'Filter': ops.Filter,
+            'Reduce': ops.Reduce,
+            'Resolve': ops.Resolve,
+            'Extract': ops.Extract,
+            'Join': ops.Join,
+            'Rank': ops.Rank,
+            'TopK': ops.TopK,
+            'Cluster': ops.Cluster,
+            'Split': ops.Split,
+            'Gather': ops.Gather,
+            'Unnest': ops.Unnest,
+            'Sample': ops.Sample,
         }
 
         # Get the operator class and call its get_json_schema() method
@@ -348,72 +597,11 @@ class AbstractStepBaseline(BaselineInterface):
 
             llm_response = json.loads(response)
 
-            abstract_operator = Operator()
-            abstract_operator.name = f"op_{operator_index}_{op_type.lower()}"
-            abstract_operator.type = op_type
-            abstract_operator.source = {
-                "system": "llm_generated",
-                "name": abstract_operator.name
-            }
+            # Create operator from LLM response
+            abstract_operator = self._create_operator_from_response(llm_response, operator_index, op_type)
 
-            abstract_operator.input = llm_response.get('input', {})
-            abstract_operator.output = llm_response.get('output', {})
-
-            # Validate and fix output schema types
-            if 'fields' in abstract_operator.input and isinstance(abstract_operator.input['fields'], dict):
-                abstract_operator.input['fields'] = self._validate_and_fix_types(
-                    abstract_operator.input['fields'],
-                    f"operator_{operator_index}_input"
-                )
-
-            if isinstance(abstract_operator.output, dict):
-                abstract_operator.output = self._validate_and_fix_types(
-                    abstract_operator.output,
-                    f"operator_{operator_index}_output"
-                )
-
-            abstract_operator.properties = {}
-            for key, value in llm_response.items():
-                if key not in ['input', 'output']:
-                    abstract_operator.properties[key] = value
-
-            # Validate and fix prompt if it exists
-            if 'prompt' in abstract_operator.properties:
-                input_field_names = set(abstract_operator.input.get('fields', {}).keys())
-                fixed_prompt, was_modified = self._validate_and_fix_prompt(
-                    abstract_operator.properties['prompt'],
-                    input_field_names,
-                    abstract_operator.name
-                )
-                if was_modified:
-                    abstract_operator.properties['prompt'] = fixed_prompt
-
-            # Remove duplicate input fields from output schema
-            if isinstance(abstract_operator.output, dict) and 'fields' in abstract_operator.input:
-                input_fields = abstract_operator.input['fields']
-                output_fields_to_remove = []
-
-                for field_name in list(abstract_operator.output.keys()):
-                    if field_name == 'type':  # Skip special keys
-                        continue
-
-                    # Check if this field exists in input with same type
-                    if field_name in input_fields:
-                        input_type = input_fields[field_name]
-                        output_type = abstract_operator.output[field_name]
-
-                        # If types match, this is a duplicate (input fields are preserved automatically)
-                        if input_type == output_type:
-                            output_fields_to_remove.append(field_name)
-                            if self.config.verbose:
-                                self.logger.info(
-                                    f"{abstract_operator.name}: Removed duplicate field '{field_name}' "
-                                    f"from output schema (already in input with same type '{input_type}')"
-                                )
-
-                # Remove duplicate fields
-                for field_name in output_fields_to_remove:
-                    del abstract_operator.output[field_name]
+            # Validate and fix schemas
+            self._validate_operator_schemas(abstract_operator, operator_index)
 
             # Collect response for debugging
             if collect_messages:
@@ -449,34 +637,11 @@ class AbstractStepBaseline(BaselineInterface):
 
             llm_response = json.loads(response)
 
-            abstract_operator = Operator()
-            abstract_operator.name = f"op_{operator_index}_{op_type.lower()}"
-            abstract_operator.type = op_type
-            abstract_operator.source = {
-                "system": self.base_system.value,
-                "name": abstract_operator.name
-            }
+            # Create operator from regenerated LLM response
+            abstract_operator = self._create_operator_from_response(llm_response, operator_index, op_type)
 
-            abstract_operator.input = llm_response.get('input', {})
-            abstract_operator.output = llm_response.get('output', {})
-
-            # Validate and fix types for regenerated operator
-            if 'fields' in abstract_operator.input and isinstance(abstract_operator.input['fields'], dict):
-                abstract_operator.input['fields'] = self._validate_and_fix_types(
-                    abstract_operator.input['fields'],
-                    f"operator_{operator_index}_input_regenerated"
-                )
-
-            if isinstance(abstract_operator.output, dict):
-                abstract_operator.output = self._validate_and_fix_types(
-                    abstract_operator.output,
-                    f"operator_{operator_index}_output_regenerated"
-                )
-
-            abstract_operator.properties = {}
-            for key, value in llm_response.items():
-                if key not in ['input', 'output']:
-                    abstract_operator.properties[key] = value
+            # Validate and fix schemas
+            self._validate_operator_schemas(abstract_operator, operator_index)
 
             # Update type system
             self._apply_operator_to_type_system(type_system, abstract_operator)
@@ -641,86 +806,6 @@ class AbstractStepBaseline(BaselineInterface):
             # Generic operator
             type_system.apply_generic_operator(output_schema)
 
-    def _build_abstract_pipeline(
-        self,
-        query: str,
-        dataset_samples: Dict[str, Any],
-        attempt: int = 0
-    ) -> Pipeline:
-        """
-        Build complete abstract pipeline.
-
-        Args:
-            query: User query
-            dataset_samples: Sample data
-            attempt: Attempt number
-
-        Returns:
-            Abstract Pipeline object
-        """
-        if self.config.verbose:
-            self.logger.info("Step 1: Selecting operators...")
-
-        operators = self._select_operators(query, dataset_samples, attempt)
-
-        if not operators:
-            raise ValueError("No operators selected")
-
-        if self.config.verbose:
-            self.logger.info(f"Step 2: Generating details for {len(operators)} operators...")
-
-        # Initialize type system from dataset (assume single json dataset)
-        samples_list = dataset_samples[:10] if dataset_samples else []
-        dataset_schema = infer_schema_from_samples(samples_list if samples_list else [{}])
-        type_system = AbstractTypeSystem(dataset_schema)
-
-        filled_operators = []
-        for i, op in enumerate(operators):
-            filled_op = self._generate_operator_details(
-                operator=op,
-                query=query,
-                dataset_samples=dataset_samples,
-                previous_operators=filled_operators,
-                type_system=type_system,
-                operator_index=i,
-                attempt=attempt,
-                total_operators=len(operators)
-            )
-            filled_operators.append(filled_op)
-
-        # Validate compatibility with base system
-        operator_types = [op.type for op in filled_operators]
-        is_compatible, unsupported = validate_pipeline_compatibility(operator_types, self.base_system)
-        if not is_compatible:
-            raise ValueError(
-                f"Pipeline contains unsupported operators for {self.base_system.value}: {unsupported}"
-            )
-
-        # Display pipeline summary
-        self.ui.display_pipeline_summary(filled_operators, query)
-
-        # Build Pipeline object
-        pipeline_name = f"abstract_pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        dataset_schema = {'fields': dataset_schema}
-
-        abstract_pipeline = Pipeline.from_operators(
-            operators=filled_operators,
-            name=pipeline_name,
-            input_path=None,  # Set later when executing
-            output_path=None,  # Set later when executing
-            properties={
-                "query": query,
-                "base_system": self.base_system.value,
-                "default_model": "gpt-4o-mini",
-            },
-            dataset_schema=dataset_schema
-        )
-
-        if self.config.verbose:
-            self.logger.info(f"Successfully built abstract pipeline with {len(filled_operators)} operators")
-
-        return abstract_pipeline
-
     def _convert_and_execute(
         self,
         abstract_pipeline: Pipeline,
@@ -838,89 +923,3 @@ class AbstractStepBaseline(BaselineInterface):
             self._log(f"Pipeline execution failed: {e}", level='error', force=True)
             self._log(traceback.format_exc(), level='error', force=True)
             return False, None, pipeline_dict
-
-    def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> BaselineResult:
-        """Process a single query with optional context using abstract layer pipeline generation."""
-        from .base import BaselineResult as InterfaceBaselineResult
-
-        start_time = time.time()
-        self.total_queries += 1
-
-        try:
-            # Prepare dataset file from context (assume single json dataset)
-            dataset_paths = self.data_processor.prepare_dataset_files(context)
-
-            if not dataset_paths:
-                raise ValueError("No dataset path available")
-
-            dataset_path = dataset_paths[0]
-
-            dataset_samples = load_sample_data([dataset_path])
-
-            success = False
-            result_output = None
-            for attempt in range(self.max_attempts):
-                try:
-                    self._log(f"Attempt {attempt + 1}/{self.max_attempts} for query: {query[:100]}...")
-
-                    abstract_pipeline = self._build_abstract_pipeline(query, dataset_samples, attempt)
-
-                    success, result_output, _ = self._convert_and_execute(
-                        abstract_pipeline, query, dataset_path, attempt
-                    )
-
-                    if success and result_output:
-                        break
-
-                except Exception as e:
-                    self._log(f"Attempt {attempt + 1} failed: {e}", level='error', force=True)
-                    self._log(traceback.format_exc(), level='error', force=True)
-            # Remove fields appearing in dataset_samples
-            dataset_fields = [field for field in dataset_fields if field not in dataset_samples[0]]
-
-            execution_time = time.time() - start_time
-            self.total_time += execution_time
-
-            if success:
-                return InterfaceBaselineResult(
-                    query=query,
-                    response={"answer": result_output},
-                    metadata={},
-                    execution_time=execution_time
-                )
-            else:
-                raise ValueError(f"Pipeline generation failed after {self.max_attempts} attempts")
-
-        except Exception as e:
-            self._log(f"Error processing query with Abstract Step: {e}", level='error', force=True)
-            self._log(f"Full traceback:\n{traceback.format_exc()}", level='error', force=True)
-
-            execution_time = time.time() - start_time
-            self.total_time += execution_time
-
-            return InterfaceBaselineResult(
-                query=query,
-                response={"answer": "", "error": str(e)},
-                metadata={},
-                execution_time=execution_time,
-                error=str(e)
-            )
-
-    def batch_process(self, queries: List[str], contexts: Optional[List[Dict[str, Any]]] = None) -> List[BaselineResult]:
-        """Process multiple queries in batch."""
-        if contexts is None:
-            contexts = [None] * len(queries)
-
-        results = []
-        for query, context in zip(queries, contexts):
-            results.append(self.process(query, context))
-
-        return results
-
-    def get_metrics(self) -> Dict[str, Any]:
-        """Get baseline metrics."""
-        return {
-            "total_queries": self.total_queries,
-            "total_time": self.total_time,
-            "average_time": self.total_time / max(1, self.total_queries),
-        }
