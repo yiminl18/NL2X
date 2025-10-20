@@ -146,7 +146,7 @@ Generate a Map operator with:
      * {"entities": "List[Dict[{name: String, type: String}]]"}
 
 4. **properties**: Additional configuration (can be empty {})
-   - Only add if necessary (e.g., {"model": "gpt-4"})
+   - Only add if necessary (e.g., {"model": "gpt-4o"})
 
 COMPLETE EXAMPLES:
 

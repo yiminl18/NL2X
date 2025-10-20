@@ -21,3 +21,4 @@ from .dsbench import DSBenchBenchmark
 from .crag import CRAGBenchmark
 from .kramabench import KramaBenchBenchmark
 from .cuad import CUADBenchmark
+from .medication import MedicationBenchmark
