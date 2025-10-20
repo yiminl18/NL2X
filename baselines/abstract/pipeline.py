@@ -158,6 +158,163 @@ class Pipeline:
         """Get all leaf nodes (nodes with no children)."""
         return [node_id for node_id, node in self.nodes.items() if not node.children]
 
+    def _reconnect_edges(self, removed_node_id: str):
+        """
+        Reconnect edges after removing a node.
+
+        Connects all parents of the removed node to all children of the removed node.
+        If node has no parents or no children, just removes the relevant edges.
+
+        Args:
+            removed_node_id: ID of the node being removed
+        """
+        node = self.nodes[removed_node_id]
+        parents = node.parents.copy()
+        children = node.children.copy()
+
+        for parent_id in parents:
+            self.edges[parent_id].remove(removed_node_id)
+            self.nodes[parent_id].children.remove(removed_node_id)
+
+        for child_id in children:
+            self.nodes[child_id].parents.remove(removed_node_id)
+
+        if removed_node_id in self.edges:
+            del self.edges[removed_node_id]
+
+        for parent_id in parents:
+            for child_id in children:
+                if child_id not in self.edges[parent_id]:
+                    self.edges[parent_id].append(child_id)
+                    self.nodes[parent_id].children.append(child_id)
+                if parent_id not in self.nodes[child_id].parents:
+                    self.nodes[child_id].parents.append(parent_id)
+
+    def insert_operator(self, operator: Operator, position: int,
+                       node_id: Optional[str] = None,
+                       metadata: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Insert an operator at a specific position in the execution order.
+
+        Args:
+            operator: Operator object to insert
+            position: Index in execution order where to insert (supports negative indices)
+            node_id: Optional custom node ID (auto-generated if None)
+            metadata: Optional node metadata
+
+        Returns:
+            The node_id of the inserted operator
+
+        Example:
+            >>> pipeline.insert_operator(filter_op, position=0)  # Insert at beginning
+            >>> pipeline.insert_operator(map_op, position=-1)   # Insert before last
+        """
+        execution_order = self.get_execution_order() if self.nodes else []
+        n = len(execution_order)
+
+        if position < 0:
+            position = max(0, n + 1 + position)
+        position = min(position, n)
+
+        if node_id is None:
+            base_name = operator.name if operator.name else "op"
+            counter = 0
+            while True:
+                node_id = f"op_{position}_{base_name}_{counter}" if counter > 0 else f"op_{position}_{base_name}"
+                if node_id not in self.nodes:
+                    break
+                counter += 1
+
+        self.add_operator(operator, node_id, metadata)
+
+        if n == 0:
+            return node_id
+
+        if position > 0:
+            predecessor_id = execution_order[position - 1]
+
+            if position < n:
+                successor_id = execution_order[position]
+
+                if successor_id in self.edges.get(predecessor_id, []):
+                    self.edges[predecessor_id].remove(successor_id)
+                    self.nodes[predecessor_id].children.remove(successor_id)
+                    self.nodes[successor_id].parents.remove(predecessor_id)
+
+            self.add_edge(predecessor_id, node_id)
+
+        if position < n:
+            successor_id = execution_order[position]
+            self.add_edge(node_id, successor_id)
+
+        return node_id
+
+    def remove_operator(self, node_id: str) -> Operator:
+        """
+        Remove an operator from the pipeline by node_id.
+
+        Automatically reconnects edges: connects all parents to all children.
+        Updates subtasks list if it exists.
+
+        Args:
+            node_id: ID of the node to remove
+
+        Returns:
+            The removed Operator object
+
+        Raises:
+            ValueError: If node_id not found
+
+        Example:
+            >>> removed_op = pipeline.remove_operator("op_2_extract_age")
+        """
+        if node_id not in self.nodes:
+            raise ValueError(f"Node '{node_id}' not found in pipeline")
+
+        node = self.nodes[node_id]
+        operator = node.operator
+
+        if self.subtasks:
+            execution_order = self.get_execution_order()
+            if node_id in execution_order:
+                position = execution_order.index(node_id)
+                if position < len(self.subtasks):
+                    self.subtasks.pop(position)
+
+        self._reconnect_edges(node_id)
+        del self.nodes[node_id]
+
+        return operator
+
+    def remove_operator_at(self, position: int) -> Operator:
+        """
+        Remove an operator at a specific position in the execution order.
+
+        Args:
+            position: Index in execution order (supports negative indices)
+
+        Returns:
+            The removed Operator object
+
+        Raises:
+            IndexError: If position is out of range
+
+        Example:
+            >>> removed_op = pipeline.remove_operator_at(1)  # Remove second operator
+            >>> removed_op = pipeline.remove_operator_at(-1) # Remove last operator
+        """
+        execution_order = self.get_execution_order()
+
+        if not execution_order:
+            raise IndexError("Cannot remove from empty pipeline")
+
+        try:
+            node_id = execution_order[position]
+        except IndexError:
+            raise IndexError(f"Position {position} out of range for pipeline with {len(execution_order)} operators")
+
+        return self.remove_operator(node_id)
+
     def visualize(self) -> str:
         """Create text visualization of pipeline structure."""
         lines = [f"Pipeline: {self.name or '(unnamed)'}"]

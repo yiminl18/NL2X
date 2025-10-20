@@ -322,6 +322,8 @@ def docetl_pipeline_to_abstract(yaml_path: Union[str, Path], pipeline_config: Op
 
 def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
     """Convert abstract Operator to DocETL operator dict."""
+    from .schema import DocETLTypeMapper
+
     docetl_op = {}
 
     docetl_op["name"] = abstract_operator.name
@@ -347,8 +349,34 @@ def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
     else:
         docetl_op["type"] = abstract_to_docetl_type.get(abstract_type, abstract_type.lower())
 
+    # Copy properties (prompt, reduce_key, etc.)
+    # Skip empty or None values to avoid cluttering the output
     for key, value in abstract_operator.properties.items():
-        docetl_op[key] = value
+        # Skip empty dicts, empty lists, and None values
+        if value is not None and value != {} and value != []:
+            docetl_op[key] = value
+
+    # Convert output schema from abstract format to DocETL format
+    if abstract_operator.output and isinstance(abstract_operator.output, dict):
+        # Filter out internal fields and 'type' metadata
+        output_fields = {k: v for k, v in abstract_operator.output.items()
+                        if k not in ['type', '_removed_fields']}
+
+        if output_fields:
+            # Convert each field type from abstract to DocETL format
+            docetl_schema = {}
+            for field_name, abstract_type_str in output_fields.items():
+                if isinstance(abstract_type_str, str):
+                    docetl_type_str = DocETLTypeMapper.from_abstract_type_string(abstract_type_str)
+                    docetl_schema[field_name] = docetl_type_str
+                else:
+                    # If it's not a string (shouldn't happen), keep as-is
+                    docetl_schema[field_name] = abstract_type_str
+
+            # Create proper DocETL output.schema structure
+            docetl_op["output"] = {
+                "schema": docetl_schema
+            }
 
     return docetl_op
 

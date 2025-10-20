@@ -23,3 +23,4 @@ from .dummy import DummyBaseline
 from .docetl_baseline import DocETLBaseline
 from .docetl_step import DocETLStepBaseline
 from .lotus import LOTUSBaseline
+from .abstract_step import AbstractStepBaseline

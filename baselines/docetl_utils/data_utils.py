@@ -340,6 +340,19 @@ def load_sample_data(dataset_paths: List[str], max_length: int = 1500, max_strin
     Returns:
         Dictionary with {file_path: sample_data} format
     """
+    # Type validation - fail fast if not a list
+    if not isinstance(dataset_paths, list):
+        raise TypeError(
+            f"dataset_paths must be a list of strings, got {type(dataset_paths).__name__}. "
+            f"Value: {dataset_paths!r}. "
+            f"If you have a single path, wrap it in a list: [path]"
+        )
+
+    # Path existence validation
+    for path in dataset_paths:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Dataset path does not exist: {path}")
+
     dataset_samples = {}
 
     # Initialize intelligent truncator

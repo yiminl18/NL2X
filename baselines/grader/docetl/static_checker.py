@@ -643,12 +643,14 @@ class DocETLStaticChecker:
         }
         
         # Extract input fields from prompts
-        prompt_fields = ['prompt', 'comparison_prompt', 'resolution_prompt', 
+        prompt_fields = ['prompt', 'comparison_prompt', 'resolution_prompt',
                         'batch_prompt', 'summary_prompt']
         for field in prompt_fields:
             if field in op:
                 input_fields = self._extract_jinja_fields(op[field])
                 self.field_tracker[op_name]['inputs'].update(input_fields)
+                # Check for bare field references that should use Jinja2 syntax
+                self._check_for_bare_field_references(op[field], op_name, input_fields)
         
         # Extract output fields from schema
         if 'output' in op and isinstance(op['output'], dict):
@@ -677,7 +679,7 @@ class DocETLStaticChecker:
     def _extract_jinja_fields(self, template: str) -> Set[str]:
         """Extract field references from Jinja2 template."""
         fields = set()
-        
+
         # Match patterns like {{ input.field }}, {{ inputs[0].field }}, etc.
         patterns = [
             r'{{\s*input\.(\w+)\s*}}',
@@ -687,12 +689,51 @@ class DocETLStaticChecker:
             r'{{\s*input1\.(\w+)\s*}}',
             r'{{\s*input2\.(\w+)\s*}}'
         ]
-        
+
         for pattern in patterns:
             matches = re.findall(pattern, template)
             fields.update(matches)
-        
+
         return fields
+
+    def _check_for_bare_field_references(self, template: str, op_name: str, jinja_fields: Set[str]):
+        """
+        Check for suspicious bare field references in prompt that should use Jinja2 syntax.
+
+        Args:
+            template: The prompt template string
+            op_name: Operator name (for error messages)
+            jinja_fields: Fields already extracted with Jinja2 syntax
+        """
+        if not template:
+            return
+
+        # Patterns for detecting bare field references
+        suspicious_patterns = [
+            (r'`(\w+)`', 'backtick-quoted field'),  # `fieldname`
+            (r'field\s+["\'](\w+)["\']', 'field name in quotes'),  # field "name" or field 'name'
+            (r'the\s+(\w+)\s+field', 'descriptive field reference'),  # "the name field"
+            (r'in\s+the\s+field\s+["\'](\w+)["\']', 'field in quotes'),  # "in the field 'name'"
+            (r'from\s+["\'](\w+)["\']', 'field from quotes'),  # "from 'fieldname'"
+        ]
+
+        # Common field names that are likely to be data fields
+        likely_field_names = {'text', 'src', 'content', 'document', 'data', 'input',
+                             'title', 'description', 'body', 'message', 'name',
+                             'value', 'field', 'item', 'record', 'doc'}
+
+        for pattern, pattern_desc in suspicious_patterns:
+            matches = re.findall(pattern, template, re.IGNORECASE)
+            for match in matches:
+                # Check if this looks like a field reference and is not already in Jinja2 format
+                if match.lower() in likely_field_names and match not in jinja_fields:
+                    self.warnings.append({
+                        "type": "possible_bare_field_reference",
+                        "operation": op_name,
+                        "field": match,
+                        "pattern": pattern_desc,
+                        "message": f"Operation '{op_name}': Possible bare field reference '{match}' found ({pattern_desc}). Should use {{{{ input.{match} }}}} instead?"
+                    })
     
     def _check_schema_consistency(self) -> bool:
         """Check schema consistency across operations and operator usage."""

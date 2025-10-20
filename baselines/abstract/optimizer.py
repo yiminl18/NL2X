@@ -698,7 +698,6 @@ def _single_pushdown(pipeline: Pipeline) -> Pipeline:
 
         fields_at_position.append(available_fields.copy())
 
-    filter_to_move = None
     current_position = None
     target_position = None
 
@@ -722,33 +721,16 @@ def _single_pushdown(pipeline: Pipeline) -> Pipeline:
                     break
 
             if earliest_pos is not None and earliest_pos < current_pos:
-                filter_to_move = operator
                 current_position = current_pos
                 target_position = earliest_pos
                 break
 
-    new_pipeline = Pipeline(
-        name=pipeline.name,
-        input_path=pipeline.input_path,
-        output_path=pipeline.output_path,
-        properties=copy.deepcopy(pipeline.properties) if pipeline.properties else None,
-        dataset_schema=copy.deepcopy(pipeline.dataset_schema) if pipeline.dataset_schema else None,
-        subtasks=copy.deepcopy(pipeline.subtasks) if pipeline.subtasks else None
-    )
+    new_pipeline = copy.deepcopy(pipeline)
 
-    operators = [pipeline.nodes[node_id].operator for node_id in execution_order]
-    filter_op = operators.pop(current_position)
-    operators.insert(target_position, filter_op)
+    removed_filter = new_pipeline.remove_operator_at(current_position)
+    new_pipeline.insert_operator(removed_filter, target_position)
 
-    for i, op in enumerate(operators):
-        node_id = f"op_{i}_{op.name}" if op.name else f"op_{i}"
-        new_pipeline.add_operator(op, node_id)
-
-    node_ids = list(new_pipeline.nodes.keys())
-    for i in range(len(node_ids) - 1):
-        new_pipeline.add_edge(node_ids[i], node_ids[i + 1])
-
-    print(f"Filter '{filter_to_move.name}' pushed down from position {current_position} to position {target_position}")
+    print(f"Filter '{removed_filter.name}' pushed down from position {current_position} to position {target_position}")
 
     return new_pipeline
 

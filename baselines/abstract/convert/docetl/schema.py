@@ -179,6 +179,62 @@ class DocETLTypeMapper:
         type_dict = cls.parse_docetl_schema(docetl_schema)
         return serialize_type_dict(type_dict)
 
+    @classmethod
+    def from_abstract_type_string(cls, abstract_type: str) -> str:
+        """Convert abstract layer type string to DocETL type string.
+
+        Args:
+            abstract_type: Abstract type string (e.g., 'String', 'List[String]', 'Dict[{name: String}]')
+
+        Returns:
+            DocETL type string (e.g., 'str', 'list[str]', 'dict')
+
+        Examples:
+            'String' -> 'str'
+            'Integer' -> 'int'
+            'List[String]' -> 'list[str]'
+            'Dict' -> 'dict'
+            'Dict[{name: String, age: Integer}]' -> 'dict'  # DocETL doesn't support nested dict schemas
+        """
+        if not abstract_type:
+            return 'str'  # Default to string
+
+        abstract_type = abstract_type.strip()
+
+        # Basic type mappings (reverse of DOCETL_TO_ABSTRACT)
+        ABSTRACT_TO_DOCETL = {
+            'String': 'str',
+            'Integer': 'int',
+            'Float': 'float',
+            'Boolean': 'bool',
+            'Dict': 'dict',
+            'Unknown': 'str'  # Default unknown to string
+        }
+
+        # Handle basic types
+        if abstract_type in ABSTRACT_TO_DOCETL:
+            return ABSTRACT_TO_DOCETL[abstract_type]
+
+        # Handle List types: List[ElementType]
+        if abstract_type.startswith('List[') and abstract_type.endswith(']'):
+            # Extract element type
+            element_type_start = abstract_type.index('[') + 1
+            element_type_end = abstract_type.rindex(']')
+            element_type = abstract_type[element_type_start:element_type_end].strip()
+
+            # Recursively convert element type
+            docetl_element_type = cls.from_abstract_type_string(element_type)
+            return f'list[{docetl_element_type}]'
+
+        # Handle Dict types with fields: Dict[{...}]
+        # DocETL doesn't support structured dict schemas in output.schema,
+        # so we just return 'dict'
+        if abstract_type.startswith('Dict[{') and abstract_type.endswith('}]'):
+            return 'dict'
+
+        # Unknown format, default to string
+        return 'str'
+
 
 def _extract_input_schema(docetl_operator: Dict[str, Any], field_types: Dict[str, str] = None, dataset_schema: Dict[str, Any] = None) -> Dict[str, Any]:
     """Extract input schema from DocETL operator by analyzing configuration and templates."""

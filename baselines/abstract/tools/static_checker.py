@@ -229,6 +229,83 @@ def validate_dataset_compliance(operators: List[Dict[str, Any]], dataset_schema:
     return is_valid, errors
 
 
+def validate_prompt_fields(operators: List[Dict[str, Any]]) -> Tuple[bool, List[str], List[str]]:
+    """
+    Validate prompt field references in operators.
+
+    Checks that:
+    1. Fields referenced in prompts (via Jinja2) exist in input schema
+    2. Prompts don't have suspicious bare field references
+    """
+    errors = []
+    warnings = []
+
+    # Import the Jinja2 field extraction utility from schema module
+    try:
+        import sys
+        import os
+        schema_module_path = os.path.join(os.path.dirname(__file__), '..', 'convert', 'docetl')
+        sys.path.insert(0, schema_module_path)
+        from schema import _extract_fields_from_jinja2
+    except ImportError:
+        # If we can't import the schema module, skip this validation
+        warnings.append("Could not import Jinja2 field extraction utility - skipping prompt validation")
+        return True, [], warnings
+
+    for op in operators:
+        op_name = op.get('name', '<unnamed>')
+
+        # Check if operator has a prompt in properties
+        if 'properties' not in op or not isinstance(op['properties'], dict):
+            continue
+
+        prompt = op['properties'].get('prompt')
+        if not prompt or not isinstance(prompt, str):
+            continue
+
+        # Extract input fields
+        input_fields = set()
+        if 'input' in op and isinstance(op['input'], dict):
+            if 'fields' in op['input'] and isinstance(op['input']['fields'], dict):
+                input_fields = set(op['input']['fields'].keys())
+
+        # Extract Jinja2 field references from prompt
+        jinja_fields = _extract_fields_from_jinja2(prompt)
+
+        # Check that referenced fields exist in input
+        for field in jinja_fields:
+            if field not in input_fields:
+                errors.append(
+                    f"Operator '{op_name}': prompt references field '{field}' "
+                    f"which is not defined in input schema"
+                )
+
+        # Check for suspicious bare field references
+        # (similar to DocETL checker but adapted for Abstract layer)
+        suspicious_patterns = [
+            (r'`(\w+)`', 'backtick-quoted field'),
+            (r'field\s+["\'](\w+)["\']', 'field in quotes'),
+            (r'the\s+(\w+)\s+field', 'descriptive field reference'),
+        ]
+
+        likely_field_names = {'text', 'src', 'content', 'document', 'data', 'input',
+                             'title', 'description', 'body', 'message', 'name',
+                             'value', 'field', 'item', 'record', 'doc'}
+
+        for pattern, pattern_desc in suspicious_patterns:
+            matches = re.findall(pattern, prompt, re.IGNORECASE)
+            for match in matches:
+                # Check if this looks like a field reference and is not already in Jinja2 format
+                if match.lower() in likely_field_names and match not in jinja_fields:
+                    warnings.append(
+                        f"Operator '{op_name}': Possible bare field reference '{match}' "
+                        f"found ({pattern_desc}). Should use {{{{ input.{match} }}}} instead?"
+                    )
+
+    is_valid = len(errors) == 0
+    return is_valid, errors, warnings
+
+
 def extract_fields_from_operator(operator: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
     """Extract all input and output fields from an operator."""
     result = {'input': {}, 'output': {}}
@@ -297,7 +374,17 @@ def validate_pipeline(operators: List[Dict[str, Any]], verbose: bool = False, da
         'warnings': len(schema_warnings)
     }
 
-    # 5. In strict mode, validate dataset compliance
+    # 5. Validate prompt field references
+    prompt_valid, prompt_errors, prompt_warnings = validate_prompt_fields(operators)
+    all_errors.extend(prompt_errors)
+    all_warnings.extend(prompt_warnings)
+    validation_results['prompt_fields'] = {
+        'valid': prompt_valid,
+        'errors': len(prompt_errors),
+        'warnings': len(prompt_warnings)
+    }
+
+    # 6. In strict mode, validate dataset compliance
     if dataset_schema:
         compliance_valid, compliance_errors = validate_dataset_compliance(operators, dataset_schema)
         all_errors.extend(compliance_errors)
