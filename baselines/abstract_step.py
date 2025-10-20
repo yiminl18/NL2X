@@ -23,12 +23,7 @@ from .docetl_utils.data_utils import DocETLDataProcessor
 from .abstract_step_utils.ui import AbstractStepUserInterface
 from .abstract_step_utils.checker_utils import validate_pipeline_static
 from .abstract_step_utils.log_utils import PipelineFileManager
-from .docetl_utils.pipeline_utils import (
-    load_sample_data,
-    execute_single_pipeline,
-    FailedPipeline,
-    find_output_path,
-)
+from .docetl_utils.pipeline_utils import load_sample_data
 from model.litellm_client import llm_call
 
 # Abstract layer utilities
@@ -59,6 +54,9 @@ from .abstract.convert.docetl import (
     operator_to_dict,
 )
 
+# Import executor infrastructure
+from .abstract.executor import DocETLExecutor
+
 
 @register_baseline("abstract_step")
 class AbstractStepBaseline(BaselineInterface):
@@ -69,7 +67,6 @@ class AbstractStepBaseline(BaselineInterface):
     1. Select abstract operators needed
     2. Generate details for each operator (abstract format)
     3. Build abstract Pipeline object
-    4. Convert to DocETL YAML
     5. Execute and validate
     """
 
@@ -89,9 +86,6 @@ class AbstractStepBaseline(BaselineInterface):
         """Initialize baseline configuration and directories."""
         self.total_queries = 0
         self.total_time = 0
-        self.total_generation_attempts = 0
-        self.successful_pipelines = 0
-        self.failed_pipelines = []
 
         self.max_attempts = self.config.max_attempts
         self.validate_answer = self.config.validate_answer
@@ -144,11 +138,32 @@ class AbstractStepBaseline(BaselineInterface):
             verbose=self.config.verbose
         )
 
+        # Initialize executor based on base system
+        self.executor = self._create_executor()
+
         self._log(f"Initialized Abstract Step baseline with config: {self.config}")
         self._log(f"Base system: {self.base_system.value}")
+        self._log(f"Executor: {self.executor.get_system_name()}")
         self._log(f"Supported operators: {get_supported_operators(self.base_system)}")
         self._log(f"Pipeline output directory: {self.pipeline_output_dir}")
         self._log(f"Abstract pipeline directory: {self.abstract_pipeline_dir}")
+
+    def _create_executor(self):
+        """
+        Create executor based on base system.
+
+        Returns:
+            BaseSystemExecutor instance for the configured base system
+        """
+        if self.base_system == BaseSystem.DOCETL:
+            return DocETLExecutor(
+                verbose=self.config.verbose,
+                cache_enabled=False,  # Disable cache for baseline evaluation
+                cache_dir=None,
+                data_manager=None
+            )
+        else:
+            raise ValueError(f"Unsupported base system: {self.base_system.value}")
 
     def _select_operators(
         self,
@@ -710,18 +725,20 @@ class AbstractStepBaseline(BaselineInterface):
         self,
         abstract_pipeline: Pipeline,
         query: str,
-        dataset_path: str
+        dataset_path: str,
+        attempt: int = 0
     ) -> Tuple[bool, Optional[str], Optional[Dict]]:
         """
-        Convert abstract pipeline to DocETL and execute.
+        Convert abstract pipeline to base system format and execute.
 
         Args:
             abstract_pipeline: Abstract Pipeline object
             query: User query
             dataset_path: Path to dataset
+            attempt: Current attempt number (for user confirmation)
 
         Returns:
-            (success, output, yaml_config)
+            (success, output, pipeline_dict)
         """
         # Convert Pipeline to dict and save as JSON
         pipeline_dict = {
@@ -749,52 +766,45 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_schema=abstract_pipeline.dataset_schema
         )
 
-        # Convert to DocETL YAML using existing converter
+        # Convert abstract pipeline to base system format and execute using executor
         try:
             operators = abstract_pipeline.to_operators()
-            docetl_operators = [abstract_to_docetl(op) for op in operators]
 
-            # Build DocETL config with output path
-            output_path = self.file_manager.get_output_path(query, file_type='output')
+            # Build base system config using converter
+            # For DocETL: convert operators to DocETL format
+            if self.base_system == BaseSystem.DOCETL:
+                docetl_operators = [abstract_to_docetl(op) for op in operators]
+                output_path = self.file_manager.get_output_path(query, file_type='output')
 
-            docetl_config = {
-                'datasets': {
-                    'input': {
-                        'type': 'file',
-                        'path': dataset_path
-                    }
-                },
-                'operations': docetl_operators,
-                'pipeline': {
-                    'steps': [{
-                        'name': 'generated_pipeline',
-                        'input': 'input',
-                        'operations': [op['name'] for op in docetl_operators]
-                    }],
-                    'output': {
-                        'type': 'file',
-                        'path': output_path
-                    }
-                },
-                'default_model': abstract_pipeline.properties.get('default_model', 'gpt-4o-mini')
-            }
+                # Use executor's centralized pipeline config builder
+                pipeline_dict = self.executor.build_pipeline_config(
+                    operators=docetl_operators,
+                    input_path=dataset_path,
+                    output_path=output_path,
+                    dataset_name='input',
+                    step_name='generated_pipeline',
+                    default_model=abstract_pipeline.properties.get('default_model', 'gpt-4o-mini')
+                )
+            else:
+                raise ValueError(f"Unsupported base system: {self.base_system.value}")
 
-            self._log("Successfully converted abstract pipeline to DocETL")
+            self._log(f"Successfully converted abstract pipeline to {self.base_system.value}")
 
         except Exception as e:
-            self._log(f"Failed to convert abstract pipeline to DocETL: {e}", level='error', force=True)
+            self._log(f"Failed to convert abstract pipeline to {self.base_system.value}: {e}", level='error', force=True)
             self._log(traceback.format_exc(), level='error', force=True)
             return False, None, None
 
         try:
-            # Save DocETL config to YAML file for execution
+            # Save system config to file for validation and user confirmation
             yaml_path = self.file_manager.save_yaml(
-                data=docetl_config,
+                data=pipeline_dict,
                 query=query,
                 file_type='pipeline_temp',
                 subdir_key='pipeline_output'
             )
 
+            # Validate converted pipeline
             validate_pipeline_static(
                 system_name=self.base_system.value,
                 pipeline_path=yaml_path,
@@ -802,32 +812,32 @@ class AbstractStepBaseline(BaselineInterface):
                 logger=self.logger
             )
 
+            # Confirm execution with user
             if not self.ui.confirm_pipeline_execution(yaml_path, query, attempt):
                 self._log("Pipeline execution skipped by user", force=True)
-                return False, None, docetl_config
+                return False, None, pipeline_dict
 
-            success, error_msg = execute_single_pipeline(yaml_path)
+            # Execute pipeline using executor
+            self._log(f"Executing pipeline using {self.executor.get_system_name()} executor...")
+            execution_result = self.executor.execute_original_pipeline(yaml_path)
 
-            if not success:
-                self._log(f"Pipeline execution failed: {error_msg}", level='error', force=True)
-                return False, None, docetl_config
+            if not execution_result.success:
+                self._log(f"Pipeline execution failed: {execution_result.error}", level='error', force=True)
+                return False, None, pipeline_dict
 
-            output_path = find_output_path(yaml_path)
-            if output_path and os.path.exists(output_path):
-                with open(output_path, 'r', encoding='utf-8') as f:
-                    output = json.load(f)
-            else:
-                self._log("Could not find output file, using empty output", level='warning')
-                output = []
+            output_data = execution_result.data
+            if output_data is None:
+                self._log("Pipeline executed but returned no output data", level='warning')
+                output_data = []
 
-            self._log(f"Pipeline execution completed with {len(output) if isinstance(output, list) else 'N/A'} results")
+            self._log(f"Pipeline execution completed with {len(output_data) if isinstance(output_data, list) else 'N/A'} results")
 
-            return True, output, docetl_config
+            return True, output_data, pipeline_dict
 
         except Exception as e:
             self._log(f"Pipeline execution failed: {e}", level='error', force=True)
             self._log(traceback.format_exc(), level='error', force=True)
-            return False, None, docetl_config
+            return False, None, pipeline_dict
 
     def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> BaselineResult:
         """Process a single query with optional context using abstract layer pipeline generation."""
@@ -847,37 +857,26 @@ class AbstractStepBaseline(BaselineInterface):
 
             dataset_samples = load_sample_data([dataset_path])
 
-            # Attempt pipeline generation with retries
             success = False
             result_output = None
-
             for attempt in range(self.max_attempts):
-                self.total_generation_attempts += 1
-
                 try:
                     self._log(f"Attempt {attempt + 1}/{self.max_attempts} for query: {query[:100]}...")
 
                     abstract_pipeline = self._build_abstract_pipeline(query, dataset_samples, attempt)
 
                     success, result_output, _ = self._convert_and_execute(
-                        abstract_pipeline, query, dataset_path
+                        abstract_pipeline, query, dataset_path, attempt
                     )
 
                     if success and result_output:
-                        self.successful_pipelines += 1
                         break
 
                 except Exception as e:
                     self._log(f"Attempt {attempt + 1} failed: {e}", level='error', force=True)
                     self._log(traceback.format_exc(), level='error', force=True)
-
-                    if attempt == self.max_attempts - 1:
-                        # Final attempt failed
-                        self.failed_pipelines.append(FailedPipeline(
-                            pipeline_yaml=f"# Query: {query}\n# Failed after {self.max_attempts} attempts",
-                            error_type='execution',
-                            error_message=str(e)
-                        ))
+            # Remove fields appearing in dataset_samples
+            dataset_fields = [field for field in dataset_fields if field not in dataset_samples[0]]
 
             execution_time = time.time() - start_time
             self.total_time += execution_time

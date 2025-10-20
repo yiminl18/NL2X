@@ -41,17 +41,6 @@ class LotusExecutor(BaseSystemExecutor):
         # Initialize base class
         super().__init__(verbose, cache_enabled, cache_dir, data_manager)
 
-        self._lotus_available = self._check_lotus()
-
-    def _check_lotus(self) -> bool:
-        """Check if Lotus is available for execution."""
-        try:
-            # TODO: Check for Lotus imports when implemented
-            # from lotus import SomeModule
-            return False  # Not yet implemented
-        except ImportError:
-            return False
-
     def get_system_name(self) -> str:
         """
         Get the name of the execution system.
@@ -66,13 +55,7 @@ class LotusExecutor(BaseSystemExecutor):
                         data_source: 'DataSource',
                         config: Optional[Dict[str, Any]] = None,
                         force_execute: bool = False) -> ExecutionResult:
-        """Execute single abstract operator using Lotus (STUB)."""
-        if not self._lotus_available:
-            return ExecutionResult(
-                success=False,
-                error="Lotus is not available. Please install lotus package or implement Lotus executor."
-            )
-
+        """Execute single abstract operator using Lotus."""
         # TODO: Implement Lotus execution logic
         return ExecutionResult(
             success=False,
@@ -88,3 +71,24 @@ class LotusExecutor(BaseSystemExecutor):
         """Check if executor supports given operator type (STUB)."""
         # TODO: Define supported operator types for Lotus
         return False
+
+    def execute_original_pipeline(self, pipeline_path: Union[str, Path]) -> ExecutionResult:
+        """
+        Execute Lotus pipeline from file path
+
+        Args:
+            pipeline_path: Path to Lotus pipeline configuration file
+
+        Returns:
+            ExecutionResult with error indicating not yet implemented
+        """
+
+        # TODO: Implement Lotus pipeline execution
+        return ExecutionResult(
+            success=False,
+            error="LotusExecutor.execute_original_pipeline is not yet implemented. This is a stub for future development.",
+            metadata={
+                'system': 'lotus',
+                'pipeline_path': str(pipeline_path)
+            }
+        )

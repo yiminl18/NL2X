@@ -59,25 +59,12 @@ class DocETLExecutor(BaseSystemExecutor):
         # Initialize base class
         super().__init__(verbose, cache_enabled, cache_dir, data_manager)
 
-        self._docetl_available = self._check_docetl()
-
         self.cache_manager = OperatorCacheManager(
             cache_dir=cache_dir,
             enabled=cache_enabled
         )
 
-    def _check_docetl(self) -> bool:
-        """Check if DocETL is available for execution."""
-        from docetl.runner import DSLRunner
-        return True
-
     def get_system_name(self) -> str:
-        """
-        Get the name of the execution system.
-
-        Returns:
-            'docetl' as the system identifier
-        """
         return 'docetl'
 
     def execute_operator(self,
@@ -137,12 +124,6 @@ class DocETLExecutor(BaseSystemExecutor):
                                data_source: 'DataSource',
                                config: Optional[Dict[str, Any]] = None) -> ExecutionResult:
         """Internal implementation of operator execution (without caching)."""
-        if not self._docetl_available:
-            return ExecutionResult(
-                success=False,
-                error="DocETL is not available. Please install docetl package."
-            )
-
         try:
             from docetl.runner import DSLRunner
 
@@ -201,12 +182,6 @@ class DocETLExecutor(BaseSystemExecutor):
                         save_intermediates: bool = False,
                         intermediate_dir: Optional[str] = None) -> ExecutionResult:
         """Execute complete DocETL pipeline with optional DataSource override."""
-        if not self._docetl_available:
-            return ExecutionResult(
-                success=False,
-                error="DocETL is not available. Please install docetl package."
-            )
-
         try:
             from docetl.runner import DSLRunner
 
@@ -283,32 +258,120 @@ class DocETLExecutor(BaseSystemExecutor):
                 metadata={'system': 'docetl'}
             )
 
-    def _create_temp_pipeline(self,
-                            docetl_op: Dict[str, Any],
-                            data_source: 'DataSource',
-                            config: Dict[str, Any]) -> Dict[str, Any]:
-        """Create temporary pipeline for executing single operator."""
-        input_path = data_source.path
-        dataset_type = 'file'
+    def execute_original_pipeline(self, pipeline_path: Union[str, Path]) -> ExecutionResult:
+        """
+        Execute DocETL pipeline from YAML file path (simple wrapper).
+        """
+        try:
+            from docetl.runner import DSLRunner
 
-        output_path = tempfile.mktemp(suffix='.json')
+            pipeline_path = Path(pipeline_path)
 
-        pipeline = {
+            if self.verbose:
+                print(f"Executing DocETL pipeline: {pipeline_path}")
+
+            start_time = time.time()
+
+            # Execute pipeline using DSLRunner
+            runner = DSLRunner.from_yaml(str(pipeline_path), max_threads=10)
+            runner.load_run_save()
+
+            execution_time = time.time() - start_time
+
+            # Read pipeline config to find output path
+            with open(pipeline_path, 'r') as f:
+                pipeline_config = yaml.safe_load(f)
+
+            output_path = pipeline_config.get('pipeline', {}).get('output', {}).get('path')
+
+            if output_path and os.path.exists(output_path):
+                with open(output_path, 'r') as f:
+                    output_data = json.load(f)
+
+                if self.verbose:
+                    data_info = f"{len(output_data)} records" if isinstance(output_data, list) else type(output_data).__name__
+                    print(f"Pipeline executed successfully: {data_info}")
+
+                return ExecutionResult(
+                    success=True,
+                    data=output_data,
+                    metadata={
+                        'execution_time': execution_time,
+                        'system': 'docetl',
+                        'output_path': output_path,
+                        'pipeline_path': str(pipeline_path)
+                    }
+                )
+            else:
+                # Pipeline executed but no output file found
+                if self.verbose:
+                    print(f"Warning: Pipeline executed but output file not found: {output_path}")
+
+                return ExecutionResult(
+                    success=True,
+                    data=[],
+                    metadata={
+                        'execution_time': execution_time,
+                        'system': 'docetl',
+                        'output_path': output_path,
+                        'pipeline_path': str(pipeline_path),
+                        'warning': 'Output file not found'
+                    }
+                )
+
+        except Exception as e:
+            error_msg = f"Pipeline execution failed: {str(e)}\n{traceback.format_exc()}"
+            if self.verbose:
+                print(f"✗ {error_msg}")
+
+            return ExecutionResult(
+                success=False,
+                error=error_msg,
+                metadata={
+                    'system': 'docetl',
+                    'pipeline_path': str(pipeline_path)
+                }
+            )
+
+    def build_pipeline_config(
+        self,
+        operators: List[Dict[str, Any]],
+        input_path: str,
+        output_path: str,
+        dataset_name: str = 'input',
+        step_name: str = 'main',
+        default_model: Optional[str] = 'gpt-4o-mini',
+        system_prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Build DocETL pipeline configuration dictionary.
+
+        Args:
+            operators: List of DocETL operator dictionaries
+            input_path: Path to input dataset
+            output_path: Path for output file
+            dataset_name: Name for the dataset in config (default: 'input')
+            step_name: Name for the pipeline step (default: 'main')
+            default_model: Default LLM model to use (default: 'gpt-4o-mini')
+            system_prompt: Optional system prompt for LLM calls
+
+        Returns:
+            Complete DocETL pipeline configuration dictionary
+        """
+        pipeline_config = {
             'datasets': {
-                'input_data': {
-                    'type': dataset_type,
+                dataset_name: {
+                    'type': 'file',
                     'path': input_path
                 }
             },
-            'operations': [docetl_op],
+            'operations': operators,
             'pipeline': {
-                'steps': [
-                    {
-                        'name': 'exec_step',
-                        'input': 'input_data',
-                        'operations': [docetl_op['name']]
-                    }
-                ],
+                'steps': [{
+                    'name': step_name,
+                    'input': dataset_name,
+                    'operations': [op['name'] for op in operators]
+                }],
                 'output': {
                     'type': 'file',
                     'path': output_path
@@ -316,10 +379,33 @@ class DocETLExecutor(BaseSystemExecutor):
             }
         }
 
-        if 'default_model' in config:
-            pipeline['default_model'] = config['default_model']
-        if 'system_prompt' in config:
-            pipeline['system_prompt'] = config['system_prompt']
+        # Add optional configurations
+        if default_model:
+            pipeline_config['default_model'] = default_model
+
+        if system_prompt:
+            pipeline_config['system_prompt'] = system_prompt
+
+        return pipeline_config
+
+    def _create_temp_pipeline(self,
+                            docetl_op: Dict[str, Any],
+                            data_source: 'DataSource',
+                            config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create temporary pipeline for executing single operator."""
+        input_path = data_source.path
+        output_path = tempfile.mkstemp(suffix='.json')
+
+        # Use centralized pipeline config builder
+        pipeline = self.build_pipeline_config(
+            operators=[docetl_op],
+            input_path=input_path,
+            output_path=output_path,
+            dataset_name='input_data',
+            step_name='exec_step',
+            default_model=config.get('default_model'),
+            system_prompt=config.get('system_prompt')
+        )
 
         return pipeline
 

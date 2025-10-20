@@ -86,3 +86,10 @@ class BaseSystemExecutor(ABC):
             success=False,
             error=f"{self.get_system_name()} executor does not support native pipeline execution"
         )
+
+    @abstractmethod
+    def execute_original_pipeline(self, pipeline_path: Union[str, Path]) -> ExecutionResult:
+        return ExecutionResult(
+            success=False,
+            error=f"{self.get_system_name()} executor does not support native original pipeline execution"
+        )

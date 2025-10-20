@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
 # Import static checker
-from static_checker import validate_pipeline
+from .static_checker import validate_pipeline
 
 from ..type import check_type_compatibility
 
