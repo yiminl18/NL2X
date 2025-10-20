@@ -1,15 +1,12 @@
 """
 Abstract Layer Step-by-Step Pipeline Generation
 
-This baseline generates abstract layer pipelines and converts them to DocETL for execution.
-Unlike docetl_step.py, this approach:
-1. Generates abstract layer operators (Map, Filter, Reduce, etc.)
-2. Builds an abstract Pipeline object
-3. Converts to DocETL YAML for execution
-4. Does NOT optimize the generated pipeline (preserves LLM-generated structure)
+This baseline generates abstract layer pipelines and converts them to base systems for execution.
 
 The abstract layer is system-agnostic and can theoretically be converted to different
 execution systems (currently only DocETL is supported).
+
+Currently, we assume the dataset contains only one json.
 """
 
 import time
@@ -25,12 +22,10 @@ from .base import BaselineInterface, BaselineResult
 from . import register_baseline
 from .docetl_utils.data_utils import DocETLDataProcessor
 from .abstract_step_utils.ui import AbstractStepUserInterface
-from model.litellm_client import LLMCache
-from .docetl_utils.log_utils import save_prompt, save_messages, save_validation, save_step_output, get_filename_base
+from .docetl_utils.log_utils import get_filename_base
 from .docetl_utils.pipeline_utils import (
     load_sample_data,
     execute_single_pipeline,
-    validate_pipeline_output,
     FailedPipeline,
     find_output_path,
 )
@@ -41,10 +36,9 @@ from .abstract_step_utils.type_utils_abstract import (
     AbstractTypeSystem,
     infer_schema_from_samples,
     format_fields_for_prompt,
-    validate_operator_schemas,
 )
 # Import unified type system for validation
-from .abstract.type import parse_type_string, validate_type_syntax
+from .abstract.type import validate_type_syntax
 from .abstract_step_utils.prompt_abstract import (
     get_operator_selection_prompt,
     get_abstract_operator_prompt,
@@ -52,7 +46,6 @@ from .abstract_step_utils.prompt_abstract import (
 from .abstract.support import (
     BaseSystem,
     get_supported_operators,
-    is_operator_supported,
     validate_pipeline_compatibility,
     filter_unsupported_operators,
 )
@@ -108,11 +101,7 @@ class AbstractStepBaseline(BaselineInterface):
         base_dir = os.getcwd()
         self.output_dirs = {
             'pipeline_output_dir': os.path.join(base_dir, "generated_pipelines", "abstract_step"),
-            'prompts_output_dir': os.path.join(base_dir, "generated_prompts", "abstract_step"),
-            'validations_output_dir': os.path.join(base_dir, "validations", "abstract_step"),
-            'messages_output_dir': os.path.join(base_dir, "messages", "abstract_step"),
             'converted_data_dir': os.path.join(base_dir, "converted_data", "abstract_step"),
-            'steps_output_dir': os.path.join(base_dir, "pipeline_steps", "abstract_step"),
             'abstract_pipeline_dir': os.path.join(base_dir, "abstract_pipelines", "abstract_step"),
         }
 
@@ -130,17 +119,12 @@ class AbstractStepBaseline(BaselineInterface):
         # Initialize user interface for confirmations
         self.ui = AbstractStepUserInterface(self.config)
 
-        # Initialize LLM cache
-        cache_dir = os.path.join(base_dir, "llm_cache", "abstract_step")
-        self.llm_cache = LLMCache(cache_dir)
-
         if self.config.verbose:
             self.logger.info(f"Initialized Abstract Step baseline with config: {self.config}")
             self.logger.info(f"Base system: {self.base_system.value}")
             self.logger.info(f"Supported operators: {get_supported_operators(self.base_system)}")
             self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
             self.logger.info(f"Abstract pipeline directory: {self.abstract_pipeline_dir}")
-            self.logger.info(f"Cache directory: {cache_dir}")
 
     def _select_operators(
         self,
@@ -161,31 +145,9 @@ class AbstractStepBaseline(BaselineInterface):
         Returns:
             List of selected operators with type and purpose
         """
-        # Infer schema from samples
-        # Handle different formats returned by load_sample_data
-        if isinstance(dataset_samples, dict):
-            # If it's a dict, get the values (sample data)
-            samples_list = list(dataset_samples.values())[:10]
-        elif isinstance(dataset_samples, list):
-            # If it's already a list, use it directly
-            samples_list = dataset_samples[:10]
-        else:
-            # If it's a single item (string, etc.), wrap it
-            samples_list = [{"data": dataset_samples}]
-
-        # Ensure we have a list of dicts for schema inference
-        valid_samples = []
-        for sample in samples_list:
-            if isinstance(sample, dict):
-                valid_samples.append(sample)
-            elif isinstance(sample, str):
-                # If it's a string, wrap it in a dict
-                valid_samples.append({"text": sample})
-            else:
-                # For other types, try to convert to dict
-                valid_samples.append({"value": sample})
-
-        schema = infer_schema_from_samples(valid_samples if valid_samples else [{}])
+        # Infer schema from samples (assume single json dataset)
+        samples_list = dataset_samples[:10] if dataset_samples else []
+        schema = infer_schema_from_samples(samples_list if samples_list else [{}])
 
         # Format dataset samples for prompt
         dataset_samples_str = json.dumps(dataset_samples, indent=2)
@@ -196,10 +158,6 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_samples=dataset_samples_str,
             base_system=self.base_system
         )
-
-        # Save prompt for debugging
-        filename_base = get_filename_base(self.data_processor, query, f'step1_attempt{attempt}')
-        save_prompt(self.prompts_output_dir, filename_base, prompt, query, 0)
 
         # Confirm before calling LLM in confirm/debug mode
         user_choice = self.ui.confirm_step_before_llm("Operator Selection (Abstract Layer)", "1")
@@ -237,17 +195,9 @@ class AbstractStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            # Check cache first (with regeneration flag if requested)
-            force_regenerate = (user_choice == 'regenerate')
-            response = self.llm_cache.get(prompt, force_regenerate=force_regenerate)
-            if response is None:
-                # No cache or regeneration requested, call LLM
-                response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
-                # Save to cache (will overwrite if regenerating)
-                self.llm_cache.set(prompt, response)
-            else:
-                if self.config.verbose:
-                    self.logger.info("Using cached response for Step 1: Operator Selection")
+            # Call LLM (with bypass_cache if regenerating)
+            bypass_cache = (user_choice == 'regenerate')
+            response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
 
             result = json.loads(response)
             operators = result.get("operators", [])
@@ -506,12 +456,6 @@ class AbstractStepBaseline(BaselineInterface):
             available_fields=available_fields_str
         )
 
-        # Save prompt for debugging
-        filename_base = get_filename_base(
-            self.data_processor, query, f'step2_op{operator_index}_{op_type}_attempt{attempt}'
-        )
-        prompt_file_path = save_prompt(self.prompts_output_dir, filename_base, prompt, query, 0)
-
         # Confirm this operator generation with user
         user_choice = self.ui.confirm_operator_before_llm(
             operator_index=operator_index,
@@ -519,7 +463,7 @@ class AbstractStepBaseline(BaselineInterface):
             operator_type=op_type,
             operator_purpose=operator_purpose,
             prompt=prompt,
-            prompt_file=prompt_file_path
+            prompt_file=None
         )
 
         if user_choice == 'abort':
@@ -533,17 +477,9 @@ class AbstractStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            # Check cache first (with regeneration flag if requested)
-            force_regenerate = (user_choice == 'regenerate')
-            response = self.llm_cache.get(prompt, force_regenerate=force_regenerate)
-            if response is None:
-                # No cache or regeneration requested, call LLM
-                response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
-                # Save to cache (will overwrite if regenerating)
-                self.llm_cache.set(prompt, response)
-            else:
-                if self.config.verbose:
-                    self.logger.info(f"Using cached response for operator {operator_index} ({op_type})")
+            # Call LLM (with bypass_cache if regenerating)
+            bypass_cache = (user_choice == 'regenerate')
+            response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
 
             llm_response = json.loads(response)
 
@@ -647,9 +583,8 @@ class AbstractStepBaseline(BaselineInterface):
             if self.config.verbose:
                 self.logger.info(f"Regenerating operator {operator_index + 1}...")
 
-            # Call LLM again with force_regenerate to bypass cache
-            response = llm_call(messages, schema=parameters, system_prompt=system_prompt)
-            self.llm_cache.set(prompt, response)
+            # Call LLM again with bypass_cache to force regeneration
+            response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=True)
 
             # Parse and create new operator
             llm_response = json.loads(response)
@@ -881,26 +816,9 @@ class AbstractStepBaseline(BaselineInterface):
         if self.config.verbose:
             self.logger.info(f"Step 2: Generating details for {len(operators)} operators...")
 
-        # Initialize type system from dataset
-        # Handle different formats returned by load_sample_data
-        if isinstance(dataset_samples, dict):
-            samples_list = list(dataset_samples.values())[:10]
-        elif isinstance(dataset_samples, list):
-            samples_list = dataset_samples[:10]
-        else:
-            samples_list = [{"data": dataset_samples}]
-
-        # Ensure we have a list of dicts for schema inference
-        valid_samples = []
-        for sample in samples_list:
-            if isinstance(sample, dict):
-                valid_samples.append(sample)
-            elif isinstance(sample, str):
-                valid_samples.append({"text": sample})
-            else:
-                valid_samples.append({"value": sample})
-
-        initial_schema = infer_schema_from_samples(valid_samples if valid_samples else [{}])
+        # Initialize type system from dataset (assume single json dataset)
+        samples_list = dataset_samples[:10] if dataset_samples else []
+        initial_schema = infer_schema_from_samples(samples_list if samples_list else [{}])
         type_system = AbstractTypeSystem(initial_schema)
 
         filled_operators = []
@@ -955,8 +873,7 @@ class AbstractStepBaseline(BaselineInterface):
         self,
         abstract_pipeline: Pipeline,
         query: str,
-        dataset_path: str,
-        benchmark_data: Dict[str, Any]
+        dataset_path: str
     ) -> Tuple[bool, Optional[str], Optional[Dict]]:
         """
         Convert abstract pipeline to DocETL and execute.
@@ -965,7 +882,6 @@ class AbstractStepBaseline(BaselineInterface):
             abstract_pipeline: Abstract Pipeline object
             query: User query
             dataset_path: Path to dataset
-            benchmark_data: Benchmark metadata
 
         Returns:
             (success, output, yaml_config)
@@ -1082,6 +998,13 @@ class AbstractStepBaseline(BaselineInterface):
                 if self.config.verbose:
                     self.logger.warning(f"Static validation skipped (error: {validation_error})")
 
+            # Confirm pipeline execution in debug/confirm mode
+            if not self.ui.confirm_pipeline_execution(yaml_path, query, attempt):
+                # User chose not to execute, treat as skipped (not a failure)
+                if self.config.verbose:
+                    self.logger.info("Pipeline execution skipped by user")
+                return False, None, docetl_config
+
             # Execute the pipeline using the YAML file
             success, error_msg = execute_single_pipeline(yaml_path)
 
@@ -1111,110 +1034,6 @@ class AbstractStepBaseline(BaselineInterface):
                 self.logger.error(traceback.format_exc())
             return False, None, docetl_config
 
-    def run_single_query(self, query: str, benchmark_data: Dict[str, Any]) -> BaselineResult:
-        """
-        Run pipeline generation for a single query.
-
-        Args:
-            query: User query
-            benchmark_data: Benchmark metadata
-
-        Returns:
-            BaselineResult with pipeline and output
-        """
-        start_time = time.time()
-        self.total_queries += 1
-
-        # Load dataset
-        dataset_path = benchmark_data.get('dataset_path')
-        dataset_samples = load_sample_data([dataset_path])
-
-        # Attempt pipeline generation with retries
-        for attempt in range(self.max_attempts):
-            self.total_generation_attempts += 1
-
-            try:
-                if self.config.verbose:
-                    self.logger.info(f"Attempt {attempt + 1}/{self.max_attempts} for query: {query[:100]}...")
-
-                # Build abstract pipeline
-                abstract_pipeline = self._build_abstract_pipeline(query, dataset_samples, attempt)
-
-                # Convert and execute
-                success, output, docetl_config = self._convert_and_execute(
-                    abstract_pipeline, query, dataset_path, benchmark_data
-                )
-
-                if success and output:
-                    # Save DocETL config
-                    yaml_path = os.path.join(
-                        self.pipeline_output_dir,
-                        f"{get_filename_base(self.data_processor, query, 'pipeline')}.yaml"
-                    )
-                    with open(yaml_path, 'w') as f:
-                        yaml.dump(docetl_config, f, default_flow_style=False)
-
-                    # Validate if required
-                    is_valid = True
-                    if self.validate_answer:
-                        is_valid = validate_pipeline_output(
-                            output, benchmark_data, self.logger, self.config.verbose
-                        )
-
-                    if is_valid:
-                        self.successful_pipelines += 1
-                        elapsed = time.time() - start_time
-                        self.total_time += elapsed
-
-                        if self.config.verbose:
-                            self.logger.info(f"Successfully generated pipeline in {elapsed:.2f}s")
-
-                        return BaselineResult(
-                            success=True,
-                            pipeline=docetl_config,
-                            output=output,
-                            time_taken=elapsed,
-                            attempts=attempt + 1
-                        )
-
-            except Exception as e:
-                if self.config.verbose:
-                    self.logger.error(f"Attempt {attempt + 1} failed: {e}")
-                    self.logger.error(traceback.format_exc())
-
-                if attempt == self.max_attempts - 1:
-                    # Final attempt failed
-                    # FailedPipeline expects (pipeline_yaml, error_type, error_message)
-                    self.failed_pipelines.append(FailedPipeline(
-                        pipeline_yaml=f"# Query: {query}\n# Failed after {self.max_attempts} attempts",
-                        error_type='execution',
-                        error_message=str(e)
-                    ))
-
-        # All attempts failed
-        elapsed = time.time() - start_time
-        self.total_time += elapsed
-
-        return BaselineResult(
-            success=False,
-            pipeline=None,
-            output=None,
-            time_taken=elapsed,
-            attempts=self.max_attempts,
-            error="Max attempts reached"
-        )
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Get baseline statistics."""
-        return {
-            "total_queries": self.total_queries,
-            "successful_pipelines": self.successful_pipelines,
-            "failed_pipelines": len(self.failed_pipelines),
-            "total_generation_attempts": self.total_generation_attempts,
-            "average_time": self.total_time / self.total_queries if self.total_queries > 0 else 0,
-            "base_system": self.base_system.value,
-        }
-
     # Required abstract methods from BaselineInterface
 
     def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> BaselineResult:
@@ -1225,17 +1044,13 @@ class AbstractStepBaseline(BaselineInterface):
         self.total_queries += 1
 
         try:
-            # Prepare dataset files from context
+            # Prepare dataset file from context (assume single json dataset)
             dataset_paths = self.data_processor.prepare_dataset_files(context)
 
-            if not dataset_paths and context:
-                raise ValueError("No valid datasets could be prepared from context")
-
-            # Use first dataset path for pipeline generation
-            dataset_path = dataset_paths[0] if dataset_paths else None
-
-            if not dataset_path:
+            if not dataset_paths:
                 raise ValueError("No dataset path available")
+
+            dataset_path = dataset_paths[0]
 
             # Load dataset samples
             dataset_samples = load_sample_data([dataset_path])
@@ -1243,7 +1058,6 @@ class AbstractStepBaseline(BaselineInterface):
             # Attempt pipeline generation with retries
             success = False
             result_output = None
-            pipeline_config = None
 
             for attempt in range(self.max_attempts):
                 self.total_generation_attempts += 1
@@ -1256,8 +1070,8 @@ class AbstractStepBaseline(BaselineInterface):
                     abstract_pipeline = self._build_abstract_pipeline(query, dataset_samples, attempt)
 
                     # Convert and execute
-                    success, result_output, pipeline_config = self._convert_and_execute(
-                        abstract_pipeline, query, dataset_path, context or {}
+                    success, result_output, _ = self._convert_and_execute(
+                        abstract_pipeline, query, dataset_path
                     )
 
                     if success and result_output:
@@ -1289,7 +1103,7 @@ class AbstractStepBaseline(BaselineInterface):
                         "baseline": "abstract_step",
                         "base_system": self.base_system.value,
                         "context_provided": context is not None,
-                        "num_datasets": len(dataset_paths) if dataset_paths else 0,
+                        "num_datasets": 1,  # Single json dataset
                         "generation_attempts": self.total_generation_attempts,
                         "success": True
                     },
@@ -1304,7 +1118,7 @@ class AbstractStepBaseline(BaselineInterface):
                         "baseline": "abstract_step",
                         "base_system": self.base_system.value,
                         "context_provided": context is not None,
-                        "num_datasets": len(dataset_paths) if dataset_paths else 0,
+                        "num_datasets": 1,  # Single json dataset
                         "generation_attempts": self.total_generation_attempts,
                         "success": False
                     },
@@ -1334,8 +1148,6 @@ class AbstractStepBaseline(BaselineInterface):
 
     def batch_process(self, queries: List[str], contexts: Optional[List[Dict[str, Any]]] = None) -> List[BaselineResult]:
         """Process multiple queries in batch."""
-        from .base import BaselineResult as InterfaceBaselineResult
-
         if contexts is None:
             contexts = [None] * len(queries)
 

@@ -1,12 +1,6 @@
-"""
-Abstract operators module for NL2X.
 
-This module provides:
-- Abstract operator definitions (ops)
-- Pipeline class for building DAGs
-- Conversion utilities for system-specific operators
-- Data management layer for dataset transformations and path management
-"""
+"""Abstract operators module for NL2X."""
+
 
 from .ops import (
     Operator,

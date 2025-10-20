@@ -23,16 +23,7 @@ from .executor import DocETLExecutor, LotusExecutor, ExecutionResult
 from .db import DatasetManager, DataSource
 
 # Import conversion utilities
-try:
-    from .convert.docetl import (
-        dict_to_operator,
-        operator_to_dict
-    )
-except ImportError:
-    # Try relative import for standalone execution
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'convert'))
-    from docetl import dict_to_operator, operator_to_dict
+from .convert.docetl import dict_to_operator, operator_to_dict
 
 
 class AbstractExecutor:

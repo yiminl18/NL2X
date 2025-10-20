@@ -6,8 +6,7 @@ from .pipeline import Pipeline
 from .db import DataSource, DatasetManager
 from model.litellm_client import llm_call
 
-sys.path.insert(0, str(Path(__file__).parent / "tools"))
-from static_comparator import compare_pipelines
+from .tools.static_comparator import compare_pipelines
 
 def _infer_field_type(value: Any, samples: List[Any] = None) -> str:
     """

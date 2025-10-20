@@ -85,18 +85,62 @@ class AbstractStepUserInterface:
         print(f"\n✅ Completed Step: {step_name}")
         print("-"*40)
 
-        # Display result summary
-        if isinstance(result, list):
-            print(f"Generated {len(result)} operators:")
-            for i, item in enumerate(result):
-                if isinstance(item, dict):
-                    op_type = item.get('type', 'Unknown')
-                    purpose = item.get('purpose', 'N/A')
-                    print(f"  {i+1}. {op_type}: {purpose}")
-                else:
-                    print(f"  {i+1}. {item}")
+        # Display step-specific data based on step name
+        if "Step 1" in step_name or "Operator Selection" in step_name:
+            # Step 1: Operator Selection
+            if isinstance(result, list):
+                print(f"Selected {len(result)} operators:")
+                for i, op in enumerate(result, 1):
+                    if isinstance(op, dict):
+                        op_type = op.get('type', 'Unknown')
+                        purpose = op.get('purpose', 'N/A')
+                        print(f"  {i}. {op_type}: {purpose}")
+                    else:
+                        print(f"  {i}. {op}")
+            else:
+                print(result)
+
+        elif "Step 2" in step_name or "Operator Details" in step_name:
+            # Step 2: Operator Details Generation
+            # Note: This is typically handled by display_generated_operator for each operator
+            # But if called for the whole step, display summary
+            if isinstance(result, list):
+                print(f"Generated {len(result)} operators:")
+                for i, op in enumerate(result, 1):
+                    if isinstance(op, dict):
+                        op_name = op.get('name', f'op_{i}')
+                        op_type = op.get('type', 'Unknown')
+                        print(f"  {i}. {op_name} ({op_type})")
+
+                        # Show key fields based on operator type
+                        if op.get('type') in ['map', 'filter', 'reduce']:
+                            if 'prompt' in op:
+                                prompt_preview = op['prompt'][:100] + "..." if len(op.get('prompt', '')) > 100 else op.get('prompt', '')
+                                print(f"     Prompt: {prompt_preview}")
+
+                        # Show output schema if available
+                        output_fields = self._parse_operator_output_fields(op)
+                        if output_fields:
+                            print(f"     Output fields: {', '.join(output_fields)}")
+                    else:
+                        print(f"  {i}. {op}")
+            else:
+                print(result)
+
         else:
-            print(result)
+            # Generic display for other steps
+            if isinstance(result, list):
+                print(f"Generated {len(result)} items:")
+                for i, item in enumerate(result, 1):
+                    if isinstance(item, dict):
+                        item_type = item.get('type', 'Unknown')
+                        item_name = item.get('name', item.get('purpose', 'N/A'))
+                        print(f"  {i}. {item_type}: {item_name}")
+                    else:
+                        print(f"  {i}. {item}")
+            else:
+                print(result)
+
         print("-"*40)
 
         # Get next step info
@@ -109,6 +153,44 @@ class AbstractStepUserInterface:
             return False
 
         print("✅ Proceeding to next step...")
+        return True
+
+    def confirm_pipeline_execution(self, pipeline_file: str, query: str, attempt: int) -> bool:
+        """
+        Ask user for confirmation before executing pipeline in confirm/debug mode.
+
+        Args:
+            pipeline_file: Path to the generated pipeline YAML file
+            query: Original query
+            attempt: Attempt number
+
+        Returns:
+            True if user wants to continue, False to abort
+        """
+        if not (self.config.confirm or self.config.debug):
+            return True
+
+        print("\n" + "="*80)
+        mode_text = "[DEBUG MODE]" if self.config.debug else "[CONFIRM MODE]"
+        print(f"{mode_text} Pipeline Generated - Attempt {attempt + 1}")
+        print("="*80)
+
+        print(f"\n📋 Query:")
+        print("-"*40)
+        print(query[:200] + "..." if len(query) > 200 else query)
+        print("-"*40)
+
+        print(f"\n📄 Generated Pipeline File:")
+        print(f"  {pipeline_file}")
+
+        print("\n➡️  Execute this pipeline? (Y/n): ", end="")
+        user_input = input().strip().lower()
+
+        if user_input and user_input != 'y':
+            print("❌ Pipeline execution skipped by user")
+            return False
+
+        print("✅ Proceeding with pipeline execution...")
         return True
 
     def _get_next_step_info(self, current_step: str) -> str:
@@ -283,3 +365,74 @@ class AbstractStepUserInterface:
             op_name = op.name if hasattr(op, 'name') else f'op_{i}'
             print(f"  {i+1}. {op_name} ({op_type})")
         print("-"*40)
+
+    def _parse_operator_output_fields(self, operator: Dict[str, Any]) -> List[str]:
+        """
+        Parse output fields from an operator's configuration.
+
+        Returns a list of field names that this operator will add to the data.
+
+        Args:
+            operator: Operator configuration dictionary
+
+        Returns:
+            List of output field names
+        """
+        output_fields = []
+
+        # Special handling for extract operator
+        if operator.get('type') == 'extract':
+            if 'document_keys' in operator and operator['document_keys'] != "TO_BE_GENERATED":
+                if isinstance(operator['document_keys'], list) and operator['document_keys']:
+                    for doc_key in operator['document_keys']:
+                        suffix = operator.get('extraction_key_suffix', f"_extracted_{operator.get('name', 'extract')}")
+                        output_fields.append(f"{doc_key}{suffix}")
+                else:
+                    # Fallback
+                    suffix = operator.get('extraction_key_suffix', f"_extracted_{operator.get('name', 'extract')}")
+                    output_fields.append(f"src{suffix}")
+            return output_fields
+
+        # Parse output schema
+        if 'output' in operator and isinstance(operator['output'], dict):
+            schema = operator['output'].get('schema', {})
+
+            if isinstance(schema, dict):
+                output_fields.extend(schema.keys())
+            elif isinstance(schema, str):
+                import re
+                matches = re.findall(r'(\w+)\s*:\s*\w+', schema)
+                output_fields.extend(matches)
+
+        # Special handling for specific operator types
+        if operator.get('type') == 'unnest' and 'unnest_key' in operator:
+            pass  # Fields remain the same, just expanded
+        elif operator.get('type') == 'split':
+            output_fields.append('_split_id')
+            output_fields.append('_split_index')
+        elif operator.get('type') == 'gather':
+            if 'output_key' in operator:
+                output_fields.append(operator['output_key'])
+
+        return output_fields
+
+    def format_query_as_comments(self, query: str) -> str:
+        """
+        Format a potentially multi-line query as YAML comments.
+
+        Args:
+            query: The query string, which may contain multiple lines
+
+        Returns:
+            Formatted string with each line prefixed by '# '
+        """
+        lines = query.strip().split('\n')
+        commented_lines = []
+
+        for i, line in enumerate(lines):
+            if i == 0:
+                commented_lines.append(f"# Query: {line}")
+            else:
+                commented_lines.append(f"# {line}")
+
+        return '\n'.join(commented_lines)

@@ -25,27 +25,14 @@ from ..ops.base import Operator
 from ..cache import OperatorCacheManager
 
 # Import conversion utilities
-try:
-    from ..convert.docetl import abstract_to_docetl
-    from ..convert.docetl.path_manager import (
-        get_dataset_paths,
-        set_dataset_paths,
-        get_output_path,
-        set_output_path,
-        apply_path_mappings
-    )
-except ImportError:
-    # Try alternative import for standalone execution
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'convert'))
-    from docetl import abstract_to_docetl
-    from docetl.path_manager import (
-        get_dataset_paths,
-        set_dataset_paths,
-        get_output_path,
-        set_output_path,
-        apply_path_mappings
-    )
+from ..convert.docetl import abstract_to_docetl
+from ..convert.docetl.path_manager import (
+    get_dataset_paths,
+    set_dataset_paths,
+    get_output_path,
+    set_output_path,
+    apply_path_mappings
+)
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
@@ -81,11 +68,8 @@ class DocETLExecutor(BaseSystemExecutor):
 
     def _check_docetl(self) -> bool:
         """Check if DocETL is available for execution."""
-        # try:
         from docetl.runner import DSLRunner
         return True
-        # except ImportError:
-        #     return False
 
     def get_system_name(self) -> str:
         """
@@ -102,7 +86,6 @@ class DocETLExecutor(BaseSystemExecutor):
                         config: Optional[Dict[str, Any]] = None,
                         force_execute: bool = False) -> ExecutionResult:
         """Execute single abstract operator using DocETL with caching support."""
-        # Check cache first (unless force_execute is True)
         if self.cache_enabled:
             cached_result = self.cache_manager.get_cached_result(
                 operator, data_source, force_execute=force_execute
@@ -132,10 +115,8 @@ class DocETLExecutor(BaseSystemExecutor):
                 else:
                     print(f"✗ Cache miss for operator: {operator.name}")
 
-        # Execute normally (cache miss, caching disabled, or force_execute)
         result = self._execute_operator_impl(operator, data_source, config)
 
-        # Cache successful results (always cache, even for force_execute)
         if result.success and self.cache_enabled:
             self.cache_manager.set_cached_result(
                 operator, data_source, result.data, result.metadata
@@ -146,7 +127,6 @@ class DocETLExecutor(BaseSystemExecutor):
                 else:
                     print(f"✓ Cached result for operator: {operator.name}")
 
-        # Add cache metadata
         result.metadata['cache_hit'] = False
         result.metadata['force_execute'] = force_execute
 
@@ -176,7 +156,6 @@ class DocETLExecutor(BaseSystemExecutor):
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
                 yaml.dump(temp_pipeline, f, default_flow_style=False, sort_keys=False)
                 temp_file = f.name
-            # Print temp pipeline
             print(f"Temp pipeline: {temp_pipeline}")
             try:
                 runner = DSLRunner.from_yaml(temp_file, max_threads=10)
@@ -203,7 +182,6 @@ class DocETLExecutor(BaseSystemExecutor):
                 )
 
             finally:
-                # Clean up temp files
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
 
@@ -232,7 +210,6 @@ class DocETLExecutor(BaseSystemExecutor):
         try:
             from docetl.runner import DSLRunner
 
-            # Apply DatasetManager path mappings if available
             if self.data_manager:
                 dataset_paths = get_dataset_paths(pipeline_config)
                 dataset_path_mapping = {}
@@ -244,11 +221,9 @@ class DocETLExecutor(BaseSystemExecutor):
                         if self.verbose:
                             print(f"Using processed dataset for {dataset_name}: {processed_path}")
 
-                # Apply dataset path mappings
                 if dataset_path_mapping:
                     pipeline_config = set_dataset_paths(pipeline_config, dataset_path_mapping, in_place=False)
 
-                # Apply output path mapping if registered
                 original_output_path = get_output_path(pipeline_config)
                 if original_output_path:
                     new_output_path = self.data_manager.get_output_path(original_output_path)
@@ -257,17 +232,14 @@ class DocETLExecutor(BaseSystemExecutor):
                         if self.verbose:
                             print(f"Using custom output path: {new_output_path}")
 
-            # Override input data if provided (takes precedence over DatasetManager)
             if data_source:
                 for dataset_name in pipeline_config.get('datasets', {}).keys():
                     pipeline_config['datasets'][dataset_name]['path'] = data_source.path
 
-            # Configure intermediate directory if requested
             if save_intermediates and intermediate_dir:
                 pipeline_config.setdefault('pipeline', {}).setdefault('output', {})
                 pipeline_config['pipeline']['output']['intermediate_dir'] = intermediate_dir
 
-            # Create temporary pipeline file
             start_time = time.time()
 
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
@@ -275,18 +247,15 @@ class DocETLExecutor(BaseSystemExecutor):
                 temp_file = f.name
 
             try:
-                # Run the pipeline
                 runner = DSLRunner.from_yaml(temp_file, max_threads=10)
                 runner.load_run_save()
 
-                # Load output
                 output_path = pipeline_config['pipeline']['output']['path']
                 with open(output_path, 'r') as f:
                     output_data = json.load(f)
 
                 execution_time = time.time() - start_time
 
-                # Collect intermediate results if saved
                 intermediate_results = {}
                 if save_intermediates and intermediate_dir:
                     intermediate_results = self._collect_intermediate_results(intermediate_dir)
@@ -304,7 +273,6 @@ class DocETLExecutor(BaseSystemExecutor):
                 )
 
             finally:
-                # Clean up temp file
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
 
@@ -320,14 +288,11 @@ class DocETLExecutor(BaseSystemExecutor):
                             data_source: 'DataSource',
                             config: Dict[str, Any]) -> Dict[str, Any]:
         """Create temporary pipeline for executing single operator."""
-        # Use DataSource path directly
         input_path = data_source.path
         dataset_type = 'file'
 
-        # Create output path
         output_path = tempfile.mktemp(suffix='.json')
 
-        # Build pipeline
         pipeline = {
             'datasets': {
                 'input_data': {
@@ -351,7 +316,6 @@ class DocETLExecutor(BaseSystemExecutor):
             }
         }
 
-        # Add optional config
         if 'default_model' in config:
             pipeline['default_model'] = config['default_model']
         if 'system_prompt' in config:
@@ -374,7 +338,6 @@ class DocETLExecutor(BaseSystemExecutor):
         if not os.path.exists(intermediate_dir):
             return intermediate_results
 
-        # Walk through intermediate directory
         for root, dirs, files in os.walk(intermediate_dir):
             for file in files:
                 if file.endswith('.json'):

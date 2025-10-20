@@ -10,9 +10,7 @@ from DocETL operators. It handles:
 
 from typing import Any, Dict, Set, Optional
 import re
-import sys
-sys.path.append('../../type')
-from type import TypeSystem, serialize_type_dict
+from ...type import TypeSystem, serialize_type_dict
 
 
 def _extract_fields_from_jinja2(template: str) -> Set[str]:

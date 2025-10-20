@@ -11,9 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from pathlib import Path
 from collections import defaultdict
 
-# Import abstract type system
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from type import TypeSystem, parse_type_string, check_type_compatibility, validate_type_syntax
+from ..type import TypeSystem, parse_type_string, check_type_compatibility, validate_type_syntax
 
 
 # ============================================================================
@@ -34,7 +32,6 @@ def validate_operator_fields(operators: List[Dict[str, Any]]) -> Tuple[bool, Lis
             if field not in op:
                 errors.append(f"Operator '{op_name}' missing required field: {field}")
 
-        # Validate source structure
         if 'source' in op:
             source = op['source']
             if not isinstance(source, dict):
@@ -45,28 +42,23 @@ def validate_operator_fields(operators: List[Dict[str, Any]]) -> Tuple[bool, Lis
                 if 'name' not in source:
                     errors.append(f"Operator '{op_name}': 'source' missing 'name' field")
 
-        # Validate input structure
         if 'input' in op:
             input_schema = op['input']
             if not isinstance(input_schema, dict):
                 errors.append(f"Operator '{op_name}': 'input' must be a dictionary")
             else:
-                # Check for type field when input has fields
                 if 'fields' in input_schema and 'type' not in input_schema:
                     warnings.append(f"Operator '{op_name}': 'input' has 'fields' but no 'type' specification")
 
-                # Validate fields structure
                 if 'fields' in input_schema:
                     if not isinstance(input_schema['fields'], dict):
                         errors.append(f"Operator '{op_name}': 'input.fields' must be a dictionary")
 
-        # Validate output structure
         if 'output' in op:
             output_schema = op['output']
             if not isinstance(output_schema, dict):
                 errors.append(f"Operator '{op_name}': 'output' must be a dictionary")
 
-        # Validate properties structure
         if 'properties' in op:
             if not isinstance(op['properties'], dict):
                 errors.append(f"Operator '{op_name}': 'properties' must be a dictionary")
@@ -102,7 +94,6 @@ def validate_type_representations(operators: List[Dict[str, Any]]) -> Tuple[bool
     for op in operators:
         op_name = op.get('name', '<unnamed>')
 
-        # Check input field types
         if 'input' in op and isinstance(op['input'], dict):
             if 'fields' in op['input'] and isinstance(op['input']['fields'], dict):
                 for field_name, field_type in op['input']['fields'].items():
@@ -111,10 +102,9 @@ def validate_type_representations(operators: List[Dict[str, Any]]) -> Tuple[bool
                         if not is_valid:
                             errors.append(f"Operator '{op_name}' input field '{field_name}': {error}")
 
-        # Check output field types
         if 'output' in op and isinstance(op['output'], dict):
             for field_name, field_type in op['output'].items():
-                if field_name == 'type':  # Skip special 'type' key
+                if field_name == 'type':
                     continue
                 if isinstance(field_type, str):
                     is_valid, parsed, error = parse_type_string(field_type)
@@ -131,17 +121,14 @@ def validate_schema_consistency(operators: List[Dict[str, Any]], dataset_schema:
     warnings = []
     strict_mode = dataset_schema is not None
 
-    # Track available fields and their types through the pipeline
     available_fields = {}  # field_name -> type_string
 
-    # Initialize with dataset schema fields if provided
     if dataset_schema and "fields" in dataset_schema:
         available_fields.update(dataset_schema["fields"])
 
     for i, op in enumerate(operators):
         op_name = op.get('name', f'<operator {i}>')
 
-        # Check input fields against available fields
         if 'input' in op and isinstance(op['input'], dict):
             input_fields = op['input'].get('fields', {})
             if isinstance(input_fields, dict):
@@ -155,37 +142,29 @@ def validate_schema_consistency(operators: List[Dict[str, Any]], dataset_schema:
                                 f"with type '{expected_type}' but pipeline provides '{available_type}': {reason}"
                             )
                     else:
-                        # Field doesn't exist in available fields
                         if strict_mode:
-                            # In strict mode, this is an error
                             errors.append(
                                 f"Operator '{op_name}' references field '{field_name}' "
                                 f"which does not exist in dataset or upstream operators"
                             )
                         elif expected_type != 'Unknown':
-                            # In normal mode, only warn for non-Unknown types
                             warnings.append(
                                 f"Operator '{op_name}' references field '{field_name}' "
                                 f"which may not exist in pipeline"
                             )
 
-        # Update available fields with this operator's output
         if 'output' in op and isinstance(op['output'], dict):
             for field_name, field_type in op['output'].items():
-                if field_name == 'type':  # Skip special keys
+                if field_name == 'type':
                     continue
                 available_fields[field_name] = field_type
 
-        # Special handling for certain operator types
         op_type = op.get('type', '')
 
-        # Unnest operator exposes fields from nested structures
         if op_type == 'Unnest':
             unnest_key = op.get('properties', {}).get('unnest_key')
             if unnest_key and unnest_key in available_fields:
-                # Try to extract nested fields from the type
                 type_str = available_fields.get(unnest_key, '')
-                # Parse for List[Dict[{fields}]] pattern
                 dict_match = re.search(r'Dict\[\{(.+?)\}\]', type_str)
                 if dict_match:
                     fields_str = dict_match.group(1)

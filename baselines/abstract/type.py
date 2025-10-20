@@ -45,16 +45,13 @@ def parse_type_string(type_str: str) -> Tuple[bool, Optional[Dict[str, Any]], Op
 
     type_str = type_str.strip()
 
-    # Check for basic types
     if type_str in TypeSystem.BASIC_TYPES:
         return True, {'type': type_str}, None
 
-    # Handle type aliases
     if type_str in TypeSystem.TYPE_ALIASES:
         normalized = TypeSystem.TYPE_ALIASES[type_str]
         return True, {'type': normalized}, None
 
-    # Parse List type: List[ElementType]
     list_match = re.match(r'^List\[(.+)\]$', type_str)
     if list_match:
         element_type_str = list_match.group(1)
@@ -63,13 +60,11 @@ def parse_type_string(type_str: str) -> Tuple[bool, Optional[Dict[str, Any]], Op
             return False, None, f"Invalid List element type: {error}"
         return True, {'type': 'List', 'element_type': element_type}, None
 
-    # Parse Dict type with fields: Dict[{field1: Type1, field2: Type2}]
     dict_match = re.match(r'^Dict\[\{(.+)\}\]$', type_str)
     if dict_match:
         fields_str = dict_match.group(1)
         fields = {}
 
-        # Parse field definitions (simple parser for field: Type pairs)
         field_pairs = re.findall(r'(\w+)\s*:\s*([^,}]+)', fields_str)
         for field_name, field_type_str in field_pairs:
             field_type_str = field_type_str.strip()
@@ -83,11 +78,9 @@ def parse_type_string(type_str: str) -> Tuple[bool, Optional[Dict[str, Any]], Op
 
         return True, {'type': 'Dict', 'fields': fields}, None
 
-    # Simple Dict without fields
     if type_str == 'Dict':
         return True, {'type': 'Dict'}, None
 
-    # Check for common mistakes
     if type_str.startswith('list[') or type_str.startswith('array['):
         return False, None, f"Type should use 'List' (capitalized) not '{type_str.split('[')[0]}'"
 
@@ -98,7 +91,6 @@ def parse_type_string(type_str: str) -> Tuple[bool, Optional[Dict[str, Any]], Op
         if not type_str.startswith('Dict[{'):
             return False, None, "Dict fields must be wrapped in 'Dict[{...}]'"
 
-    # Unrecognized type format
     return False, None, f"Unrecognized type format: {type_str}"
 
 
@@ -109,17 +101,14 @@ def serialize_type_dict(type_dict: Dict[str, Any]) -> str:
 
     type_name = type_dict.get('type', 'Unknown')
 
-    # For basic types, return the type name directly
     if type_name in TypeSystem.BASIC_TYPES:
         return type_name
 
-    # For List types, include element type
     if type_name == 'List':
         element_type = type_dict.get('element_type', {'type': 'Unknown'})
         element_str = serialize_type_dict(element_type)
         return f"List[{element_str}]"
 
-    # For Dict types, include field definitions if present
     if type_name == 'Dict':
         fields = type_dict.get('fields', {})
         if fields:

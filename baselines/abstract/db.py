@@ -1,4 +1,4 @@
-"""Data management with immutable DataSource and lineage tracking."""
+"""Data management for abstract pipelines, featuring immutable DataSource and lineage tracking."""
 
 from typing import Any, Dict, List, Optional, Union, Literal, Set
 from pathlib import Path
@@ -252,10 +252,6 @@ class DatasetManager:
         self.sources: Dict[str, DataSource] = {}
         self.path_to_source_id: Dict[str, str] = {}
 
-        # Legacy support for DocETL executor
-        self.path_mappings: Dict[str, str] = {}
-        self.output_path_mapping: Dict[str, str] = {}
-
         # Track temp files for cleanup
         self.temp_files: List[str] = []
 
@@ -348,15 +344,6 @@ class DatasetManager:
         # Update parent's children list
         if parent_id and parent_id in self.sources:
             self.sources[parent_id].add_child(source.id)
-
-    def get_processed_path(self, original_path: Union[str, Path]) -> Optional[str]:
-        """Get processed path for original dataset path (legacy support for DocETL)."""
-        original_path_str = str(Path(original_path).resolve())
-        return self.path_mappings.get(original_path_str)
-
-    def get_output_path(self, original_path: str) -> Optional[str]:
-        """Get modified output path for original path (legacy support for DocETL)."""
-        return self.output_path_mapping.get(original_path)
 
     def cleanup(self):
         """Clean up temporary files and directories."""

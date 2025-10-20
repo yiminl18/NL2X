@@ -31,8 +31,6 @@ from string import Template
 from pathlib import Path
 from datetime import datetime
 
-# Import litellm client
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from model.litellm_client import llm_call
 
 

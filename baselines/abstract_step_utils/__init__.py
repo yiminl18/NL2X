@@ -32,8 +32,6 @@ from .dynamic_inst import (
     get_rule_scores
 )
 
-from ..docetl_step_utils.ui import DocETLUserInterface
-
 __all__ = [
     # Prompts
     'ABSTRACT_OPERATOR_SELECTION_PROMPT',
@@ -57,7 +55,4 @@ __all__ = [
     'get_top_rules_by_score',
     'update_rule_score',
     'get_rule_scores',
-
-    # UI
-    'DocETLUserInterface'
 ]

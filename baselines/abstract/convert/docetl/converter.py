@@ -14,27 +14,10 @@ import json
 import argparse
 from pathlib import Path
 
-# Setup path for standalone execution
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_parent_dir = os.path.dirname(os.path.dirname(_current_dir))
-sys.path.insert(0, _parent_dir)
-sys.path.insert(0, os.path.join(_parent_dir, 'tools'))
-
-# Import core dependencies
-try:
-    from ...ops.base import Operator
-    from ...pipeline import Pipeline
-    from ...tools.docetl_pipeline_parser import parse_pipeline_operators
-    from ...tools.static_checker import validate_pipeline
-except ImportError:
-    from ops.base import Operator
-    from pipeline import Pipeline
-    from docetl_pipeline_parser import parse_pipeline_operators
-    try:
-        from static_checker import validate_pipeline
-    except ImportError:
-        def validate_pipeline(operators, verbose=False):
-            return {'is_valid': True, 'errors': [], 'warnings': [], 'summary': {}}
+from ...ops.base import Operator
+from ...pipeline import Pipeline
+from ...tools.docetl_pipeline_parser import parse_pipeline_operators
+from ...tools.static_checker import validate_pipeline
 
 # Import schema and type utilities
 from .schema import _extract_input_schema, _extract_output_schema, DocETLTypeMapper

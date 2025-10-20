@@ -1,12 +1,5 @@
 """
-DocETL Converter Module
-
 This module provides utilities to convert between DocETL operators and abstract operators.
-It is organized into three sub-modules:
-
-- schema: Type and schema tracking utilities
-- converter: Main conversion logic and YAML/JSON handling
-- path_manager: Path management APIs for dataset and output paths
 """
 
 # Import all public functions from converter

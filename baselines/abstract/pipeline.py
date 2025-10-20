@@ -123,10 +123,8 @@ class Pipeline:
         if self.has_cycle():
             raise ValueError("Cannot get execution order: pipeline contains a cycle")
 
-        # Calculate in-degree for each node
         in_degree = {node_id: len(node.parents) for node_id, node in self.nodes.items()}
 
-        # Queue for nodes with in-degree 0
         queue = deque([node_id for node_id, degree in in_degree.items() if degree == 0])
 
         execution_order = []
@@ -135,7 +133,6 @@ class Pipeline:
             node_id = queue.popleft()
             execution_order.append(node_id)
 
-            # Reduce in-degree for children
             for child_id in self.edges.get(node_id, []):
                 in_degree[child_id] -= 1
                 if in_degree[child_id] == 0:
@@ -160,10 +157,7 @@ class Pipeline:
 
     def _reconnect_edges(self, removed_node_id: str):
         """
-        Reconnect edges after removing a node.
-
-        Connects all parents of the removed node to all children of the removed node.
-        If node has no parents or no children, just removes the relevant edges.
+        Reconnects edges after removing a node by connecting its parents to its children.
 
         Args:
             removed_node_id: ID of the node being removed

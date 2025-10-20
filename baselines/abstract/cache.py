@@ -1,13 +1,7 @@
 """
 Pipeline Cache Manager for Abstract Operators
 
-This module provides caching functionality for abstract operator executions.
-It caches operator configuration-input-output mappings to avoid redundant executions.
-
-Cache Key Design:
-- Operator hash: SHA-512 of operator config (excluding name and source.name)
-- Input hash: SHA-512 of normalized input data
-- Cache key: {operator_hash}_{input_hash}.json
+This module provides caching functionality for abstract operator executions to avoid redundant computations.
 """
 
 from typing import Any, Dict, Optional, Union, TYPE_CHECKING
