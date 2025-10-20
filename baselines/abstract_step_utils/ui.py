@@ -213,7 +213,6 @@ class AbstractStepUserInterface:
         operator_type: str,
         operator_purpose: str,
         prompt: str,
-        prompt_file: str
     ) -> str:
         """
         Ask for confirmation before generating a single operator.
@@ -241,9 +240,6 @@ class AbstractStepUserInterface:
 
         print(f"\n📋 Operator Type: {operator_type}")
         print(f"📋 Purpose: {operator_purpose}")
-        print("-"*40)
-
-        print(f"\n📄 Prompt saved to: {prompt_file}")
         print("-"*40)
 
         # Show prompt preview (first 500 chars)

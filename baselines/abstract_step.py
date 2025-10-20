@@ -13,7 +13,6 @@ import time
 from typing import Any, Dict, List, Optional, Tuple, Set
 import os
 import json
-import yaml
 import traceback
 from datetime import datetime
 import logging
@@ -22,7 +21,8 @@ from .base import BaselineInterface, BaselineResult
 from . import register_baseline
 from .docetl_utils.data_utils import DocETLDataProcessor
 from .abstract_step_utils.ui import AbstractStepUserInterface
-from .docetl_utils.log_utils import get_filename_base
+from .abstract_step_utils.checker_utils import validate_pipeline_static
+from .abstract_step_utils.log_utils import PipelineFileManager
 from .docetl_utils.pipeline_utils import (
     load_sample_data,
     execute_single_pipeline,
@@ -52,6 +52,7 @@ from .abstract.support import (
 
 # Use existing converter from abstract layer
 from .abstract.ops.base import Operator
+from .abstract.ops import Map, Filter, Reduce, Resolve, Extract
 from .abstract.pipeline import Pipeline
 from .abstract.convert.docetl import (
     abstract_to_docetl,
@@ -71,6 +72,18 @@ class AbstractStepBaseline(BaselineInterface):
     4. Convert to DocETL YAML
     5. Execute and validate
     """
+
+    def _log(self, message: str, level: str = 'info', force: bool = False):
+        """
+        Unified logging interface with automatic verbose check.
+
+        Args:
+            message: Log message
+            level: Log level ('info', 'warning', 'error', 'debug')
+            force: If True, log regardless of verbose setting (for errors/warnings)
+        """
+        if force or self.config.verbose:
+            getattr(self.logger, level)(message)
 
     def _setup(self):
         """Initialize baseline configuration and directories."""
@@ -119,12 +132,23 @@ class AbstractStepBaseline(BaselineInterface):
         # Initialize user interface for confirmations
         self.ui = AbstractStepUserInterface(self.config)
 
-        if self.config.verbose:
-            self.logger.info(f"Initialized Abstract Step baseline with config: {self.config}")
-            self.logger.info(f"Base system: {self.base_system.value}")
-            self.logger.info(f"Supported operators: {get_supported_operators(self.base_system)}")
-            self.logger.info(f"Pipeline output directory: {self.pipeline_output_dir}")
-            self.logger.info(f"Abstract pipeline directory: {self.abstract_pipeline_dir}")
+        # Initialize file manager for centralized file operations
+        self.file_manager = PipelineFileManager(
+            base_dirs={
+                'pipeline_output': self.pipeline_output_dir,
+                'abstract_pipeline': self.abstract_pipeline_dir,
+                'converted_data': self.converted_data_dir
+            },
+            data_processor=self.data_processor,
+            logger=self.logger,
+            verbose=self.config.verbose
+        )
+
+        self._log(f"Initialized Abstract Step baseline with config: {self.config}")
+        self._log(f"Base system: {self.base_system.value}")
+        self._log(f"Supported operators: {get_supported_operators(self.base_system)}")
+        self._log(f"Pipeline output directory: {self.pipeline_output_dir}")
+        self._log(f"Abstract pipeline directory: {self.abstract_pipeline_dir}")
 
     def _select_operators(
         self,
@@ -145,11 +169,6 @@ class AbstractStepBaseline(BaselineInterface):
         Returns:
             List of selected operators with type and purpose
         """
-        # Infer schema from samples (assume single json dataset)
-        samples_list = dataset_samples[:10] if dataset_samples else []
-        schema = infer_schema_from_samples(samples_list if samples_list else [{}])
-
-        # Format dataset samples for prompt
         dataset_samples_str = json.dumps(dataset_samples, indent=2)
 
         # Get operator selection prompt (filtered by base system support)
@@ -195,17 +214,14 @@ class AbstractStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            # Call LLM (with bypass_cache if regenerating)
             bypass_cache = (user_choice == 'regenerate')
             response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
 
             result = json.loads(response)
             operators = result.get("operators", [])
 
-            # Filter out unsupported operators (safety check)
             operators = filter_unsupported_operators(operators, self.base_system)
 
-            # Collect response for debugging
             if collect_messages:
                 messages.append({"role": "assistant", "content": response})
 
@@ -226,179 +242,18 @@ class AbstractStepBaseline(BaselineInterface):
         return operators
 
     def _get_abstract_operator_schema(self, op_type: str) -> Dict[str, Any]:
-        """
-        Generate JSON schema for abstract operator type.
-
-        Args:
-            op_type: Operator type (Map, Filter, etc.)
-
-        Returns:
-            JSON schema dictionary
-        """
-        if op_type == 'Map':
-            return {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Jinja2 template for the transformation. Use {{ input.field_name }} to reference fields."
-                    },
-                    "input": {
-                        "type": "object",
-                        "properties": {
-                            "fields": {
-                                "type": "object",
-                                "description": "Input field types, e.g., {\"text\": \"String\", \"id\": \"Integer\"}"
-                            }
-                        },
-                        "required": ["fields"]
-                    },
-                    "output": {
-                        "type": "object",
-                        "description": "Output schema with ALL fields (preserved + new). IMPORTANT: For List types, MUST specify element type as 'List[ElementType]' (e.g., 'List[String]', 'List[Integer]', 'List[Dict[{name: String}]]'). For Dict types, can use 'Dict' or 'Dict[{field1: Type1, field2: Type2}]'. Examples: {\"text\": \"String\", \"names\": \"List[String]\", \"data\": \"Dict[{count: Integer}]\"}"
-                    },
-                    "properties": {
-                        "type": "object",
-                        "description": "Additional configuration (optional)"
-                    }
-                },
-                "required": ["prompt", "input", "output"]
-            }
-
-        elif op_type == 'Filter':
-            return {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Jinja2 template for the filter condition. Use {{ input.field_name }} to reference fields."
-                    },
-                    "input": {
-                        "type": "object",
-                        "properties": {
-                            "fields": {
-                                "type": "object",
-                                "description": "Input field types used in the condition"
-                            }
-                        },
-                        "required": ["fields"]
-                    },
-                    "output": {
-                        "type": "object",
-                        "description": "Output schema (same as all available fields). Use complete type specifications: 'List[String]' not 'List', 'Dict[{field: Type}]' for structured dicts."
-                    },
-                    "properties": {
-                        "type": "object",
-                        "description": "Additional configuration (optional)"
-                    }
-                },
-                "required": ["prompt", "input", "output"]
-            }
-
-        elif op_type == 'Reduce':
-            return {
-                "type": "object",
-                "properties": {
-                    "reduce_key": {
-                        "type": "string",
-                        "description": "Field name to group by (must exist in available fields)"
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Jinja2 template for aggregation. Use {{ inputs }} to reference grouped records."
-                    },
-                    "input": {
-                        "type": "object",
-                        "properties": {
-                            "fields": {
-                                "type": "object",
-                                "description": "Input field types including reduce_key"
-                            }
-                        },
-                        "required": ["fields"]
-                    },
-                    "output": {
-                        "type": "object",
-                        "description": "Output schema including reduce_key and aggregated fields. Use complete types: 'List[String]', 'Dict[{avg: Float, max: Float}]' etc."
-                    },
-                    "properties": {
-                        "type": "object",
-                        "description": "Additional configuration (optional)"
-                    }
-                },
-                "required": ["reduce_key", "prompt", "input", "output"]
-            }
-
-        elif op_type == 'Resolve':
-            return {
-                "type": "object",
-                "properties": {
-                    "comparison_prompt": {"type": "string"},
-                    "resolution_prompt": {"type": "string"},
-                    "input": {
-                        "type": "object",
-                        "properties": {
-                            "fields": {"type": "object"}
-                        },
-                        "required": ["fields"]
-                    },
-                    "output": {"type": "object"},
-                    "properties": {"type": "object"}
-                },
-                "required": ["comparison_prompt", "resolution_prompt", "input", "output"]
-            }
-
-        elif op_type == 'Extract':
-            return {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Jinja2 template describing what to extract. Use {{ input.field }} for document fields."
-                    },
-                    "document_keys": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of field names containing the documents to extract from"
-                    },
-                    "input": {
-                        "type": "object",
-                        "properties": {
-                            "fields": {
-                                "type": "object",
-                                "description": "Input field types including document fields"
-                            }
-                        },
-                        "required": ["fields"]
-                    },
-                    "output": {
-                        "type": "object",
-                        "description": "Output schema with extracted fields. CRITICAL: Specify complete types. For lists extracted from documents, use 'List[String]' not just 'List'. Examples: {\"document_name\": \"List[String]\", \"parties\": \"List[String]\", \"agreement_date\": \"List[String]\"}"
-                    },
-                    "properties": {
-                        "type": "object",
-                        "description": "Additional configuration (optional)"
-                    }
-                },
-                "required": ["prompt", "document_keys", "input", "output"]
-            }
-
-        # For other operators, use a generic schema
-        return {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string"},
-                "input": {
-                    "type": "object",
-                    "properties": {
-                        "fields": {"type": "object"}
-                    }
-                },
-                "output": {"type": "object"},
-                "properties": {"type": "object"}
-            },
-            "required": []
+        # Map operator types to their corresponding classes
+        operator_schema_map = {
+            'Map': Map,
+            'Filter': Filter,
+            'Reduce': Reduce,
+            'Resolve': Resolve,
+            'Extract': Extract,
         }
+
+        # Get the operator class and call its get_json_schema() method
+        operator_class = operator_schema_map.get(op_type, Operator)
+        return operator_class.get_json_schema()
 
     def _generate_operator_details(
         self,
@@ -432,11 +287,9 @@ class AbstractStepBaseline(BaselineInterface):
         op_type = operator['type']
         operator_purpose = operator['purpose']
 
-        # Format available fields
         current_schema = type_system.get_current_schema()
         available_fields_str = format_fields_for_prompt(current_schema)
 
-        # Format dataset samples
         dataset_samples_str = json.dumps(dataset_samples, indent=2)
 
         # Format previous operators (convert Operator objects to dicts)
@@ -463,13 +316,11 @@ class AbstractStepBaseline(BaselineInterface):
             operator_type=op_type,
             operator_purpose=operator_purpose,
             prompt=prompt,
-            prompt_file=None
         )
 
         if user_choice == 'abort':
             raise ValueError(f"User aborted operator generation at operator {operator_index + 1}")
 
-        # Get operator-specific schema
         parameters = self._get_abstract_operator_schema(op_type)
 
         system_prompt = f"You are an AI assistant that generates abstract layer {op_type} operator configurations. Always respond with valid JSON matching the required schema."
@@ -477,13 +328,11 @@ class AbstractStepBaseline(BaselineInterface):
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            # Call LLM (with bypass_cache if regenerating)
             bypass_cache = (user_choice == 'regenerate')
             response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
 
             llm_response = json.loads(response)
 
-            # Create Operator object
             abstract_operator = Operator()
             abstract_operator.name = f"op_{operator_index}_{op_type.lower()}"
             abstract_operator.type = op_type
@@ -492,7 +341,6 @@ class AbstractStepBaseline(BaselineInterface):
                 "name": abstract_operator.name
             }
 
-            # Extract input and output schemas
             abstract_operator.input = llm_response.get('input', {})
             abstract_operator.output = llm_response.get('output', {})
 
@@ -509,7 +357,6 @@ class AbstractStepBaseline(BaselineInterface):
                     f"operator_{operator_index}_output"
                 )
 
-            # Store all other fields as properties
             abstract_operator.properties = {}
             for key, value in llm_response.items():
                 if key not in ['input', 'output']:
@@ -526,7 +373,7 @@ class AbstractStepBaseline(BaselineInterface):
                 if was_modified:
                     abstract_operator.properties['prompt'] = fixed_prompt
 
-            # Clean up output schema: remove duplicate input fields
+            # Remove duplicate input fields from output schema
             if isinstance(abstract_operator.output, dict) and 'fields' in abstract_operator.input:
                 input_fields = abstract_operator.input['fields']
                 output_fields_to_remove = []
@@ -583,18 +430,15 @@ class AbstractStepBaseline(BaselineInterface):
             if self.config.verbose:
                 self.logger.info(f"Regenerating operator {operator_index + 1}...")
 
-            # Call LLM again with bypass_cache to force regeneration
             response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=True)
 
-            # Parse and create new operator
             llm_response = json.loads(response)
 
-            # Create new Operator object
             abstract_operator = Operator()
             abstract_operator.name = f"op_{operator_index}_{op_type.lower()}"
             abstract_operator.type = op_type
             abstract_operator.source = {
-                "system": "llm_generated",
+                "system": self.base_system.value,
                 "name": abstract_operator.name
             }
 
@@ -669,15 +513,12 @@ class AbstractStepBaseline(BaselineInterface):
 
         for field, type_str in schema.items():
             if not isinstance(type_str, str):
-                # Type is not a string, keep as-is
                 fixed_schema[field] = type_str
                 continue
 
-            # Validate type syntax
             is_valid, error = validate_type_syntax(type_str)
 
             if is_valid:
-                # Type is valid, keep it
                 fixed_schema[field] = type_str
             else:
                 # Type is invalid, try to fix common issues
@@ -692,7 +533,6 @@ class AbstractStepBaseline(BaselineInterface):
                 elif type_str == "Dict":
                     pass  # This is valid
 
-                # Re-validate after fix attempt
                 is_valid_after_fix, _ = validate_type_syntax(type_str)
 
                 if is_valid_after_fix:
@@ -803,7 +643,6 @@ class AbstractStepBaseline(BaselineInterface):
         Returns:
             Abstract Pipeline object
         """
-        # Step 1: Select operators
         if self.config.verbose:
             self.logger.info("Step 1: Selecting operators...")
 
@@ -812,14 +651,13 @@ class AbstractStepBaseline(BaselineInterface):
         if not operators:
             raise ValueError("No operators selected")
 
-        # Step 2: Generate operator details
         if self.config.verbose:
             self.logger.info(f"Step 2: Generating details for {len(operators)} operators...")
 
         # Initialize type system from dataset (assume single json dataset)
         samples_list = dataset_samples[:10] if dataset_samples else []
-        initial_schema = infer_schema_from_samples(samples_list if samples_list else [{}])
-        type_system = AbstractTypeSystem(initial_schema)
+        dataset_schema = infer_schema_from_samples(samples_list if samples_list else [{}])
+        type_system = AbstractTypeSystem(dataset_schema)
 
         filled_operators = []
         for i, op in enumerate(operators):
@@ -848,7 +686,7 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Build Pipeline object
         pipeline_name = f"abstract_pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        dataset_schema = {'fields': initial_schema}
+        dataset_schema = {'fields': dataset_schema}
 
         abstract_pipeline = Pipeline.from_operators(
             operators=filled_operators,
@@ -859,7 +697,6 @@ class AbstractStepBaseline(BaselineInterface):
                 "query": query,
                 "base_system": self.base_system.value,
                 "default_model": "gpt-4o-mini",
-                "created_at": datetime.now().isoformat()
             },
             dataset_schema=dataset_schema
         )
@@ -886,13 +723,7 @@ class AbstractStepBaseline(BaselineInterface):
         Returns:
             (success, output, yaml_config)
         """
-        # Save abstract pipeline as JSON
-        abstract_pipeline_path = os.path.join(
-            self.abstract_pipeline_dir,
-            f"{get_filename_base(self.data_processor, query, 'pipeline')}.json"
-        )
-
-        # Convert Pipeline to dict for JSON serialization
+        # Convert Pipeline to dict and save as JSON
         pipeline_dict = {
             "name": abstract_pipeline.name,
             "input_path": abstract_pipeline.input_path,
@@ -902,11 +733,21 @@ class AbstractStepBaseline(BaselineInterface):
             "operators": [operator_to_dict(op) for op in abstract_pipeline.to_operators()]
         }
 
-        with open(abstract_pipeline_path, 'w', encoding='utf-8') as f:
-            json.dump(pipeline_dict, f, indent=2, ensure_ascii=False)
+        abstract_pipeline_path = self.file_manager.save_json(
+            data=pipeline_dict,
+            query=query,
+            file_type='pipeline',
+            subdir_key='abstract_pipeline'
+        )
 
-        if self.config.verbose:
-            self.logger.info(f"Saved abstract pipeline to {abstract_pipeline_path}")
+        # Validate abstract pipeline before conversion to base system
+        validate_pipeline_static(
+            system_name="abstract",
+            pipeline_path=abstract_pipeline_path,
+            verbose=self.config.verbose,
+            logger=self.logger,
+            dataset_schema=abstract_pipeline.dataset_schema
+        )
 
         # Convert to DocETL YAML using existing converter
         try:
@@ -914,8 +755,7 @@ class AbstractStepBaseline(BaselineInterface):
             docetl_operators = [abstract_to_docetl(op) for op in operators]
 
             # Build DocETL config with output path
-            output_filename = f"{get_filename_base(self.data_processor, query, 'output')}.json"
-            output_path = os.path.join(self.pipeline_output_dir, output_filename)
+            output_path = self.file_manager.get_output_path(query, file_type='output')
 
             docetl_config = {
                 'datasets': {
@@ -927,7 +767,7 @@ class AbstractStepBaseline(BaselineInterface):
                 'operations': docetl_operators,
                 'pipeline': {
                     'steps': [{
-                        'name': 'main',
+                        'name': 'generated_pipeline',
                         'input': 'input',
                         'operations': [op['name'] for op in docetl_operators]
                     }],
@@ -939,102 +779,55 @@ class AbstractStepBaseline(BaselineInterface):
                 'default_model': abstract_pipeline.properties.get('default_model', 'gpt-4o-mini')
             }
 
-            if self.config.verbose:
-                self.logger.info("Successfully converted abstract pipeline to DocETL")
+            self._log("Successfully converted abstract pipeline to DocETL")
 
         except Exception as e:
-            if self.config.verbose:
-                self.logger.error(f"Failed to convert abstract pipeline to DocETL: {e}")
-                self.logger.error(traceback.format_exc())
+            self._log(f"Failed to convert abstract pipeline to DocETL: {e}", level='error', force=True)
+            self._log(traceback.format_exc(), level='error', force=True)
             return False, None, None
 
-        # Execute pipeline
         try:
-            # Save DocETL config to temporary YAML file for execution
-            # execute_single_pipeline expects a file path, not a config dict
-            yaml_path = os.path.join(
-                self.pipeline_output_dir,
-                f"{get_filename_base(self.data_processor, query, 'pipeline_temp')}.yaml"
+            # Save DocETL config to YAML file for execution
+            yaml_path = self.file_manager.save_yaml(
+                data=docetl_config,
+                query=query,
+                file_type='pipeline_temp',
+                subdir_key='pipeline_output'
             )
-            with open(yaml_path, 'w') as f:
-                yaml.dump(docetl_config, f, default_flow_style=False)
 
-            # Validate the generated DocETL YAML using the static checker
-            if self.config.verbose:
-                self.logger.info("Validating generated DocETL YAML with static checker...")
+            validate_pipeline_static(
+                system_name=self.base_system.value,
+                pipeline_path=yaml_path,
+                verbose=self.config.verbose,
+                logger=self.logger
+            )
 
-            try:
-                # Import the DocETL static checker
-                import sys
-                import os as os_mod
-
-                # Add the path to sys.path if needed
-                grader_dir = os_mod.path.join(os_mod.path.dirname(__file__), 'grader', 'docetl')
-                if grader_dir not in sys.path:
-                    sys.path.insert(0, grader_dir)
-
-                from baselines.grader.docetl.static_checker import check_pipeline_file
-
-                # Run static checker
-                validation_result = check_pipeline_file(yaml_path)
-
-                if self.config.verbose:
-                    if validation_result.get('score') == 1:
-                        self.logger.info("✓ Static validation passed")
-                    else:
-                        self.logger.warning("⚠ Static validation found issues:")
-                        for error in validation_result.get('errors', []):
-                            self.logger.warning(f"  - {error.get('message', str(error))}")
-
-                        if validation_result.get('warnings'):
-                            self.logger.info("Warnings:")
-                            for warning in validation_result.get('warnings', []):
-                                self.logger.info(f"  - {warning.get('message', str(warning))}")
-
-                # Continue execution even if validation fails (may be overly strict)
-                # but log the issues for debugging
-
-            except Exception as validation_error:
-                if self.config.verbose:
-                    self.logger.warning(f"Static validation skipped (error: {validation_error})")
-
-            # Confirm pipeline execution in debug/confirm mode
             if not self.ui.confirm_pipeline_execution(yaml_path, query, attempt):
-                # User chose not to execute, treat as skipped (not a failure)
-                if self.config.verbose:
-                    self.logger.info("Pipeline execution skipped by user")
+                self._log("Pipeline execution skipped by user", force=True)
                 return False, None, docetl_config
 
-            # Execute the pipeline using the YAML file
             success, error_msg = execute_single_pipeline(yaml_path)
 
             if not success:
-                if self.config.verbose:
-                    self.logger.error(f"Pipeline execution failed: {error_msg}")
+                self._log(f"Pipeline execution failed: {error_msg}", level='error', force=True)
                 return False, None, docetl_config
 
-            # Load the output data
             output_path = find_output_path(yaml_path)
             if output_path and os.path.exists(output_path):
                 with open(output_path, 'r', encoding='utf-8') as f:
                     output = json.load(f)
             else:
-                if self.config.verbose:
-                    self.logger.warning("Could not find output file, using empty output")
+                self._log("Could not find output file, using empty output", level='warning')
                 output = []
 
-            if self.config.verbose:
-                self.logger.info(f"Pipeline execution completed with {len(output) if isinstance(output, list) else 'N/A'} results")
+            self._log(f"Pipeline execution completed with {len(output) if isinstance(output, list) else 'N/A'} results")
 
             return True, output, docetl_config
 
         except Exception as e:
-            if self.config.verbose:
-                self.logger.error(f"Pipeline execution failed: {e}")
-                self.logger.error(traceback.format_exc())
+            self._log(f"Pipeline execution failed: {e}", level='error', force=True)
+            self._log(traceback.format_exc(), level='error', force=True)
             return False, None, docetl_config
-
-    # Required abstract methods from BaselineInterface
 
     def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> BaselineResult:
         """Process a single query with optional context using abstract layer pipeline generation."""
@@ -1052,7 +845,6 @@ class AbstractStepBaseline(BaselineInterface):
 
             dataset_path = dataset_paths[0]
 
-            # Load dataset samples
             dataset_samples = load_sample_data([dataset_path])
 
             # Attempt pipeline generation with retries
@@ -1063,13 +855,10 @@ class AbstractStepBaseline(BaselineInterface):
                 self.total_generation_attempts += 1
 
                 try:
-                    if self.config.verbose:
-                        self.logger.info(f"Attempt {attempt + 1}/{self.max_attempts} for query: {query[:100]}...")
+                    self._log(f"Attempt {attempt + 1}/{self.max_attempts} for query: {query[:100]}...")
 
-                    # Build abstract pipeline
                     abstract_pipeline = self._build_abstract_pipeline(query, dataset_samples, attempt)
 
-                    # Convert and execute
                     success, result_output, _ = self._convert_and_execute(
                         abstract_pipeline, query, dataset_path
                     )
@@ -1079,13 +868,11 @@ class AbstractStepBaseline(BaselineInterface):
                         break
 
                 except Exception as e:
-                    if self.config.verbose:
-                        self.logger.error(f"Attempt {attempt + 1} failed: {e}")
-                        self.logger.error(traceback.format_exc())
+                    self._log(f"Attempt {attempt + 1} failed: {e}", level='error', force=True)
+                    self._log(traceback.format_exc(), level='error', force=True)
 
                     if attempt == self.max_attempts - 1:
                         # Final attempt failed
-                        # FailedPipeline expects (pipeline_yaml, error_type, error_message)
                         self.failed_pipelines.append(FailedPipeline(
                             pipeline_yaml=f"# Query: {query}\n# Failed after {self.max_attempts} attempts",
                             error_type='execution',
@@ -1098,37 +885,16 @@ class AbstractStepBaseline(BaselineInterface):
             if success:
                 return InterfaceBaselineResult(
                     query=query,
-                    response={"answer": result_output, "pipeline_generated": True, "method": "abstract_step"},
-                    metadata={
-                        "baseline": "abstract_step",
-                        "base_system": self.base_system.value,
-                        "context_provided": context is not None,
-                        "num_datasets": 1,  # Single json dataset
-                        "generation_attempts": self.total_generation_attempts,
-                        "success": True
-                    },
+                    response={"answer": result_output},
+                    metadata={},
                     execution_time=execution_time
                 )
             else:
-                error_msg = "Pipeline generation failed"
-                return InterfaceBaselineResult(
-                    query=query,
-                    response={"answer": "", "error": error_msg},
-                    metadata={
-                        "baseline": "abstract_step",
-                        "base_system": self.base_system.value,
-                        "context_provided": context is not None,
-                        "num_datasets": 1,  # Single json dataset
-                        "generation_attempts": self.total_generation_attempts,
-                        "success": False
-                    },
-                    execution_time=execution_time,
-                    error=error_msg
-                )
+                raise ValueError(f"Pipeline generation failed after {self.max_attempts} attempts")
 
         except Exception as e:
-            self.logger.error(f"Error processing query with Abstract Step: {e}")
-            self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            self._log(f"Error processing query with Abstract Step: {e}", level='error', force=True)
+            self._log(f"Full traceback:\n{traceback.format_exc()}", level='error', force=True)
 
             execution_time = time.time() - start_time
             self.total_time += execution_time
@@ -1136,12 +902,7 @@ class AbstractStepBaseline(BaselineInterface):
             return InterfaceBaselineResult(
                 query=query,
                 response={"answer": "", "error": str(e)},
-                metadata={
-                    "baseline": "abstract_step",
-                    "base_system": self.base_system.value,
-                    "context_provided": context is not None,
-                    "error": True
-                },
+                metadata={},
                 execution_time=execution_time,
                 error=str(e)
             )
@@ -1163,11 +924,4 @@ class AbstractStepBaseline(BaselineInterface):
             "total_queries": self.total_queries,
             "total_time": self.total_time,
             "average_time": self.total_time / max(1, self.total_queries),
-            "total_generation_attempts": self.total_generation_attempts,
-            "successful_pipelines": self.successful_pipelines,
-            "failed_pipelines_count": len(self.failed_pipelines),
-            "success_rate": self.successful_pipelines / max(1, self.total_queries),
-            "average_attempts_per_query": self.total_generation_attempts / max(1, self.total_queries),
-            "baseline_type": "abstract_step",
-            "base_system": self.base_system.value
         }
