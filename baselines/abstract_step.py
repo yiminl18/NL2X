@@ -215,7 +215,7 @@ class AbstractStepBaseline(BaselineInterface):
                 try:
                     self._log(f"Attempt {attempt + 1}/{self.max_attempts} for query: {query[:100]}...")
 
-                    abstract_pipeline = self._build_abstract_pipeline(query, dataset_samples, attempt)
+                    abstract_pipeline = self._build_abstract_pipeline(query, dataset_samples, dataset_path, attempt)
 
                     success, result_output, _ = self._convert_and_execute(
                         abstract_pipeline, query, dataset_path, attempt
@@ -279,6 +279,7 @@ class AbstractStepBaseline(BaselineInterface):
         self,
         query: str,
         dataset_samples: List[Dict],
+        dataset_path: str,
         attempt: int = 0
     ) -> Pipeline:
         """
@@ -287,6 +288,7 @@ class AbstractStepBaseline(BaselineInterface):
         Args:
             query: User query
             dataset_samples: Sample data (list of dicts)
+            dataset_path: Path to dataset file
             attempt: Attempt number
 
         Returns:
@@ -319,6 +321,7 @@ class AbstractStepBaseline(BaselineInterface):
                 operator=op,
                 query=query,
                 dataset_samples=dataset_samples,
+                dataset_path=dataset_path,
                 previous_operators=filled_operators,
                 schema_tracker=schema_tracker,
                 operator_index=i,
@@ -515,6 +518,7 @@ class AbstractStepBaseline(BaselineInterface):
         operator: Dict[str, Any],
         query: str,
         dataset_samples: List[Dict],
+        dataset_path: str,
         previous_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker = None,
         collect_messages: bool = False,
@@ -529,6 +533,7 @@ class AbstractStepBaseline(BaselineInterface):
             operator: Operator framework (type and purpose)
             query: User query
             dataset_samples: Sample data (list of dicts)
+            dataset_path: Path to dataset file
             previous_operators: Previously generated operators
             schema_tracker: Schema tracker using base system
             collect_messages: Whether to collect messages
@@ -617,6 +622,38 @@ class AbstractStepBaseline(BaselineInterface):
         if self.config.verbose:
             self.logger.info(f"Generated operator {operator_index + 1}/{total_operators}: {op_type}")
 
+        # Perform incremental validation after applying operator to schema
+        all_operators = previous_operators + [abstract_operator]
+        validation_passed, validation_errors, validation_warnings, temp_file_path = self._validate_incremental_pipeline(
+            operators=all_operators,
+            query=query,
+            dataset_path=dataset_path,
+            operator_index=operator_index
+        )
+
+        # Handle validation results - only show errors
+        if not validation_passed:
+            # Ask user for decision via UI
+            user_decision = self.ui.confirm_validation_error(
+                operator_index=operator_index,
+                total_operators=total_operators,
+                errors=validation_errors,
+                warnings=validation_warnings
+            )
+
+            if user_decision == 'abort':
+                # Clean up temp file if it exists
+                if temp_file_path and os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                raise ValueError(f"Pipeline generation aborted due to validation errors in operator {operator_index + 1}")
+            else:
+                # User chose to continue despite errors
+                self._log(f"⚠ Continuing with validation errors in operator {operator_index + 1}", level='warning', force=True)
+
+        # Clean up temp validation file
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
         # Display generated operator and ask for confirmation
         user_choice = self.ui.display_generated_operator(
             operator_index=operator_index,
@@ -645,6 +682,38 @@ class AbstractStepBaseline(BaselineInterface):
                 error_msg = f"Failed to apply regenerated operator {abstract_operator.name} ({abstract_operator.type}) to schema: {', '.join(errors)}"
                 raise ValueError(error_msg)
 
+            # Perform incremental validation after applying regenerated operator
+            all_operators = previous_operators + [abstract_operator]
+            validation_passed, validation_errors, validation_warnings, temp_file_path = self._validate_incremental_pipeline(
+                operators=all_operators,
+                query=query,
+                dataset_path=dataset_path,
+                operator_index=operator_index
+            )
+
+            # Handle validation results - only show errors
+            if not validation_passed:
+                # Ask user for decision via UI
+                user_decision = self.ui.confirm_validation_error(
+                    operator_index=operator_index,
+                    total_operators=total_operators,
+                    errors=validation_errors,
+                    warnings=validation_warnings
+                )
+
+                if user_decision == 'abort':
+                    # Clean up temp file if it exists
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                    raise ValueError(f"Pipeline generation aborted due to validation errors in regenerated operator {operator_index + 1}")
+                else:
+                    # User chose to continue despite errors
+                    self._log(f"⚠ Continuing with validation errors in regenerated operator {operator_index + 1}", level='warning', force=True)
+
+            # Clean up temp validation file
+            if temp_file_path and os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
             # Show regenerated operator
             regenerate_choice = self.ui.display_generated_operator(
                 operator_index=operator_index,
@@ -661,6 +730,7 @@ class AbstractStepBaseline(BaselineInterface):
                     operator=operator,
                     query=query,
                     dataset_samples=dataset_samples,
+                    dataset_path=dataset_path,
                     previous_operators=previous_operators,
                     schema_tracker=schema_tracker,
                     collect_messages=collect_messages,
@@ -673,6 +743,111 @@ class AbstractStepBaseline(BaselineInterface):
             return abstract_operator, messages
         return abstract_operator
 
+    def _validate_incremental_pipeline(
+        self,
+        operators: List[Operator],
+        query: str,
+        dataset_path: str,
+        operator_index: int
+    ) -> Tuple[bool, List[str], List[str], Optional[str]]:
+        """
+        Validate the pipeline incrementally after generating each operator.
+
+        This method builds a temporary pipeline with all operators generated so far,
+        converts it to the base system format, and runs static validation.
+
+        Args:
+            operators: List of operators generated so far (including the current one)
+            query: User query
+            dataset_path: Path to dataset
+            operator_index: Index of the current operator (0-based)
+
+        Returns:
+            Tuple of (validation_passed, errors, warnings, temp_file_path)
+        """
+        import os
+        from datetime import datetime
+
+        try:
+            # Build temporary pipeline with operators generated so far
+            pipeline_name = f"validation_temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+            # Build minimal pipeline for validation
+            temp_pipeline = Pipeline.from_operators(
+                operators=operators,
+                name=pipeline_name,
+                input_path=dataset_path,
+                output_path=None,  # Not needed for validation
+                properties={
+                    "query": query,
+                    "base_system": self.base_system.value,
+                    "default_model": "gpt-4o-mini",
+                },
+                dataset_schema=None  # Will be inferred if needed
+            )
+
+            # Convert to base system format
+            if self.base_system == BaseSystem.DOCETL:
+                docetl_operators = [abstract_to_docetl(op) for op in operators]
+
+                # Create temporary output path for validation
+                temp_output_path = os.path.join(
+                    self.pipeline_output_dir,
+                    f"validation_temp_op{operator_index + 1}.json"
+                )
+
+                # Build pipeline config
+                pipeline_dict = self.executor.build_pipeline_config(
+                    operators=docetl_operators,
+                    input_path=dataset_path,
+                    output_path=temp_output_path,
+                    dataset_name='input',
+                    step_name='validation_step',
+                    default_model=temp_pipeline.properties.get('default_model', 'gpt-4o-mini')
+                )
+            else:
+                raise ValueError(f"Unsupported base system: {self.base_system.value}")
+
+            # Save to temporary YAML file for validation
+            temp_yaml_path = self.file_manager.save_yaml(
+                data=pipeline_dict,
+                query=query,
+                file_type=f'validation_temp_op{operator_index + 1}',
+                subdir_key='pipeline_output'
+            )
+
+            self._log(f"Validating incremental pipeline (operators 1-{operator_index + 1})...", level='debug')
+
+            # Run static validation
+            validation_result = validate_pipeline_static(
+                system_name=self.base_system.value,
+                pipeline_path=temp_yaml_path,
+                verbose=self.config.verbose,
+                logger=self.logger
+            )
+
+            validation_passed = validation_result.get("passed", False)
+            errors = validation_result.get("errors", [])
+            warnings = validation_result.get("warnings", [])
+
+            # ANSI color codes
+            GREEN = '\033[32m'
+            ORANGE = '\033[33m'
+            RESET = '\033[0m'
+
+            # Always show validation results for visibility
+            if validation_passed:
+                print(f"{GREEN}✓ Incremental validation passed for operator {operator_index + 1}{RESET}")
+            else:
+                print(f"{ORANGE}⚠ Incremental validation found {len(errors)} error(s) for operator {operator_index + 1}{RESET}")
+
+            return validation_passed, errors, warnings, temp_yaml_path
+
+        except Exception as e:
+            error_msg = f"Failed to validate incremental pipeline: {str(e)}"
+            self._log(error_msg, level='error', force=True)
+            self._log(traceback.format_exc(), level='error', force=True)
+            return False, [error_msg], [], None
 
     def _convert_and_execute(
         self,

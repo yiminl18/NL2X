@@ -472,3 +472,75 @@ class AbstractStepUserInterface:
                 commented_lines.append(f"# {line}")
 
         return '\n'.join(commented_lines)
+
+    def confirm_validation_error(
+        self,
+        operator_index: int,
+        total_operators: int,
+        errors: List[str],
+        warnings: List[str]
+    ) -> str:
+        """
+        Display validation errors and ask user whether to continue.
+
+        Args:
+            operator_index: Current operator index (0-based)
+            total_operators: Total number of operators
+            errors: List of validation error messages
+            warnings: List of validation warning messages
+
+        Returns:
+            'continue' if user wants to continue despite errors
+            'abort' if user wants to abort pipeline generation
+        """
+        # ANSI color codes
+        ORANGE = '\033[33m'
+        RED = '\033[31m'
+        RESET = '\033[0m'
+
+        print("\n" + "="*80)
+        print(f"{ORANGE}⚠️  VALIDATION ERROR - Operator {operator_index + 1}/{total_operators}{RESET}")
+        print("="*80)
+
+        print(f"\n{ORANGE}Static validation found issues with the current pipeline:{RESET}")
+        print("-"*40)
+
+        # Display errors
+        if errors:
+            print(f"\n{RED}Errors ({len(errors)}):{RESET}")
+            for i, error in enumerate(errors, 1):
+                # Extract message from error dict if available
+                error_msg = error.get('message', str(error)) if isinstance(error, dict) else str(error)
+                print(f"  {i}. {error_msg}")
+
+        # Display warnings
+        if warnings:
+            print(f"\n{ORANGE}Warnings ({len(warnings)}):{RESET}")
+            for i, warning in enumerate(warnings, 1):
+                # Extract message from warning dict if available
+                warning_msg = warning.get('message', str(warning)) if isinstance(warning, dict) else str(warning)
+                print(f"  {i}. {warning_msg}")
+
+        print("-"*40)
+
+        # If not in confirm/debug mode, default to abort
+        if not (self.config.confirm or self.config.debug):
+            print(f"\n{RED}❌ Aborting due to validation errors{RESET}")
+            return 'abort'
+
+        # Ask user for decision in confirm/debug mode
+        print(f"\n{ORANGE}The generated pipeline has validation errors.{RESET}")
+        print("This may cause issues during execution.")
+        print("\nOptions:")
+        print("  Y - Continue anyway (errors will be recorded)")
+        print("  N - Abort pipeline generation")
+        print("\n➡️  Continue despite validation errors? (y/N): ", end="")
+
+        user_input = input().strip().lower()
+
+        if user_input == 'y':
+            print(f"{ORANGE}⚠️  Continuing with validation errors...{RESET}")
+            return 'continue'
+        else:
+            print(f"{RED}❌ Pipeline generation aborted due to validation errors{RESET}")
+            return 'abort'
