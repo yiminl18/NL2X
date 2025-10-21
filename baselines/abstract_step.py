@@ -742,15 +742,15 @@ class AbstractStepBaseline(BaselineInterface):
             )
 
             # Validate converted pipeline
-            validate_pipeline_static(
+            validation_result = validate_pipeline_static(
                 system_name=self.base_system.value,
                 pipeline_path=yaml_path,
                 verbose=self.config.verbose,
                 logger=self.logger
             )
 
-            # Confirm execution with user
-            if not self.ui.confirm_pipeline_execution(yaml_path, query, attempt):
+            # Confirm execution with user, passing validation status
+            if not self.ui.confirm_pipeline_execution(yaml_path, query, attempt, validation_passed=validation_result["passed"]):
                 self._log("Pipeline execution skipped by user", force=True)
                 return False, None, pipeline_dict
 

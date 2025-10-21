@@ -149,8 +149,7 @@ def _validate_docetl_pipeline(
         from baselines.grader.docetl.static_checker import check_pipeline_file
 
         # Run validation
-        enable_obfuscation = kwargs.get('enable_obfuscation', False)
-        result = check_pipeline_file(pipeline_path, enable_obfuscation=enable_obfuscation)
+        result = check_pipeline_file(pipeline_path)
 
         # Result is already in the correct format
         score = result.get('score', 0)
@@ -259,22 +258,6 @@ def validate_pipeline_static(
 
     Raises:
         ValueError: If system_name is not recognized
-
-    Examples:
-        >>> # Validate abstract pipeline
-        >>> result = validate_pipeline_static("abstract", "pipeline.json")
-        >>> if result["passed"]:
-        ...     print("Valid!")
-
-        >>> # Validate DocETL with custom logger
-        >>> import logging
-        >>> logger = logging.getLogger(__name__)
-        >>> result = validate_pipeline_static(
-        ...     "docetl",
-        ...     "pipeline.yaml",
-        ...     verbose=True,
-        ...     logger=logger
-        ... )
     """
     # Normalize system name to lowercase
     system_name = system_name.lower()
@@ -300,17 +283,26 @@ def validate_pipeline_static(
     validator = validators[system_name]
     result = validator(pipeline_path, verbose=verbose, logger=logger, **kwargs)
 
+    # ANSI color codes
+    ORANGE = '\033[33m'
+    RESET = '\033[0m'
+
     # Log validation result
     if verbose and logger:
         if result["passed"]:
             logger.info(f"✓ {system_name.capitalize()} validation passed")
         else:
-            logger.warning(f"⚠ {system_name.capitalize()} validation found {len(result['errors'])} error(s)")
+            # Use orange color for error messages
+            logger.error(f"{ORANGE}⚠ {system_name.capitalize()} validation found {len(result['errors'])} error(s){RESET}")
             for error in result["errors"]:
-                logger.warning(f"  - {error}")
+                # Extract message from error dict if available, otherwise use string representation
+                error_msg = error.get('message', str(error)) if isinstance(error, dict) else str(error)
+                logger.error(f"{ORANGE}  - {error_msg}{RESET}")
             if result["warnings"]:
-                logger.info(f"Warnings ({len(result['warnings'])}): ")
+                logger.warning(f"Warnings ({len(result['warnings'])}): ")
                 for warning in result["warnings"]:
-                    logger.info(f"  - {warning}")
+                    # Extract message from warning dict if available, otherwise use string representation
+                    warning_msg = warning.get('message', str(warning)) if isinstance(warning, dict) else str(warning)
+                    logger.warning(f"  - {warning_msg}")
 
     return result

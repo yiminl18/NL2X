@@ -162,7 +162,7 @@ class AbstractStepUserInterface:
         print("✅ Proceeding to next step...")
         return True
 
-    def confirm_pipeline_execution(self, pipeline_file: str, query: str, attempt: int) -> bool:
+    def confirm_pipeline_execution(self, pipeline_file: str, query: str, attempt: int, validation_passed: bool = True) -> bool:
         """
         Ask user for confirmation before executing pipeline in confirm/debug mode.
 
@@ -170,6 +170,7 @@ class AbstractStepUserInterface:
             pipeline_file: Path to the generated pipeline YAML file
             query: Original query
             attempt: Attempt number
+            validation_passed: Whether static validation passed (defaults to True for backward compatibility)
 
         Returns:
             True if user wants to continue, False to abort
@@ -190,15 +191,32 @@ class AbstractStepUserInterface:
         print(f"\n📄 Generated Pipeline File:")
         print(f"  {pipeline_file}")
 
-        print("\n➡️  Execute this pipeline? (Y/n): ", end="")
+        # Adjust prompt based on validation status
+        if validation_passed:
+            print("\n➡️  Execute this pipeline? (Y/n): ", end="")
+            default_is_yes = True
+        else:
+            print("\n⚠️  WARNING: Pipeline has validation errors!")
+            print("➡️  Execute this pipeline anyway? (y/N): ", end="")
+            default_is_yes = False
+
         user_input = input().strip().lower()
 
-        if user_input and user_input != 'y':
+        # Handle default behavior based on validation status
+        if not user_input:
+            # Empty input - use default
+            if default_is_yes:
+                print("✅ Proceeding with pipeline execution...")
+                return True
+            else:
+                print("❌ Pipeline execution skipped (validation failed)")
+                return False
+        elif user_input == 'y':
+            print("✅ Proceeding with pipeline execution...")
+            return True
+        else:
             print("❌ Pipeline execution skipped by user")
             return False
-
-        print("✅ Proceeding with pipeline execution...")
-        return True
 
     def _get_next_step_info(self, current_step: str) -> str:
         """Get information about the next step."""
