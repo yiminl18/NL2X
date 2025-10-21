@@ -611,10 +611,8 @@ class AbstractStepBaseline(BaselineInterface):
         # Apply operator to schema tracker (validates and updates schema)
         success, errors = schema_tracker.apply_operator(abstract_operator)
         if not success:
-            error_msg = f"Failed to apply operator to schema: {', '.join(errors)}"
-            if self.config.verbose:
-                self.logger.warning(error_msg)
-            # Continue anyway - let base system handle the error during execution
+            error_msg = f"Failed to apply operator {abstract_operator.name} ({abstract_operator.type}) to schema: {', '.join(errors)}"
+            raise ValueError(error_msg)
 
         if self.config.verbose:
             self.logger.info(f"Generated operator {operator_index + 1}/{total_operators}: {op_type}")
@@ -644,9 +642,8 @@ class AbstractStepBaseline(BaselineInterface):
             # Apply operator to schema tracker (validates and updates schema)
             success, errors = schema_tracker.apply_operator(abstract_operator)
             if not success:
-                error_msg = f"Failed to apply regenerated operator to schema: {', '.join(errors)}"
-                if self.config.verbose:
-                    self.logger.warning(error_msg)
+                error_msg = f"Failed to apply regenerated operator {abstract_operator.name} ({abstract_operator.type}) to schema: {', '.join(errors)}"
+                raise ValueError(error_msg)
 
             # Show regenerated operator
             regenerate_choice = self.ui.display_generated_operator(

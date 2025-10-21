@@ -1,74 +1,27 @@
 """
 Base System Schema Tracker
-
-This module provides schema tracking using the base system's native type system
-instead of maintaining a separate abstract layer type system.
-
-The key insight is that different base systems (DocETL, Lotus, etc.) have different
-type systems and schema rules. Instead of trying to unify them at the abstract layer,
-we delegate schema tracking to each base system.
 """
 
 from typing import Dict, Any, List, Optional, Tuple, Protocol
-from abc import ABC, abstractmethod
-import json
 
 from ..abstract.support import BaseSystem
 from ..abstract.ops.base import Operator
-from ..abstract.convert.docetl import abstract_to_docetl, operator_to_dict
+from ..abstract.convert.docetl import abstract_to_docetl
 
 
 class BaseTypeHandler(Protocol):
     """Protocol for base system type handlers."""
 
     def apply_operator(self, operator: Dict[str, Any], current_schema: Dict[str, str]) -> Dict[str, str]:
-        """
-        Apply operator transformation and return new schema.
-
-        Args:
-            operator: Base system operator configuration
-            current_schema: Current schema in base system format
-
-        Returns:
-            Updated schema in base system format
-        """
         ...
 
     def validate_operator(self, operator: Dict[str, Any], current_schema: Dict[str, str]) -> Tuple[bool, List[str]]:
-        """
-        Validate operator against current schema using base system rules.
-
-        Args:
-            operator: Base system operator configuration
-            current_schema: Current schema in base system format
-
-        Returns:
-            Tuple of (is_valid, list_of_errors)
-        """
         ...
 
     def to_abstract_schema(self, base_schema: Dict[str, str]) -> Dict[str, str]:
-        """
-        Convert base system schema to abstract format for LLM prompts.
-
-        Args:
-            base_schema: Schema in base system format
-
-        Returns:
-            Schema in abstract format
-        """
         ...
 
     def from_abstract_schema(self, abstract_schema: Dict[str, str]) -> Dict[str, str]:
-        """
-        Convert abstract schema to base system format.
-
-        Args:
-            abstract_schema: Schema in abstract format
-
-        Returns:
-            Schema in base system format
-        """
         ...
 
 
@@ -176,6 +129,8 @@ class BaseSystemSchemaTracker:
 
             if self.verbose:
                 print(f"Applying operator: {abstract_operator.name} ({abstract_operator.type})")
+                print(f"Current schema fields: {list(self.base_schema.keys())}")
+                print(f"Operator output schema: {abstract_operator.output}")
 
             # Validate operator against current schema
             is_valid, errors = self.type_handler.validate_operator(
@@ -184,9 +139,21 @@ class BaseSystemSchemaTracker:
             )
 
             if not is_valid:
+                # Enhance error message with more context
+                detailed_errors = [
+                    f"Operator: {abstract_operator.name} (Type: {abstract_operator.type})",
+                    f"Current schema fields: {list(self.base_schema.keys())}",
+                    f"Abstract schema fields: {list(self.abstract_schema.keys())}",
+                    f"Operator input requirements: {abstract_operator.input}",
+                    f"Operator output schema: {abstract_operator.output}",
+                    "Validation errors:"
+                ] + errors
+
                 if self.verbose:
-                    print(f"Validation errors: {errors}")
-                return False, errors
+                    for error in detailed_errors:
+                        print(f"  {error}")
+
+                return False, detailed_errors
 
             # Apply operator to get new schema
             new_base_schema = self.type_handler.apply_operator(
@@ -194,12 +161,18 @@ class BaseSystemSchemaTracker:
                 self.base_schema
             )
 
+            if self.verbose:
+                # Show what fields were added
+                added_fields = set(new_base_schema.keys()) - set(self.base_schema.keys())
+                if added_fields:
+                    print(f"Schema updated. Added fields: {added_fields}")
+
             # Update schemas
             self.base_schema = new_base_schema
             self.abstract_schema = self.type_handler.to_abstract_schema(new_base_schema)
 
             if self.verbose:
-                print(f"Schema updated. New fields: {list(self.abstract_schema.keys())}")
+                print(f"Schema now has {len(self.abstract_schema)} fields: {list(self.abstract_schema.keys())}")
 
             return True, []
 

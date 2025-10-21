@@ -148,7 +148,8 @@ class DocETLTypeHandler:
             if field not in current_schema:
                 errors.append(
                     f"Operator '{op_name}' ({op_type}) requires field '{field}' which is not available. "
-                    f"Available fields: {list(current_schema.keys())}"
+                    f"Available fields: {list(current_schema.keys())}. "
+                    f"Required fields: {sorted(required_fields)}"
                 )
 
         # Operator-specific validation
@@ -334,10 +335,18 @@ class DocETLTypeHandler:
         if type_str in basic_types:
             return True
 
-        # List types: list[type]
+        # List types: list[type] or list[{field: type, ...}]
         if type_str.startswith('list[') and type_str.endswith(']'):
             inner_type = type_str[5:-1]
-            return inner_type in basic_types or inner_type == 'dict'
+            # Accept basic types
+            if inner_type in basic_types:
+                return True
+            # Accept complex dict structures like {field: type, ...}
+            if inner_type.startswith('{') and inner_type.endswith('}'):
+                # Validate it's a proper dict structure
+                # Simple check: has colons and field names
+                return ':' in inner_type
+            return False
 
         # Complex dict types are represented as 'dict' in DocETL
         return False
