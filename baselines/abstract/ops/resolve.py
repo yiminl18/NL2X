@@ -20,15 +20,7 @@ class Resolve(Operator):
             "properties": {
                 "comparison_prompt": {"type": "string"},
                 "resolution_prompt": {"type": "string"},
-                "input": {
-                    "type": "object",
-                    "properties": {
-                        "fields": {"type": "object"}
-                    },
-                    "required": ["fields"]
-                },
                 "output": {"type": "object"},
-                "properties": {"type": "object"}
             },
-            "required": ["comparison_prompt", "resolution_prompt", "input", "output"]
+            "required": ["comparison_prompt", "resolution_prompt", "output"]
         }

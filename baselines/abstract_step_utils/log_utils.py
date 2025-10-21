@@ -10,7 +10,26 @@ import json
 import yaml
 import logging
 from typing import Any, Dict, Optional
-from ..docetl_utils.log_utils import get_filename_base
+
+
+def _create_base_filename(query: str, suffix: str = "") -> str:
+    """
+    Create a base filename from query and optional suffix.
+
+    Args:
+        query: The query string
+        suffix: Optional suffix to append
+
+    Returns:
+        Safe filename string
+    """
+    # Simple filename generation - clean the query for use as filename
+    safe_query = "".join(c for c in query[:50] if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    safe_query = safe_query.replace(' ', '_')
+
+    if suffix:
+        return f"{safe_query}_{suffix}"
+    return safe_query
 
 
 class PipelineFileManager:
@@ -26,7 +45,6 @@ class PipelineFileManager:
     def __init__(
         self,
         base_dirs: Dict[str, str],
-        data_processor: Any,
         logger: Optional[logging.Logger] = None,
         verbose: bool = False
     ):
@@ -36,12 +54,10 @@ class PipelineFileManager:
         Args:
             base_dirs: Dictionary of base directory paths
                 Example: {'pipeline_output': '/path/to/output', ...}
-            data_processor: Data processor instance (used for filename generation)
             logger: Optional logger for file operation logging
             verbose: Whether to output verbose logs
         """
         self.base_dirs = base_dirs
-        self.data_processor = data_processor
         self.logger = logger
         self.verbose = verbose
         self._path_cache = {}
@@ -74,7 +90,7 @@ class PipelineFileManager:
         if not base_dir:
             raise ValueError(f"Unknown subdirectory key: {subdir_key}")
 
-        filename = f"{get_filename_base(self.data_processor, query, file_type)}{ext}"
+        filename = f"{_create_base_filename(query, file_type)}{ext}"
         path = os.path.join(base_dir, filename)
 
         self._path_cache[cache_key] = path

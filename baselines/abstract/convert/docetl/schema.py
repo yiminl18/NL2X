@@ -182,17 +182,18 @@ class DocETLTypeMapper:
         """Convert abstract layer type string to DocETL type string.
 
         Args:
-            abstract_type: Abstract type string (e.g., 'String', 'List[String]', 'Dict[{name: String}]')
+            abstract_type: Abstract type string (e.g., 'String', 'List[String]', 'Dict{name: String}')
 
         Returns:
-            DocETL type string (e.g., 'str', 'list[str]', 'dict')
+            DocETL type string (e.g., 'str', 'list[str]', 'list[{name: str}]')
 
         Examples:
             'String' -> 'str'
             'Integer' -> 'int'
             'List[String]' -> 'list[str]'
             'Dict' -> 'dict'
-            'Dict[{name: String, age: Integer}]' -> 'dict'  # DocETL doesn't support nested dict schemas
+            'Dict{name: String, age: Integer}' -> '{name: str, age: int}'
+            'List[Dict{name: String, age: Integer}]' -> 'list[{name: str, age: int}]'
         """
         if not abstract_type:
             return 'str'  # Default to string
@@ -220,14 +221,102 @@ class DocETLTypeMapper:
             element_type_end = abstract_type.rindex(']')
             element_type = abstract_type[element_type_start:element_type_end].strip()
 
-            # Recursively convert element type
+            # Special case: List[Dict{...}] -> list[{...}]
+            # DocETL supports list[{field: type}] format
+            if element_type.startswith('Dict{') and element_type.endswith('}'):
+                # Extract fields from Dict{field1: Type1, field2: Type2, ...}
+                fields_start = element_type.index('{') + 1
+                fields_end = element_type.rindex('}')
+                fields_str = element_type[fields_start:fields_end].strip()
+
+                if fields_str:
+                    # Parse fields: "field1: Type1, field2: Type2"
+                    docetl_fields = []
+                    # Split by comma, but be careful with nested types
+                    field_pairs = []
+                    current_field = ""
+                    bracket_depth = 0
+
+                    for char in fields_str + ',':
+                        if char in '[{':
+                            bracket_depth += 1
+                            current_field += char
+                        elif char in ']}':
+                            bracket_depth -= 1
+                            current_field += char
+                        elif char == ',' and bracket_depth == 0:
+                            if current_field.strip():
+                                field_pairs.append(current_field.strip())
+                            current_field = ""
+                        else:
+                            current_field += char
+
+                    # Convert each field
+                    for field_pair in field_pairs:
+                        if ':' in field_pair:
+                            field_name, field_type = field_pair.split(':', 1)
+                            field_name = field_name.strip()
+                            field_type = field_type.strip()
+
+                            # Recursively convert field type
+                            docetl_field_type = cls.from_abstract_type_string(field_type)
+                            docetl_fields.append(f"{field_name}: {docetl_field_type}")
+
+                    if docetl_fields:
+                        return f"list[{{{', '.join(docetl_fields)}}}]"
+
+                # Fallback if parsing failed
+                return 'list[dict]'
+
+            # Regular list type
             docetl_element_type = cls.from_abstract_type_string(element_type)
             return f'list[{docetl_element_type}]'
 
-        # Handle Dict types with fields: Dict[{...}]
-        # DocETL doesn't support structured dict schemas in output.schema,
-        # so we just return 'dict'
-        if abstract_type.startswith('Dict[{') and abstract_type.endswith('}]'):
+        # Handle Dict types with fields: Dict{...}
+        # Standalone Dict (not inside List) will be handled below
+        if abstract_type.startswith('Dict{') and abstract_type.endswith('}'):
+            # Extract fields from Dict{field1: Type1, field2: Type2, ...}
+            fields_start = abstract_type.index('{') + 1
+            fields_end = abstract_type.rindex('}')
+            fields_str = abstract_type[fields_start:fields_end].strip()
+
+            if fields_str:
+                # Parse fields: "field1: Type1, field2: Type2"
+                docetl_fields = []
+                # Split by comma, but be careful with nested types
+                field_pairs = []
+                current_field = ""
+                bracket_depth = 0
+
+                for char in fields_str + ',':
+                    if char in '[{':
+                        bracket_depth += 1
+                        current_field += char
+                    elif char in ']}':
+                        bracket_depth -= 1
+                        current_field += char
+                    elif char == ',' and bracket_depth == 0:
+                        if current_field.strip():
+                            field_pairs.append(current_field.strip())
+                        current_field = ""
+                    else:
+                        current_field += char
+
+                # Convert each field
+                for field_pair in field_pairs:
+                    if ':' in field_pair:
+                        field_name, field_type = field_pair.split(':', 1)
+                        field_name = field_name.strip()
+                        field_type = field_type.strip()
+
+                        # Recursively convert field type
+                        docetl_field_type = cls.from_abstract_type_string(field_type)
+                        docetl_fields.append(f"{field_name}: {docetl_field_type}")
+
+                if docetl_fields:
+                    return f"{{{', '.join(docetl_fields)}}}"
+
+            # Fallback if parsing failed
             return 'dict'
 
         # Unknown format, default to string

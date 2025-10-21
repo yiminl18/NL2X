@@ -19,21 +19,17 @@ import logging
 
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
-from .docetl_utils.data_utils import DocETLDataProcessor
 from .abstract_step_utils.ui import AbstractStepUserInterface
 from .abstract_step_utils.checker_utils import validate_pipeline_static
 from .abstract_step_utils.log_utils import PipelineFileManager
-from .docetl_utils.pipeline_utils import load_sample_data
-from model.litellm_client import llm_call
+from model.litellm_client import llm_call, is_cached
 
-# Abstract layer utilities
-from .abstract_step_utils.type_utils_abstract import (
-    AbstractTypeSystem,
+# Schema tracking utilities using base system
+from .abstract_step_utils.base_schema_tracker import (
+    BaseSystemSchemaTracker,
     infer_schema_from_samples,
     format_fields_for_prompt,
 )
-# Import unified type system for validation
-from .abstract.type import validate_type_syntax
 from .abstract_step_utils.prompt_abstract import (
     get_operator_selection_prompt,
     get_abstract_operator_prompt,
@@ -51,6 +47,41 @@ from .abstract.convert.docetl import (
     operator_to_dict,
 )
 from .abstract.executor import DocETLExecutor
+from .utils import DataTruncator
+
+
+def load_sample_data(
+    dataset_path: str,
+    max_length: int = 2500,
+    max_string_length: int = 1000,
+    max_array_items: int = 3,
+    max_dict_keys: int = 8
+) -> List[Dict]:
+    """
+    Load sample data from a single dataset file with truncation.
+    """
+    if not os.path.exists(dataset_path):
+        raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
+
+    try:
+        with open(dataset_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        # Initialize truncator
+        truncator = DataTruncator(
+            max_total_length=max_length,
+            max_string_length=max_string_length,
+            max_plain_text_length=5000,
+            max_array_items=max_array_items,
+            max_dict_keys=max_dict_keys
+        )
+
+        # Apply intelligent truncation
+        truncated_data = truncator.truncate_data(data)
+
+        return truncated_data
+    except Exception as e:
+        raise ValueError(f"Error loading dataset from {dataset_path}: {e}")
 
 
 @register_baseline("abstract_step")
@@ -103,12 +134,6 @@ class AbstractStepBaseline(BaselineInterface):
             setattr(self, attr_name, dir_path)
             os.makedirs(dir_path, exist_ok=True)
 
-        self.data_processor = DocETLDataProcessor(
-            converted_data_dir=self.converted_data_dir,
-            verbose=self.config.verbose,
-            logger=self.logger
-        )
-
         self.ui = AbstractStepUserInterface(self.config)
 
         # Initialize file manager for centralized file operations
@@ -118,7 +143,6 @@ class AbstractStepBaseline(BaselineInterface):
                 'abstract_pipeline': self.abstract_pipeline_dir,
                 'converted_data': self.converted_data_dir
             },
-            data_processor=self.data_processor,
             logger=self.logger,
             verbose=self.config.verbose
         )
@@ -131,6 +155,29 @@ class AbstractStepBaseline(BaselineInterface):
         self._log(f"Supported operators: {get_supported_operators(self.base_system)}")
         self._log(f"Pipeline output directory: {self.pipeline_output_dir}")
         self._log(f"Abstract pipeline directory: {self.abstract_pipeline_dir}")
+
+    def _extract_dataset_path(self, context: Optional[Dict[str, Any]]) -> str:
+        """
+        Extract dataset path from context dictionary.
+
+        Args:
+            context: Context dictionary containing dataset information
+        """
+        if not context:
+            raise ValueError("No context provided")
+        key, value = next(iter(context.items()))
+        if value.path:
+            return value.path
+
+        if value.content:
+            # Save to self.converted_data_dir
+            dataset_path = os.path.join(self.converted_data_dir, f"{key}.json")
+            with open(dataset_path, 'w', encoding='utf-8') as f:
+                json.dump(value.content, f, ensure_ascii=False, indent=2)
+            return dataset_path
+
+        raise ValueError("No valid dataset path found in context")
+
 
     def _create_executor(self):
         """
@@ -157,16 +204,11 @@ class AbstractStepBaseline(BaselineInterface):
         self.total_queries += 1
 
         try:
-            # Prepare dataset file from context (assume single json dataset)
-            dataset_paths = self.data_processor.prepare_dataset_files(context)
+            # Extract dataset path from context (simplified to support JSON files only)
+            dataset_path = self._extract_dataset_path(context)
 
-            if not dataset_paths:
-                raise ValueError("No dataset path available")
-
-            dataset_path = dataset_paths[0]
-
-            dataset_samples = load_sample_data([dataset_path])
-
+            dataset_samples = load_sample_data(dataset_path)
+            print(dataset_samples)
             success = False
             result_output = None
             for attempt in range(self.max_attempts):
@@ -236,7 +278,7 @@ class AbstractStepBaseline(BaselineInterface):
     def _build_abstract_pipeline(
         self,
         query: str,
-        dataset_samples: Dict[str, Any],
+        dataset_samples: List[Dict],
         attempt: int = 0
     ) -> Pipeline:
         """
@@ -244,7 +286,7 @@ class AbstractStepBaseline(BaselineInterface):
 
         Args:
             query: User query
-            dataset_samples: Sample data
+            dataset_samples: Sample data (list of dicts)
             attempt: Attempt number
 
         Returns:
@@ -261,10 +303,15 @@ class AbstractStepBaseline(BaselineInterface):
         if self.config.verbose:
             self.logger.info(f"Step 2: Generating details for {len(operators)} operators...")
 
-        # Initialize type system from dataset (assume single json dataset)
-        samples_list = dataset_samples[:10] if dataset_samples else []
-        dataset_schema = infer_schema_from_samples(samples_list if samples_list else [{}])
-        type_system = AbstractTypeSystem(dataset_schema)
+        # Initialize schema tracker using base system - only use first sample
+        samples_list = [dataset_samples[0]] if dataset_samples else [{}]
+
+        dataset_schema = infer_schema_from_samples(samples_list)
+        schema_tracker = BaseSystemSchemaTracker(
+            base_system=self.base_system,
+            initial_schema=dataset_schema,
+            verbose=self.config.verbose
+        )
 
         filled_operators = []
         for i, op in enumerate(operators):
@@ -273,7 +320,7 @@ class AbstractStepBaseline(BaselineInterface):
                 query=query,
                 dataset_samples=dataset_samples,
                 previous_operators=filled_operators,
-                type_system=type_system,
+                schema_tracker=schema_tracker,
                 operator_index=i,
                 attempt=attempt,
                 total_operators=len(operators)
@@ -316,7 +363,7 @@ class AbstractStepBaseline(BaselineInterface):
     def _select_operators(
         self,
         query: str,
-        dataset_samples: Dict[str, Any],
+        dataset_samples: List[Dict],
         attempt: int = 0,
         collect_messages: bool = False
     ) -> List[Dict[str, str]]:
@@ -325,7 +372,7 @@ class AbstractStepBaseline(BaselineInterface):
 
         Args:
             query: User query
-            dataset_samples: Sample data
+            dataset_samples: Sample data (list of dicts)
             attempt: Attempt number (for retry logic)
             collect_messages: Whether to collect messages for debugging
 
@@ -342,7 +389,11 @@ class AbstractStepBaseline(BaselineInterface):
         )
 
         # Confirm before calling LLM in confirm/debug mode
-        user_choice = self.ui.confirm_step_before_llm("Operator Selection (Abstract Layer)", "1")
+        user_choice = self.ui.confirm_step_before_llm(
+            step_name="Operator Selection (Abstract Layer)",
+            step_number="1",
+            step_prompt=prompt
+        )
         if user_choice == 'abort':
             raise ValueError("User aborted pipeline generation at Step 1")
 
@@ -438,66 +489,6 @@ class AbstractStepBaseline(BaselineInterface):
 
         return abstract_operator
 
-    def _validate_operator_schemas(self, operator: Operator, operator_index: int) -> None:
-        """
-        Validate and fix operator input/output schemas in-place.
-
-        Args:
-            operator: Operator object to validate
-            operator_index: Index of this operator (for logging)
-        """
-        # Validate and fix input schema types
-        if 'fields' in operator.input and isinstance(operator.input['fields'], dict):
-            operator.input['fields'] = self._validate_and_fix_types(
-                operator.input['fields'],
-                f"operator_{operator_index}_input"
-            )
-
-        # Validate and fix output schema types
-        if isinstance(operator.output, dict):
-            operator.output = self._validate_and_fix_types(
-                operator.output,
-                f"operator_{operator_index}_output"
-            )
-
-        # Validate and fix prompt if it exists
-        if 'prompt' in operator.properties:
-            input_field_names = set(operator.input.get('fields', {}).keys())
-            fixed_prompt, was_modified = self._validate_and_fix_prompt(
-                operator.properties['prompt'],
-                input_field_names,
-                operator.name
-            )
-            if was_modified:
-                operator.properties['prompt'] = fixed_prompt
-
-        # Remove duplicate input fields from output schema
-        if isinstance(operator.output, dict) and 'fields' in operator.input:
-            input_fields = operator.input['fields']
-            output_fields_to_remove = []
-
-            for field_name in list(operator.output.keys()):
-                if field_name == 'type':  # Skip special keys
-                    continue
-
-                # Check if this field exists in input with same type
-                if field_name in input_fields:
-                    input_type = input_fields[field_name]
-                    output_type = operator.output[field_name]
-
-                    # If types match, this is a duplicate (input fields are preserved automatically)
-                    if input_type == output_type:
-                        output_fields_to_remove.append(field_name)
-                        if self.config.verbose:
-                            self.logger.info(
-                                f"{operator.name}: Removed duplicate field '{field_name}' "
-                                f"from output schema (already in input with same type '{input_type}')"
-                            )
-
-            # Remove duplicate fields
-            for field_name in output_fields_to_remove:
-                del operator.output[field_name]
-
     def _get_abstract_operator_schema(self, op_type: str) -> Dict[str, Any]:
         operator_schema_map = {
             'Map': ops.Map,
@@ -523,9 +514,9 @@ class AbstractStepBaseline(BaselineInterface):
         self,
         operator: Dict[str, Any],
         query: str,
-        dataset_samples: Dict[str, Any],
+        dataset_samples: List[Dict],
         previous_operators: List[Operator],
-        type_system: AbstractTypeSystem = None,
+        schema_tracker: BaseSystemSchemaTracker = None,
         collect_messages: bool = False,
         operator_index: int = 0,
         attempt: int = 0,
@@ -537,9 +528,9 @@ class AbstractStepBaseline(BaselineInterface):
         Args:
             operator: Operator framework (type and purpose)
             query: User query
-            dataset_samples: Sample data
+            dataset_samples: Sample data (list of dicts)
             previous_operators: Previously generated operators
-            type_system: Current type system state
+            schema_tracker: Schema tracker using base system
             collect_messages: Whether to collect messages
             operator_index: Index of this operator
             attempt: Attempt number
@@ -551,7 +542,8 @@ class AbstractStepBaseline(BaselineInterface):
         op_type = operator['type']
         operator_purpose = operator['purpose']
 
-        current_schema = type_system.get_current_schema()
+        # Get current schema in abstract format for LLM prompt
+        current_schema = schema_tracker.get_current_schema()
         available_fields_str = format_fields_for_prompt(current_schema)
 
         dataset_samples_str = json.dumps(dataset_samples, indent=2)
@@ -573,6 +565,18 @@ class AbstractStepBaseline(BaselineInterface):
             available_fields=available_fields_str
         )
 
+        # Prepare LLM call parameters
+        parameters = self._get_abstract_operator_schema(op_type)
+        system_prompt = f"You are an AI assistant that generates abstract layer {op_type} operator configurations. Always respond with valid JSON matching the required schema."
+        messages = [{"role": "user", "content": prompt}]
+
+        # Check if this prompt is already cached
+        prompt_is_cached = is_cached(
+            messages=messages,
+            schema=parameters,
+            system_prompt=system_prompt
+        )
+
         # Confirm this operator generation with user
         user_choice = self.ui.confirm_operator_before_llm(
             operator_index=operator_index,
@@ -580,16 +584,11 @@ class AbstractStepBaseline(BaselineInterface):
             operator_type=op_type,
             operator_purpose=operator_purpose,
             prompt=prompt,
+            is_cached=prompt_is_cached,
         )
 
         if user_choice == 'abort':
             raise ValueError(f"User aborted operator generation at operator {operator_index + 1}")
-
-        parameters = self._get_abstract_operator_schema(op_type)
-
-        system_prompt = f"You are an AI assistant that generates abstract layer {op_type} operator configurations. Always respond with valid JSON matching the required schema."
-
-        messages = [{"role": "user", "content": prompt}]
 
         try:
             bypass_cache = (user_choice == 'regenerate')
@@ -600,9 +599,6 @@ class AbstractStepBaseline(BaselineInterface):
             # Create operator from LLM response
             abstract_operator = self._create_operator_from_response(llm_response, operator_index, op_type)
 
-            # Validate and fix schemas
-            self._validate_operator_schemas(abstract_operator, operator_index)
-
             # Collect response for debugging
             if collect_messages:
                 messages.append({"role": "assistant", "content": response})
@@ -612,8 +608,13 @@ class AbstractStepBaseline(BaselineInterface):
                 self.logger.warning(f"Failed to parse operator {operator_index}: {e}")
             raise
 
-        # Update type system with this operator's transformation
-        self._apply_operator_to_type_system(type_system, abstract_operator)
+        # Apply operator to schema tracker (validates and updates schema)
+        success, errors = schema_tracker.apply_operator(abstract_operator)
+        if not success:
+            error_msg = f"Failed to apply operator to schema: {', '.join(errors)}"
+            if self.config.verbose:
+                self.logger.warning(error_msg)
+            # Continue anyway - let base system handle the error during execution
 
         if self.config.verbose:
             self.logger.info(f"Generated operator {operator_index + 1}/{total_operators}: {op_type}")
@@ -640,11 +641,12 @@ class AbstractStepBaseline(BaselineInterface):
             # Create operator from regenerated LLM response
             abstract_operator = self._create_operator_from_response(llm_response, operator_index, op_type)
 
-            # Validate and fix schemas
-            self._validate_operator_schemas(abstract_operator, operator_index)
-
-            # Update type system
-            self._apply_operator_to_type_system(type_system, abstract_operator)
+            # Apply operator to schema tracker (validates and updates schema)
+            success, errors = schema_tracker.apply_operator(abstract_operator)
+            if not success:
+                error_msg = f"Failed to apply regenerated operator to schema: {', '.join(errors)}"
+                if self.config.verbose:
+                    self.logger.warning(error_msg)
 
             # Show regenerated operator
             regenerate_choice = self.ui.display_generated_operator(
@@ -663,7 +665,7 @@ class AbstractStepBaseline(BaselineInterface):
                     query=query,
                     dataset_samples=dataset_samples,
                     previous_operators=previous_operators,
-                    type_system=type_system,
+                    schema_tracker=schema_tracker,
                     collect_messages=collect_messages,
                     operator_index=operator_index,
                     attempt=attempt,
@@ -674,137 +676,6 @@ class AbstractStepBaseline(BaselineInterface):
             return abstract_operator, messages
         return abstract_operator
 
-    def _validate_and_fix_types(self, schema: Dict[str, Any], schema_name: str = "schema") -> Dict[str, Any]:
-        """
-        Validate and potentially fix type strings in a schema.
-
-        Args:
-            schema: Schema dictionary with type strings
-            schema_name: Name for logging purposes
-
-        Returns:
-            Validated (and potentially fixed) schema
-        """
-        if not isinstance(schema, dict):
-            return schema
-
-        fixed_schema = {}
-        warnings = []
-
-        for field, type_str in schema.items():
-            if not isinstance(type_str, str):
-                fixed_schema[field] = type_str
-                continue
-
-            is_valid, error = validate_type_syntax(type_str)
-
-            if is_valid:
-                fixed_schema[field] = type_str
-            else:
-                # Type is invalid, try to fix common issues
-                original_type = type_str
-
-                # Fix: bare "List" -> "List[String]" (default to String)
-                if type_str == "List":
-                    type_str = "List[String]"
-                    warnings.append(f"Fixed bare 'List' to 'List[String]' for field '{field}'")
-
-                # Fix: bare "Dict" is actually OK
-                elif type_str == "Dict":
-                    pass  # This is valid
-
-                is_valid_after_fix, _ = validate_type_syntax(type_str)
-
-                if is_valid_after_fix:
-                    fixed_schema[field] = type_str
-                    if type_str != original_type:
-                        if self.config.verbose:
-                            self.logger.warning(f"Auto-fixed type for {schema_name}.{field}: {original_type} -> {type_str}")
-                else:
-                    # Can't fix, keep original but warn
-                    fixed_schema[field] = original_type
-                    warnings.append(f"Invalid type for field '{field}': {original_type} (Error: {error})")
-                    if self.config.verbose:
-                        self.logger.warning(f"Invalid type in {schema_name}.{field}: {original_type} - {error}")
-
-        return fixed_schema
-
-    def _validate_and_fix_prompt(self, prompt: str, input_fields: Set[str], operator_name: str = "") -> tuple:
-        """
-        Validate prompt and attempt to auto-fix bare field references.
-
-        Args:
-            prompt: The prompt string to validate
-            input_fields: Set of available input field names
-            operator_name: Name of the operator (for logging)
-
-        Returns:
-            Tuple of (fixed_prompt, was_modified)
-        """
-        import re
-
-        modified = False
-        fixed_prompt = prompt
-
-        # Check for bare field references and fix them
-        for field in input_fields:
-            # Pattern 1: backtick references like `fieldname`
-            bare_pattern = f'`{field}`'
-            jinja_replacement = f'{{{{ input.{field} }}}}'
-
-            if bare_pattern in fixed_prompt:
-                fixed_prompt = fixed_prompt.replace(bare_pattern, jinja_replacement)
-                modified = True
-                if self.config.verbose:
-                    self.logger.warning(
-                        f"{operator_name}: Auto-fixed bare field reference: `{field}` -> {{{{ input.{field} }}}}"
-                    )
-
-            # Pattern 2: "field 'fieldname'" or "field \"fieldname\""
-            for quote in ["'", '"']:
-                pattern = f"field {quote}{field}{quote}"
-                if pattern in fixed_prompt.lower():
-                    # Find the exact match with correct case
-                    match = re.search(re.escape(pattern), fixed_prompt, re.IGNORECASE)
-                    if match:
-                        fixed_prompt = fixed_prompt[:match.start()] + jinja_replacement + fixed_prompt[match.end():]
-                        modified = True
-                        if self.config.verbose:
-                            self.logger.warning(
-                                f"{operator_name}: Auto-fixed bare field reference: {match.group()} -> {{{{ input.{field} }}}}"
-                            )
-
-        return fixed_prompt, modified
-
-    def _apply_operator_to_type_system(
-        self,
-        type_system: AbstractTypeSystem,
-        operator: Operator
-    ) -> None:
-        """
-        Apply operator transformation to the type system.
-
-        Args:
-            type_system: Type system to update
-            operator: Operator object
-        """
-        op_type = operator.type
-        output_schema = operator.output
-
-        if op_type == 'Map':
-            type_system.apply_map_operator(output_schema)
-        elif op_type == 'Filter':
-            type_system.apply_filter_operator()
-        elif op_type == 'Reduce':
-            reduce_key = operator.properties.get('reduce_key')
-            type_system.apply_reduce_operator(output_schema, reduce_key)
-        elif op_type == 'Resolve':
-            type_system.apply_resolve_operator(output_schema)
-        elif op_type == 'Extract':
-            type_system.apply_extract_operator(output_schema)
-        else:
-            # Generic operator
-            type_system.apply_generic_operator(output_schema)
 
     def _convert_and_execute(
         self,
@@ -834,22 +705,6 @@ class AbstractStepBaseline(BaselineInterface):
             "properties": abstract_pipeline.properties,
             "operators": [operator_to_dict(op) for op in abstract_pipeline.to_operators()]
         }
-
-        abstract_pipeline_path = self.file_manager.save_json(
-            data=pipeline_dict,
-            query=query,
-            file_type='pipeline',
-            subdir_key='abstract_pipeline'
-        )
-
-        # Validate abstract pipeline before conversion to base system
-        validate_pipeline_static(
-            system_name="abstract",
-            pipeline_path=abstract_pipeline_path,
-            verbose=self.config.verbose,
-            logger=self.logger,
-            dataset_schema=abstract_pipeline.dataset_schema
-        )
 
         # Convert abstract pipeline to base system format and execute using executor
         try:

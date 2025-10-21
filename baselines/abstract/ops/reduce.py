@@ -26,24 +26,10 @@ class Reduce(Operator):
                     "type": "string",
                     "description": "Jinja2 template for aggregation. Use {{ inputs }} to reference grouped records."
                 },
-                "input": {
-                    "type": "object",
-                    "properties": {
-                        "fields": {
-                            "type": "object",
-                            "description": "Input field types including reduce_key"
-                        }
-                    },
-                    "required": ["fields"]
-                },
                 "output": {
                     "type": "object",
                     "description": "Output schema including reduce_key and aggregated fields. Use complete types: 'List[String]', 'Dict[{avg: Float, max: Float}]' etc."
                 },
-                "properties": {
-                    "type": "object",
-                    "description": "Additional configuration (optional)"
-                }
             },
-            "required": ["reduce_key", "prompt", "input", "output"]
+            "required": ["reduce_key", "prompt", "output"]
         }

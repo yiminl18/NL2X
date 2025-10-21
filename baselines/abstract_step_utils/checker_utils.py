@@ -36,7 +36,10 @@ def _validate_abstract_pipeline(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Validate an abstract layer pipeline.
+    Validate an abstract layer pipeline structure.
+
+    Since abstract layer type checking has been removed in favor of base system
+    validation, this now only validates basic pipeline structure.
 
     Args:
         pipeline_path: Path to abstract pipeline JSON file
@@ -48,23 +51,44 @@ def _validate_abstract_pipeline(
         Validation result dict
     """
     try:
-        # Import abstract layer static checker
-        from ..abstract.tools.static_checker import validate_pipeline
-
         # Load pipeline JSON
         with open(pipeline_path, 'r', encoding='utf-8') as f:
             pipeline_data = json.load(f)
 
-        # Extract operators
-        operators = pipeline_data.get('operators', [])
-        dataset_schema = kwargs.get('dataset_schema', pipeline_data.get('dataset_schema'))
+        # Basic structural validation
+        errors = []
+        warnings = []
 
-        # Run validation
-        result = validate_pipeline(operators, verbose=verbose, dataset_schema=dataset_schema)
+        # Check required fields
+        if 'operators' not in pipeline_data:
+            errors.append("Pipeline missing 'operators' field")
+        else:
+            operators = pipeline_data.get('operators', [])
+            if not isinstance(operators, list):
+                errors.append("'operators' must be a list")
+            elif len(operators) == 0:
+                warnings.append("Pipeline has no operators")
+            else:
+                # Validate each operator has required fields
+                for i, op in enumerate(operators):
+                    if not isinstance(op, dict):
+                        errors.append(f"Operator {i} is not a dictionary")
+                        continue
+                    if 'name' not in op:
+                        errors.append(f"Operator {i} missing 'name' field")
+                    if 'type' not in op:
+                        errors.append(f"Operator {i} missing 'type' field")
 
-        # Standardize result format
-        errors = result.get('errors', [])
-        warnings = result.get('warnings', [])
+        # Check optional fields
+        if 'name' not in pipeline_data:
+            warnings.append("Pipeline missing 'name' field")
+
+        if verbose and logger:
+            if errors:
+                logger.error(f"Abstract pipeline validation found {len(errors)} errors")
+            if warnings:
+                logger.warning(f"Abstract pipeline validation found {len(warnings)} warnings")
+
         score = 0 if errors else 1
 
         return {

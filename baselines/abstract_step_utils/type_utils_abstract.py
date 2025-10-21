@@ -154,6 +154,23 @@ class AbstractTypeSystem:
         """
         self.set_schema(output_schema)
 
+    def apply_unnest_operator(self, unnest_key: str) -> None:
+        """
+        Apply Unnest operator transformation to schema.
+
+        Args:
+            unnest_key: The field to unnest
+        """
+        # Validate unnest_key exists in current schema
+        if unnest_key not in self.current_schema:
+            raise ValueError(
+                f"Unnest key '{unnest_key}' not found in current schema. "
+                f"Available: {list(self.current_schema.keys())}"
+            )
+
+        # Unnesting changes schema, so we record it
+        self.schema_history.append(self.current_schema.copy())
+
     def apply_generic_operator(self, output_schema: Dict[str, str]) -> None:
         """
         Apply a generic operator transformation.
@@ -195,7 +212,6 @@ class AbstractTypeSystem:
                     f"Type mismatch for field '{field}': "
                     f"expected {expected_type}, got {current_type}"
                 )
-
         return True
 
     def _types_compatible(self, type1: str, type2: str) -> bool:

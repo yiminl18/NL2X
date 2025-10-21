@@ -60,7 +60,7 @@ def parse_type_string(type_str: str) -> Tuple[bool, Optional[Dict[str, Any]], Op
             return False, None, f"Invalid List element type: {error}"
         return True, {'type': 'List', 'element_type': element_type}, None
 
-    dict_match = re.match(r'^Dict\[\{(.+)\}\]$', type_str)
+    dict_match = re.match(r'^Dict\{(.+)\}$', type_str)
     if dict_match:
         fields_str = dict_match.group(1)
         fields = {}
@@ -79,7 +79,10 @@ def parse_type_string(type_str: str) -> Tuple[bool, Optional[Dict[str, Any]], Op
         return True, {'type': 'Dict', 'fields': fields}, None
 
     if type_str == 'Dict':
-        return True, {'type': 'Dict'}, None
+        return False, None, "Dict must specify fields. Use 'Dict{field: Type, ...}' instead of 'Dict'"
+
+    if type_str == 'List':
+        return False, None, "List must specify element type. Use 'List[ElementType]' instead of 'List'"
 
     if type_str.startswith('list[') or type_str.startswith('array['):
         return False, None, f"Type should use 'List' (capitalized) not '{type_str.split('[')[0]}'"
@@ -88,8 +91,8 @@ def parse_type_string(type_str: str) -> Tuple[bool, Optional[Dict[str, Any]], Op
         return False, None, f"Type should use 'Dict' (capitalized) not '{type_str.split('[')[0]}'"
 
     if '{' in type_str or '}' in type_str:
-        if not type_str.startswith('Dict[{'):
-            return False, None, "Dict fields must be wrapped in 'Dict[{...}]'"
+        if not type_str.startswith('Dict{'):
+            return False, None, "Dict fields must be wrapped in 'Dict{...}'"
 
     return False, None, f"Unrecognized type format: {type_str}"
 
@@ -105,19 +108,21 @@ def serialize_type_dict(type_dict: Dict[str, Any]) -> str:
         return type_name
 
     if type_name == 'List':
-        element_type = type_dict.get('element_type', {'type': 'Unknown'})
+        element_type = type_dict.get('element_type')
+        if not element_type:
+            raise ValueError("List type must specify element_type. Use 'List[ElementType]' instead of 'List'")
         element_str = serialize_type_dict(element_type)
         return f"List[{element_str}]"
 
     if type_name == 'Dict':
         fields = type_dict.get('fields', {})
-        if fields:
-            field_strs = []
-            for field_name, field_type in fields.items():
-                field_type_str = serialize_type_dict(field_type)
-                field_strs.append(f"{field_name}: {field_type_str}")
-            return f"Dict[{{{', '.join(field_strs)}}}]"
-        return "Dict"
+        if not fields:
+            raise ValueError("Dict type must specify fields. Use 'Dict{field: Type, ...}' instead of 'Dict'")
+        field_strs = []
+        for field_name, field_type in fields.items():
+            field_type_str = serialize_type_dict(field_type)
+            field_strs.append(f"{field_name}: {field_type_str}")
+        return f"Dict{{{', '.join(field_strs)}}}"
 
     return type_name
 

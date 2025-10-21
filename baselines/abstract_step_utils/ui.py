@@ -26,7 +26,7 @@ class AbstractStepUserInterface:
         """
         self.config = config
 
-    def confirm_step_before_llm(self, step_name: str, step_number: str, total_steps: str = "2") -> str:
+    def confirm_step_before_llm(self, step_name: str, step_number: str, total_steps: str = "2", step_prompt: str = "") -> str:
         """
         Ask for confirmation before calling LLM for a step.
 
@@ -34,6 +34,7 @@ class AbstractStepUserInterface:
             step_name: Name of the step
             step_number: Current step number
             total_steps: Total number of steps
+            step_prompt: Prompt for the current step
 
         Returns:
             'continue' if user wants to continue
@@ -42,6 +43,12 @@ class AbstractStepUserInterface:
         """
         if not (self.config.confirm or self.config.debug):
             return 'continue'
+
+        if step_prompt:
+            print(f"\n📝 Step Prompt:")
+            print("-"*40)
+            print(step_prompt)
+            print("-"*40)
 
         print(f"\n➡️  Next: Step {step_number}/{total_steps} - {step_name}")
         print("Continue? (Y/r/n): ", end="")
@@ -213,6 +220,7 @@ class AbstractStepUserInterface:
         operator_type: str,
         operator_purpose: str,
         prompt: str,
+        is_cached: bool = False,
     ) -> str:
         """
         Ask for confirmation before generating a single operator.
@@ -223,7 +231,7 @@ class AbstractStepUserInterface:
             operator_type: Type of the operator (Map, Filter, etc.)
             operator_purpose: Purpose of the operator
             prompt: The prompt that will be sent to LLM
-            prompt_file: Path where the prompt was saved
+            is_cached: Whether the prompt is already cached
 
         Returns:
             'continue' if user wants to continue
@@ -235,7 +243,8 @@ class AbstractStepUserInterface:
 
         print("\n" + "="*80)
         mode_text = "[DEBUG MODE]" if self.config.debug else "[CONFIRM MODE]"
-        print(f"{mode_text} Operator {operator_index + 1}/{total_operators} - Generation")
+        cache_text = " (CACHED)" if is_cached else ""
+        print(f"{mode_text} Operator {operator_index + 1}/{total_operators} - Generation{cache_text}")
         print("="*80)
 
         print(f"\n📋 Operator Type: {operator_type}")
@@ -243,23 +252,36 @@ class AbstractStepUserInterface:
         print("-"*40)
 
         # Show prompt preview (first 500 chars)
-        prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
         print("\n📝 Prompt Preview:")
         print("-"*40)
-        print(prompt_preview)
+        print(prompt)
         print("-"*40)
 
-        print("\n➡️  Generate this operator? (Y/r/n): ", end="")
+        # Show cache status and appropriate prompt
+        if is_cached:
+            print("\n💾 This prompt is CACHED. Type 'r' to bypass the cache and regenerate.")
+            print("➡️  Generate this operator? (Y/r/n): ", end="")
+        else:
+            print("\n➡️  Generate this operator? (Y/n): ", end="")
+
         user_input = input().strip().lower()
 
         if user_input == 'r':
-            print("🔄 Regenerating operator (bypassing cache)...")
-            return 'regenerate'
+            if is_cached:
+                print("🔄 Regenerating operator (bypassing cache)...")
+                return 'regenerate'
+            else:
+                # If not cached and user types 'r', treat as invalid and default to continue
+                print("✅ Generating operator...")
+                return 'continue'
         elif user_input == 'n':
             print("❌ User aborted operator generation")
             return 'abort'
         else:  # Default to 'y' or empty input
-            print("✅ Generating operator...")
+            if is_cached:
+                print("✅ Using cached response...")
+            else:
+                print("✅ Generating operator...")
             return 'continue'
 
     def display_generated_operator(

@@ -27,24 +27,10 @@ class Extract(Operator):
                     "items": {"type": "string"},
                     "description": "List of field names containing the documents to extract from"
                 },
-                "input": {
-                    "type": "object",
-                    "properties": {
-                        "fields": {
-                            "type": "object",
-                            "description": "Input field types including document fields"
-                        }
-                    },
-                    "required": ["fields"]
-                },
-                "output": {
-                    "type": "object",
-                    "description": "Output schema with extracted fields. CRITICAL: Specify complete types. For lists extracted from documents, use 'List[String]' not just 'List'. Examples: {\"document_name\": \"List[String]\", \"parties\": \"List[String]\", \"agreement_date\": \"List[String]\"}"
-                },
                 "properties": {
                     "type": "object",
                     "description": "Additional configuration (optional)"
                 }
             },
-            "required": ["prompt", "document_keys", "input", "output"]
+            "required": ["prompt", "document_keys"]
         }

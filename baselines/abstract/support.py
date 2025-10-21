@@ -30,22 +30,22 @@ BASE_SYSTEM_UNSUPPORTED: Dict[BaseSystem, Set[str]] = {
 }
 
 OPERATOR_DESCRIPTIONS = {
-    'Map': 'Transform each record (1-to-1 mapping)',
+    'Map': 'Transform each record into one or more fields independently using an LLM.',
     'Filter': 'Select records based on condition',
     'Reduce': 'Aggregate records by grouping key',
     'Resolve': 'Merge/deduplicate similar records',
     'Join': 'Combine two datasets based on key',
     'Rank': 'Order records by criteria',
     'TopK': 'Select top K records',
-    'Extract': 'Extract structured data from unstructured text',
+    'Extract': 'Verbatim extract span from text. Cannot analyze or transform the text. Not applicable for multi-field extraction.',
     'Cluster': 'Group similar records into clusters',
     'Split': 'Split records into smaller chunks',
     'Gather': 'Reassemble previously split chunks',
-    'Unnest': 'Flatten nested lists into separate records',
+    'Unnest': 'Flatten complex structures (List[...], Dict{...}).',
     'Sample': 'Sample a subset of records',
-    'Index': 'Create searchable index for records (not supported by DocETL)',
-    'Project': 'Select specific fields from records (not supported by DocETL)',
-    'Search': 'Search indexed records by query (not supported by DocETL)'
+    'Index': 'Create searchable index for records',
+    'Project': 'Select specific fields from records',
+    'Search': 'Search indexed records by query'
 }
 
 
@@ -58,13 +58,6 @@ def get_supported_operators(base_system: BaseSystem) -> Set[str]:
 
     Returns:
         Set of supported operator types
-
-    Example:
-        >>> supported = get_supported_operators(BaseSystem.DOCETL)
-        >>> 'Map' in supported
-        True
-        >>> 'Index' in supported
-        False
     """
     return BASE_SYSTEM_SUPPORT.get(base_system, set()).copy()
 

@@ -92,7 +92,7 @@ class EvaluationFramework:
                 else:
                     print("\n📂 Data Sources: None")
 
-                print("\n⚠️  Continue processing this sample? (Y/n): ", end="")
+                print("\n➡️ Continue processing this sample? (Y/n): ", end="")
                 user_input = input().strip().lower()
 
                 if user_input and user_input != 'y':

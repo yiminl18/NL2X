@@ -34,7 +34,7 @@ class Filter(Operator):
                 },
                 "output": {
                     "type": "object",
-                    "description": "Output schema (same as all available fields). Use complete type specifications: 'List[String]' not 'List', 'Dict[{field: Type}]' for structured dicts."
+                    "description": "Output schema (same as all available fields). Type specifications: String, Integer, Float, Boolean, List[Type], Dict[{field: Type}]."
                 },
                 "properties": {
                     "type": "object",

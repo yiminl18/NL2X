@@ -110,6 +110,65 @@ def _get_azure_config():
     return config
 
 
+def is_cached(
+    messages: Union[str, List[Dict[str, Any]]],
+    schema: Optional[Dict[str, Any]] = None,
+    system_prompt: str = "",
+    max_tokens: int = 4000,
+    temperature: float = 0.3,
+    top_p: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    response_format: Optional[Dict[str, Any]] = None
+) -> bool:
+    """
+    Check if a prompt is already cached without retrieving it.
+
+    Args:
+        messages: Either a string prompt or a list of message dictionaries
+        schema: JSON schema for structured output
+        system_prompt: System prompt to prepend
+        max_tokens: Maximum tokens for response
+        temperature: Response randomness (0-1)
+        top_p: Nucleus sampling parameter
+        frequency_penalty: Frequency penalty
+        presence_penalty: Presence penalty
+        response_format: Response format for structured output
+
+    Returns:
+        bool: True if the prompt is cached, False otherwise
+    """
+    # Convert string prompt to messages format
+    if isinstance(messages, str):
+        messages = [{"role": "user", "content": messages}]
+
+    # Build full messages with system prompt
+    full_messages = []
+    if system_prompt:
+        full_messages.append({"role": "system", "content": system_prompt})
+    full_messages.extend(messages)
+
+    # Generate cache key based on params (same as llm_call)
+    cache_key_data = {
+        "messages": full_messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "frequency_penalty": frequency_penalty,
+        "presence_penalty": presence_penalty,
+        "schema": schema,
+        "response_format": response_format
+    }
+    cache_key_str = json.dumps(cache_key_data, sort_keys=True)
+
+    # Check if cache exists
+    cache_key_hash = _global_cache._get_cache_key(cache_key_str)
+    pattern = os.path.join(_global_cache.cache_dir, f"*_{cache_key_hash}.json")
+    matching_files = glob.glob(pattern)
+
+    return len(matching_files) > 0
+
+
 def llm_call(
     messages: Union[str, List[Dict[str, Any]]],
     schema: Optional[Dict[str, Any]] = None,
