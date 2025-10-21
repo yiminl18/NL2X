@@ -452,13 +452,40 @@ class DocETLStaticChecker:
                     if self.dataset_schema and 'fields' in self.dataset_schema:
                         for jinja_field in jinja_fields:
                             if jinja_field not in self.dataset_schema['fields']:
-                                self.errors.append({
-                                    "type": "undefined_field_in_template",
-                                    "operation": op_name,
-                                    "field": field,
-                                    "referenced_field": jinja_field,
-                                    "message": f"Operation '{op_name}' references undefined field '{jinja_field}' in '{field}'"
-                                })
+                                # Check if this field exists within a complex type
+                                complex_location = self._find_field_in_complex_types(
+                                    jinja_field,
+                                    self.dataset_schema['fields']
+                                )
+
+                                if complex_location:
+                                    # Field exists within a complex type - provide detailed error
+                                    suggestions_text = "\n                    ".join(
+                                        complex_location['access_suggestions']
+                                    )
+                                    self.errors.append({
+                                        "type": "incorrect_complex_type_access",
+                                        "operation": op_name,
+                                        "field": field,
+                                        "referenced_field": jinja_field,
+                                        "parent_field": complex_location['parent_field'],
+                                        "parent_type": complex_location['parent_type'],
+                                        "message": (
+                                            f"Operation '{op_name}' cannot directly access field '{jinja_field}' in '{field}'. "
+                                            f"This field is nested within '{complex_location['parent_field']}: {complex_location['parent_type']}'. "
+                                            f"To access it, use one of the following methods:\n"
+                                            f"                    {suggestions_text}"
+                                        )
+                                    })
+                                else:
+                                    # Field truly doesn't exist
+                                    self.errors.append({
+                                        "type": "undefined_field_in_template",
+                                        "operation": op_name,
+                                        "field": field,
+                                        "referenced_field": jinja_field,
+                                        "message": f"Operation '{op_name}' references undefined field '{jinja_field}' in '{field}'"
+                                    })
                                 has_errors = True
 
         if op_type == 'reduce' and 'reduce_key' in op:
@@ -583,9 +610,10 @@ class DocETLStaticChecker:
         self.field_tracker[op_name] = {
             'inputs': set(),
             'outputs': set(),
+            'output_types': {},  # Track field name -> type string mapping
             'type': op_type
         }
-        
+
         # Extract input fields from prompts
         prompt_fields = ['prompt', 'comparison_prompt', 'resolution_prompt',
                         'batch_prompt', 'summary_prompt']
@@ -595,11 +623,15 @@ class DocETLStaticChecker:
                 self.field_tracker[op_name]['inputs'].update(input_fields)
                 # Check for bare field references that should use Jinja2 syntax
                 self._check_for_bare_field_references(op[field], op_name, input_fields)
-        
-        # Extract output fields from schema
+
+        # Extract output fields from schema with their types
         if 'output' in op and isinstance(op['output'], dict):
             if 'schema' in op['output'] and isinstance(op['output']['schema'], dict):
-                self.field_tracker[op_name]['outputs'].update(op['output']['schema'].keys())
+                output_schema = op['output']['schema']
+                self.field_tracker[op_name]['outputs'].update(output_schema.keys())
+                # Store the complete type information
+                for field_name, field_type in output_schema.items():
+                    self.field_tracker[op_name]['output_types'][field_name] = field_type
         
         # Handle special operators
         if op_type == 'unnest' and 'unnest_key' in op:
@@ -607,8 +639,18 @@ class DocETLStaticChecker:
             # For unnest operations, we need to look at the schema of the field being unnested
             # to determine what fields become available
             unnest_key = op['unnest_key']
-            self.field_tracker[op_name]['outputs'].add(unnest_key)
-            
+
+            # Track unnest-specific parameters
+            self.field_tracker[op_name]['unnest_key'] = unnest_key
+            self.field_tracker[op_name]['recursive'] = op.get('recursive', False)
+            self.field_tracker[op_name]['depth'] = op.get('depth')
+            self.field_tracker[op_name]['expand_fields'] = op.get('expand_fields', [])
+
+            # For non-recursive unnest, the field remains but changes type
+            # For recursive unnest, the field is removed and nested fields are added
+            if not op.get('recursive', False):
+                self.field_tracker[op_name]['outputs'].add(unnest_key)
+
             # Check if we can determine the nested fields from previous operations
             self.field_tracker[op_name]['nested_fields_from'] = unnest_key
         
@@ -621,17 +663,28 @@ class DocETLStaticChecker:
             self.field_tracker[op_name]['outputs'].add(f"{op['content_key']}_rendered")
     
     def _extract_jinja_fields(self, template: str) -> Set[str]:
-        """Extract field references from Jinja2 template."""
+        """
+        Extract field references from Jinja2 template.
+
+        This method extracts the top-level field names being accessed,
+        regardless of nested access patterns.
+
+        Examples:
+            {{ input.name }} -> extracts 'name'
+            {{ input.medications[0].name }} -> extracts 'medications'
+            {{ input.patient.name }} -> extracts 'patient'
+        """
         fields = set()
 
         # Match patterns like {{ input.field }}, {{ inputs[0].field }}, etc.
+        # Extract the first field name after 'input.'
         patterns = [
-            r'{{\s*input\.(\w+)\s*}}',
-            r'{{\s*inputs\[\d+\]\.(\w+)\s*}}',
-            r'{{\s*item\.(\w+)\s*}}',
-            r'{{\s*e\.(\w+)\s*}}',
-            r'{{\s*input1\.(\w+)\s*}}',
-            r'{{\s*input2\.(\w+)\s*}}'
+            r'{{\s*input\.(\w+)',  # {{ input.field... (captures first field)
+            r'{{\s*inputs\[\d+\]\.(\w+)',  # {{ inputs[0].field...
+            r'{{\s*item\.(\w+)',  # {{ item.field...
+            r'{{\s*e\.(\w+)',  # {{ e.field...
+            r'{{\s*input1\.(\w+)',  # {{ input1.field...
+            r'{{\s*input2\.(\w+)'  # {{ input2.field...
         ]
 
         for pattern in patterns:
@@ -700,7 +753,8 @@ class DocETLStaticChecker:
             if 'operations' not in step:
                 continue
 
-            available_fields = set()
+            # Track available fields with their types (field_name -> type_string)
+            available_fields_with_types = {}
 
             if 'input' in step:
                 dataset_name = step['input']
@@ -715,11 +769,12 @@ class DocETLStaticChecker:
                     has_errors = True
                     continue
 
-                available_fields.update(self.dataset_schema['fields'].keys())
+                # Store fields with their types from dataset schema
+                available_fields_with_types.update(self.dataset_schema['fields'])
 
             # Check each operation in sequence
             operations = step['operations']
-            for i, op_ref in enumerate(operations):
+            for op_ref in operations:
                 if isinstance(op_ref, str):
                     op_name = op_ref
                 elif isinstance(op_ref, dict):
@@ -751,37 +806,109 @@ class DocETLStaticChecker:
                 # Check if required input fields are available
                 if op_name in self.field_tracker:
                     required_inputs = self.field_tracker[op_name]['inputs']
-                    missing_fields = required_inputs - available_fields
+                    available_field_names = set(available_fields_with_types.keys())
+                    missing_fields = required_inputs - available_field_names
 
                     if missing_fields:
                         for missing_field in missing_fields:
-                            self.errors.append({
-                                "type": "missing_schema_field",
-                                "operation": op_name,
-                                "field": missing_field,
-                                "message": f"Operation '{op_name}' expects field '{missing_field}' which is not available from previous operations"
-                            })
+                            # Check if this field exists within a complex type
+                            complex_location = self._find_field_in_complex_types(
+                                missing_field,
+                                available_fields_with_types
+                            )
+
+                            if complex_location:
+                                # Field exists within a complex type - provide detailed error
+                                suggestions_text = "\n                ".join(
+                                    complex_location['access_suggestions']
+                                )
+                                self.errors.append({
+                                    "type": "incorrect_complex_type_access",
+                                    "operation": op_name,
+                                    "field": missing_field,
+                                    "parent_field": complex_location['parent_field'],
+                                    "parent_type": complex_location['parent_type'],
+                                    "message": (
+                                        f"Operation '{op_name}' cannot directly access field '{missing_field}'. "
+                                        f"This field is nested within '{complex_location['parent_field']}: {complex_location['parent_type']}'. "
+                                        f"To access it, use one of the following methods:\n"
+                                        f"                {suggestions_text}"
+                                    )
+                                })
+                            else:
+                                # Field truly doesn't exist
+                                self.errors.append({
+                                    "type": "missing_schema_field",
+                                    "operation": op_name,
+                                    "field": missing_field,
+                                    "message": f"Operation '{op_name}' expects field '{missing_field}' which is not available from previous operations"
+                                })
                         has_errors = True
-                    
-                    # Add output fields to available fields
-                    available_fields.update(self.field_tracker[op_name]['outputs'])
-                    
+
+                    # Add output fields with types to available fields
+                    output_types = self.field_tracker[op_name].get('output_types', {})
+                    for field_name, field_type in output_types.items():
+                        available_fields_with_types[field_name] = field_type
+
+                    # Also add output fields that don't have explicit types (use 'str' as default)
+                    for field_name in self.field_tracker[op_name]['outputs']:
+                        if field_name not in available_fields_with_types:
+                            available_fields_with_types[field_name] = 'str'
+
                     # Handle special operations that preserve fields
                     op_type = op_def.get('type')
                     if op_type in ['map', 'filter', 'resolve']:
-                        # These operations typically preserve input fields
-                        available_fields.update(required_inputs)
+                        # These operations typically preserve input fields - no change needed
+                        # Fields already in available_fields_with_types stay
+                        pass
                     elif op_type in ['reduce', 'code_reduce']:
-                        # Reduce operations change the structure significantly
-                        available_fields = self.field_tracker[op_name]['outputs'].copy()
+                        # Reduce operations change the structure significantly - only keep outputs
+                        new_fields = {}
+                        for field_name in self.field_tracker[op_name]['outputs']:
+                            if field_name in output_types:
+                                new_fields[field_name] = output_types[field_name]
+                            else:
+                                new_fields[field_name] = 'str'
+                        available_fields_with_types = new_fields
                     elif op_type in ['code_map']:
                         # Code map operations replace the structure with their outputs
-                        available_fields = self.field_tracker[op_name]['outputs'].copy()
+                        new_fields = {}
+                        for field_name in self.field_tracker[op_name]['outputs']:
+                            if field_name in output_types:
+                                new_fields[field_name] = output_types[field_name]
+                            else:
+                                new_fields[field_name] = 'str'
+                        available_fields_with_types = new_fields
                     elif op_type == 'unnest':
-                        # Unnest operations make nested fields available
-                        if 'nested_fields_from' in self.field_tracker[op_name]:
-                            nested_fields = self._get_nested_fields_from_schema(op_name, available_fields)
-                            available_fields.update(nested_fields)
+                        # Unnest operations transform the schema based on type and recursive parameter
+                        unnest_key = self.field_tracker[op_name].get('unnest_key')
+                        recursive = self.field_tracker[op_name].get('recursive', False)
+                        depth = self.field_tracker[op_name].get('depth')
+
+                        if unnest_key and unnest_key in available_fields_with_types:
+                            parent_type = available_fields_with_types[unnest_key]
+                            type_info = self._parse_complex_type(parent_type)
+
+                            # Compute the new schema after unnesting
+                            unnest_changes = self._compute_unnest_schema(
+                                unnest_key, parent_type, recursive, depth
+                            )
+
+                            # Determine if parent field should be removed
+                            # Remove parent field if:
+                            # 1. Dict type (always removes parent in DocETL)
+                            # 2. List type with recursive=True
+                            should_remove_parent = (
+                                type_info['base_type'] == 'dict' or
+                                (type_info['base_type'] == 'list' and recursive)
+                            )
+
+                            if should_remove_parent:
+                                del available_fields_with_types[unnest_key]
+
+                            # Add/update fields from unnest
+                            for field_name, field_type in unnest_changes.items():
+                                available_fields_with_types[field_name] = field_type
         
         # Check for defined but unused operations (warning only, not error)
         self._check_unused_operations(used_operations)
@@ -818,20 +945,216 @@ class DocETLStaticChecker:
     def _parse_list_schema_fields(self, field_def: str) -> Set[str]:
         """Parse a list schema definition to extract nested field names."""
         fields = set()
-        
+
         if isinstance(field_def, str) and field_def.startswith('list[{') and field_def.endswith('}]'):
             # Extract the content between list[{ and }]
             content = field_def[6:-2]  # Remove 'list[{' and '}]'
-            
+
             # Split by commas and extract field names
             parts = content.split(',')
             for part in parts:
                 if ':' in part:
                     field_name = part.split(':')[0].strip()
                     fields.add(field_name)
-        
+
         return fields
-    
+
+    def _parse_complex_type(self, type_str: str) -> Dict[str, Any]:
+        """
+        Parse complex type strings to extract nested field information.
+
+        Args:
+            type_str: Type string (e.g., 'list[{name: str, age: int}]', 'dict', 'str')
+
+        Returns:
+            Dict with structure:
+            {
+                'is_complex': bool,
+                'base_type': 'list' | 'dict' | 'simple',
+                'nested_fields': Set[str],  # Field names within complex type
+                'nested_types': Dict[str, str]  # Field name -> type mapping
+            }
+        """
+        result = {
+            'is_complex': False,
+            'base_type': 'simple',
+            'nested_fields': set(),
+            'nested_types': {}
+        }
+
+        if not isinstance(type_str, str):
+            return result
+
+        type_str = type_str.strip()
+
+        # Check for list[{...}] pattern (list of dicts with fields)
+        if type_str.startswith('list[{') and type_str.endswith('}]'):
+            result['is_complex'] = True
+            result['base_type'] = 'list'
+
+            # Extract content between list[{ and }]
+            content = type_str[6:-2]
+
+            # Parse field definitions
+            parts = content.split(',')
+            for part in parts:
+                part = part.strip()
+                if ':' in part:
+                    field_name, field_type = part.split(':', 1)
+                    field_name = field_name.strip()
+                    field_type = field_type.strip()
+                    result['nested_fields'].add(field_name)
+                    result['nested_types'][field_name] = field_type
+
+        # Check for simple list[type] pattern
+        elif type_str.startswith('list[') and type_str.endswith(']'):
+            result['is_complex'] = True
+            result['base_type'] = 'list'
+            # Simple list, no nested fields to extract
+
+        # Check for dict type (generic dict without specific fields)
+        elif type_str == 'dict':
+            result['is_complex'] = True
+            result['base_type'] = 'dict'
+
+        # Check for {field: type, ...} pattern (dict with fields)
+        elif type_str.startswith('{') and type_str.endswith('}'):
+            result['is_complex'] = True
+            result['base_type'] = 'dict'
+
+            # Extract content between { and }
+            content = type_str[1:-1]
+
+            # Parse field definitions
+            parts = content.split(',')
+            for part in parts:
+                part = part.strip()
+                if ':' in part:
+                    field_name, field_type = part.split(':', 1)
+                    field_name = field_name.strip()
+                    field_type = field_type.strip()
+                    result['nested_fields'].add(field_name)
+                    result['nested_types'][field_name] = field_type
+
+        return result
+
+    def _find_field_in_complex_types(self, field_name: str, schema: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        """
+        Find if a field exists within complex types in the schema.
+
+        Args:
+            field_name: The field name to search for
+            schema: Current schema (field -> type mapping)
+
+        Returns:
+            Dict with location info if found, None otherwise:
+            {
+                'parent_field': str,  # Name of the parent field containing this field
+                'parent_type': str,   # Type of the parent field
+                'field_type': str,    # Type of the nested field
+                'base_type': 'list' | 'dict',  # Type of complex container
+                'access_suggestions': List[str]  # Suggested ways to access the field
+            }
+        """
+        for parent_field, parent_type in schema.items():
+            # Parse the parent type to check for nested fields
+            type_info = self._parse_complex_type(parent_type)
+
+            if type_info['is_complex'] and field_name in type_info['nested_fields']:
+                # Found the field within this complex type
+                access_suggestions = []
+
+                if type_info['base_type'] == 'list':
+                    # List of dicts - suggest unnest or indexed access
+                    access_suggestions.append(
+                        f"1. Use an Unnest operator to expand the '{parent_field}' field first"
+                    )
+                    access_suggestions.append(
+                        f"2. Access via index in Jinja2: {{{{ input.{parent_field}[0].{field_name} }}}}"
+                    )
+                    access_suggestions.append(
+                        f"3. Use a for loop in Jinja2: {{% for item in input.{parent_field} %}}{{{{ item.{field_name} }}}}{{% endfor %}}"
+                    )
+                elif type_info['base_type'] == 'dict':
+                    # Dict with fields - suggest dotted access
+                    access_suggestions.append(
+                        f"1. Access via dotted notation in Jinja2: {{{{ input.{parent_field}.{field_name} }}}}"
+                    )
+                    access_suggestions.append(
+                        f"2. Use an Unnest operator to expand the '{parent_field}' field if needed"
+                    )
+
+                return {
+                    'parent_field': parent_field,
+                    'parent_type': parent_type,
+                    'field_type': type_info['nested_types'].get(field_name, 'unknown'),
+                    'base_type': type_info['base_type'],
+                    'access_suggestions': access_suggestions
+                }
+
+        return None
+
+    def _compute_unnest_schema(
+        self,
+        unnest_key: str,
+        parent_type: str,
+        recursive: bool = False,
+        depth: Optional[int] = None
+    ) -> Dict[str, str]:
+        """
+        Compute the schema changes after an unnest operation.
+
+        Args:
+            unnest_key: The field being unnested
+            parent_type: The type of the field (e.g., 'list[{name: str}]')
+            recursive: Whether recursive unnest is enabled
+            depth: Depth of unnesting (if specified)
+
+        Returns:
+            Dict mapping field names to their new types after unnest
+            - For non-recursive: {unnest_key: inner_type}
+            - For recursive: {field1: type1, field2: type2, ...} (unnest_key removed)
+        """
+        result = {}
+
+        # Parse the parent type to understand its structure
+        type_info = self._parse_complex_type(parent_type)
+
+        if not type_info['is_complex']:
+            # Simple type, unnesting doesn't change much
+            result[unnest_key] = parent_type
+            return result
+
+        if type_info['base_type'] == 'list':
+            # Unnesting a list
+            if parent_type.startswith('list[{') and parent_type.endswith('}]'):
+                # list[{field: type, ...}] format
+                if recursive:
+                    # Recursive unnest: extract nested fields directly
+                    for field_name, field_type in type_info['nested_types'].items():
+                        result[field_name] = field_type
+                else:
+                    # Non-recursive unnest: list[{...}] → {...}
+                    # Extract the dict part
+                    inner_content = parent_type[5:-1]  # Remove 'list[' and ']'
+                    result[unnest_key] = inner_content
+
+            elif parent_type.startswith('list[') and parent_type.endswith(']'):
+                # Simple list[type] format
+                inner_type = parent_type[5:-1]  # Remove 'list[' and ']'
+                result[unnest_key] = inner_type
+
+        elif type_info['base_type'] == 'dict':
+            # Unnesting a dict ALWAYS extracts nested fields and removes parent field
+            # This is the default behavior of dict unnest in DocETL (regardless of recursive parameter)
+            if type_info['nested_fields']:
+                for field_name, field_type in type_info['nested_types'].items():
+                    result[field_name] = field_type
+            # Note: parent field (unnest_key) is NOT included in result
+            # It will be removed when applying the schema changes
+
+        return result
+
     def _check_unused_operations(self, used_operations: Set[str]):
         """Check for operations that are defined but not used in the pipeline."""
         if 'operations' not in self.pipeline:
