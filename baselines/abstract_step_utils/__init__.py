@@ -1,12 +1,12 @@
 """
 Abstract Step Utilities
 
-Utility module for abstract_step baseline, providing prompts and type system
+Utility module for abstract_step baseline, providing prompts and schema tracking
 for abstract layer pipeline generation. Uses existing converter from
 baselines/abstract/convert/docetl/ for DocETL conversion.
 """
 
-from .prompt_abstract import (
+from .prompts import (
     ABSTRACT_OPERATOR_SELECTION_PROMPT,
     get_operator_selection_prompt,
     get_abstract_operator_prompt,
@@ -15,13 +15,11 @@ from .prompt_abstract import (
     ABSTRACT_REDUCE_PROMPT
 )
 
-from .type_utils_abstract import (
-    AbstractTypeSystem,
-    infer_type_from_sample,
+from .schema_tracker import (
     format_fields_for_prompt
 )
 
-from .dynamic_inst import (
+from .instructions import (
     OPERATOR_SELECTION_RULES,
     MAX_INSTRUCTIONS,
     DEFAULT_IMPORTANCE_SCORE,
@@ -41,9 +39,7 @@ __all__ = [
     'ABSTRACT_FILTER_PROMPT',
     'ABSTRACT_REDUCE_PROMPT',
 
-    # Type system
-    'AbstractTypeSystem',
-    'infer_type_from_sample',
+    # Schema formatting
     'format_fields_for_prompt',
 
     # Dynamic instructions

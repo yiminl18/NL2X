@@ -19,84 +19,15 @@ from ...pipeline import Pipeline
 from ...tools.docetl_pipeline_parser import parse_pipeline_operators
 from ...tools.static_checker import validate_pipeline
 
-# Import schema and type utilities
-from .schema import _extract_input_schema, _extract_output_schema, DocETLTypeMapper
+# Import DocETL schema tracker for type inference and conversion (4 dots: go up to baselines/)
+from ....docetl_support.schema_tracking import DocETLSchemaTracker
 
 
 # ============================================================================
-# Schema Inference Functions
+# Schema Inference Functions (now delegated to DocETLSchemaTracker)
 # ============================================================================
-
-def infer_docetl_type_from_value(value: Any) -> str:
-    """Infer DocETL type string from a Python value.
-
-    Args:
-        value: A Python value to infer the type from
-
-    Returns:
-        A DocETL type string (e.g., 'str', 'int', 'list', 'dict')
-    """
-    if value is None:
-        return 'str'  # Default to string for None values
-
-    if isinstance(value, bool):
-        return 'bool'
-    elif isinstance(value, int):
-        return 'int'
-    elif isinstance(value, float):
-        return 'float'
-    elif isinstance(value, str):
-        return 'str'
-    elif isinstance(value, list):
-        if len(value) == 0:
-            return 'list'
-        # Try to infer element type from first element
-        first_elem_type = infer_docetl_type_from_value(value[0])
-        return f'list[{first_elem_type}]'
-    elif isinstance(value, dict):
-        return 'dict'
-    else:
-        return 'str'  # Default fallback
-
-
-def infer_schema_from_dataset(file_path: Union[str, Path]) -> Optional[Dict[str, Any]]:
-    """Infer dataset schema from a DocETL data file.
-
-    DocETL datasets are List[Dict] format. This function reads the first dict
-    and infers the schema from its fields.
-
-    Args:
-        file_path: Path to the dataset file (JSON format)
-
-    Returns:
-        A schema dict in the format {'fields': {field_name: docetl_type_str}}
-        or None if the file cannot be read or is empty
-    """
-    try:
-        file_path = Path(file_path)
-
-        # Read JSON file
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        # Check if data is a list and has at least one element
-        if not isinstance(data, list) or len(data) == 0:
-            return None
-
-        # Get the first dict element
-        first_item = data[0]
-        if not isinstance(first_item, dict):
-            return None
-
-        # Infer types for each field
-        fields = {}
-        for field_name, field_value in first_item.items():
-            fields[field_name] = infer_docetl_type_from_value(field_value)
-
-        return {'fields': fields}
-
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, IndexError):
-        return None
+# Functions removed - use DocETLSchemaTracker._infer_type_from_value
+# and DocETLSchemaTracker.from_dataset instead
 
 
 # Mapping from DocETL operator types to Abstract operator types
@@ -154,8 +85,11 @@ def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Di
 
     abstract_op.properties = properties
 
-    abstract_op.input = _extract_input_schema(docetl_op, field_types, dataset_schema)
-    abstract_op.output = _extract_output_schema(docetl_op, field_types)
+    # Use DocETLSchemaTracker methods to get input and output schemas
+    # Create a temporary tracker for schema extraction
+    tracker = DocETLSchemaTracker({})
+    abstract_op.input = tracker.get_input_schema(docetl_op, field_types, dataset_schema)
+    abstract_op.output = tracker.get_output_schema(docetl_op, field_types)
 
     return abstract_op
 
@@ -208,8 +142,9 @@ def docetl_pipeline_to_abstract(yaml_path: Union[str, Path], pipeline_config: Op
             if "schema" in docetl_op["output"]:
                 schema = docetl_op["output"]["schema"]
                 if isinstance(schema, dict):
-                    for field, field_type_str in schema.items():
-                        cumulative_field_types[field] = DocETLTypeMapper.to_abstract_type_string(field_type_str)
+                    # Convert DocETL schema to abstract format
+                    abstract_schema = DocETLSchemaTracker.convert_schema_to_abstract(schema)
+                    cumulative_field_types.update(abstract_schema)
 
         if op_type == "unnest":
             if abstract_op.output and isinstance(abstract_op.output, dict):
@@ -305,8 +240,6 @@ def docetl_pipeline_to_abstract(yaml_path: Union[str, Path], pipeline_config: Op
 
 def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
     """Convert abstract Operator to DocETL operator dict."""
-    from .schema import DocETLTypeMapper
-
     docetl_op = {}
 
     docetl_op["name"] = abstract_operator.name
@@ -346,15 +279,8 @@ def abstract_to_docetl(abstract_operator: Operator) -> Dict[str, Any]:
                         if k not in ['type', '_removed_fields']}
 
         if output_fields:
-            # Convert each field type from abstract to DocETL format
-            docetl_schema = {}
-            for field_name, abstract_type_str in output_fields.items():
-                if isinstance(abstract_type_str, str):
-                    docetl_type_str = DocETLTypeMapper.from_abstract_type_string(abstract_type_str)
-                    docetl_schema[field_name] = docetl_type_str
-                else:
-                    # If it's not a string (shouldn't happen), keep as-is
-                    docetl_schema[field_name] = abstract_type_str
+            # Convert abstract schema to DocETL format
+            docetl_schema = DocETLSchemaTracker.convert_schema_from_abstract(output_fields)
 
             # Create proper DocETL output.schema structure
             docetl_op["output"] = {
@@ -383,12 +309,18 @@ def _load_and_convert_yaml(yaml_path: Union[str, Path], dataset_schema: Optional
 
         # Convert to abstract layer types
         if schema_dict and 'fields' in schema_dict:
-            converted_schema = {'fields': {}}
-            for field, field_type in schema_dict['fields'].items():
-                if isinstance(field_type, str):
-                    converted_schema['fields'][field] = DocETLTypeMapper.to_abstract_type_string(field_type)
-                else:
-                    converted_schema['fields'][field] = field_type
+            # Separate string types from non-string types
+            docetl_fields = {k: v for k, v in schema_dict['fields'].items() if isinstance(v, str)}
+            other_fields = {k: v for k, v in schema_dict['fields'].items() if not isinstance(v, str)}
+
+            # Convert DocETL format to abstract format
+            if docetl_fields:
+                abstract_fields = DocETLSchemaTracker.convert_schema_to_abstract(docetl_fields)
+            else:
+                abstract_fields = {}
+
+            # Merge converted and non-converted fields
+            converted_schema = {'fields': {**abstract_fields, **other_fields}}
 
     # If schema_dict is still None, try to infer from input path
     if not schema_dict:
@@ -400,12 +332,20 @@ def _load_and_convert_yaml(yaml_path: Union[str, Path], dataset_schema: Optional
                 # Resolve input path relative to YAML file location
                 input_file = yaml_path.parent / input_path
                 if input_file.exists():
-                    schema_dict = infer_schema_from_dataset(input_file)
-                    if schema_dict and 'fields' in schema_dict:
+                    # Use DocETLSchemaTracker for schema inference
+                    try:
+                        tracker = DocETLSchemaTracker.from_dataset(str(input_file))
+                        docetl_schema = tracker.get_current_schema()
+
                         # Convert inferred DocETL types to abstract layer types
-                        converted_schema = {'fields': {}}
-                        for field, field_type in schema_dict['fields'].items():
-                            converted_schema['fields'][field] = DocETLTypeMapper.to_abstract_type_string(field_type)
+                        abstract_schema = DocETLSchemaTracker.convert_schema_to_abstract(docetl_schema)
+                        converted_schema = {'fields': abstract_schema}
+
+                        schema_dict = converted_schema
+                    except Exception:
+                        schema_dict = None
+
+                    if schema_dict and 'fields' in schema_dict:
 
                         if verbose:
                             print("\n" + "=" * 60)

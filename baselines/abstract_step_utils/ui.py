@@ -544,3 +544,90 @@ class AbstractStepUserInterface:
         else:
             print(f"{RED}❌ Pipeline generation aborted due to validation errors{RESET}")
             return 'abort'
+
+    def confirm_repair_suggestion(
+        self,
+        operator_index: int,
+        total_operators: int,
+        repair_suggestion: Dict[str, Any]
+    ) -> str:
+        """
+        Display LLM's repair suggestion and get user confirmation.
+
+        Args:
+            operator_index: Current operator index (0-based)
+            total_operators: Total number of operators
+            repair_suggestion: LLM's repair suggestion dict with:
+                - analysis: Error analysis
+                - action: Repair action (DELETE, INSERT_BEFORE, etc.)
+                - new_operator: New operator info (for INSERT/REPLACE)
+                - rationale: Reason for this repair
+
+        Returns:
+            'accept' - Accept and apply the suggestion
+            'skip' - Skip the suggestion and continue with errors
+            'abort' - Abort pipeline generation
+        """
+        # ANSI color codes
+        CYAN = '\033[36m'
+        GREEN = '\033[32m'
+        ORANGE = '\033[33m'
+        RESET = '\033[0m'
+
+        print("\n" + "="*80)
+        print(f"{CYAN} REPAIR SUGGESTION - Operator {operator_index + 1}/{total_operators}{RESET}")
+        print("="*80)
+
+        # Display error analysis
+        print(f"\n{CYAN}📊 Error Analysis:{RESET}")
+        print("-"*40)
+        print(repair_suggestion.get('analysis', 'N/A'))
+        print("-"*40)
+
+        # Display suggested action
+        action = repair_suggestion.get('action', 'UNKNOWN')
+        action_descriptions = {
+            'DELETE': '🗑️  Delete the current operator',
+            'INSERT_BEFORE': '➕ Insert a new operator before this one',
+            'INSERT_AFTER': '➕ Insert a new operator after this one',
+            'REPLACE': '🔄 Replace the current operator with a different type',
+            'MODIFY': '✏️  Modify the current operator (regenerate)',
+            'CONTINUE': '➡️  Continue despite errors (warnings only)'
+        }
+
+        action_desc = action_descriptions.get(action, f'Unknown action: {action}')
+        print(f"\n{GREEN}💡 Suggested Action: {action}{RESET}")
+        print(f"   {action_desc}")
+
+        # Display new operator info if applicable
+        if action in ['INSERT_BEFORE', 'INSERT_AFTER', 'REPLACE']:
+            new_operator = repair_suggestion.get('new_operator', {})
+            if new_operator:
+                print(f"\n{CYAN}🆕 New Operator Details:{RESET}")
+                print(f"   Type: {new_operator.get('type', 'N/A')}")
+                print(f"   Purpose: {new_operator.get('purpose', 'N/A')}")
+
+        # Display rationale
+        print(f"\n{CYAN}📝 Rationale:{RESET}")
+        print("-"*40)
+        print(repair_suggestion.get('rationale', 'N/A'))
+        print("-"*40)
+
+        # Get user decision
+        print(f"\n{GREEN}Options:{RESET}")
+        print("  A - Accept and apply this repair suggestion")
+        print("  S - Skip this suggestion and continue with validation errors")
+        print("  N - Abort pipeline generation")
+        print(f"\n➡️  Apply this repair? (A/s/n): ", end="")
+
+        user_input = input().strip().lower()
+
+        if user_input == 'a' or user_input == '':
+            print(f"{GREEN}✅ Applying repair suggestion...{RESET}")
+            return 'accept'
+        elif user_input == 's':
+            print(f"{ORANGE}⚠️  Skipping repair, continuing with errors...{RESET}")
+            return 'skip'
+        else:
+            print(f"{ORANGE}❌ Pipeline generation aborted{RESET}")
+            return 'abort'

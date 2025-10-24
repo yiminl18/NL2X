@@ -16,16 +16,26 @@ from .converter import (
     LiteralDumper
 )
 
-# Import schema functions and type mapper
-from .schema import (
-    _extract_fields_from_jinja2,
-    _extract_fields_from_python_code,
-    DocETLTypeMapper,
-    _extract_input_schema,
-    _extract_output_schema
+# Import schema functions and type mapper from docetl_support
+from ....docetl_support.schema_tracking.field_extraction import (
+    extract_fields_from_jinja2 as _extract_fields_from_jinja2,
+    extract_fields_from_python_code as _extract_fields_from_python_code
 )
+from ....docetl_support.schema_tracking.type_mapper import DocETLTypeMapper
+from ....docetl_support.schema_tracking import DocETLSchemaTracker
 
-# Import path management APIs
+# Create compatibility functions for the old API
+def _extract_input_schema(docetl_operator, field_types=None, dataset_schema=None):
+    """Extract input schema - compatibility wrapper for DocETLSchemaTracker."""
+    tracker = DocETLSchemaTracker({})
+    return tracker.get_input_schema(docetl_operator, field_types, dataset_schema)
+
+def _extract_output_schema(docetl_operator, cumulative_field_types=None):
+    """Extract output schema - compatibility wrapper for DocETLSchemaTracker."""
+    tracker = DocETLSchemaTracker({})
+    return tracker.get_output_schema(docetl_operator, cumulative_field_types)
+
+# Import path management APIs (keep local for now)
 from .path_manager import (
     get_dataset_paths,
     set_dataset_paths,
@@ -36,6 +46,12 @@ from .path_manager import (
     set_intermediate_dir,
     apply_path_mappings,
     get_all_file_paths
+)
+
+# Import validation functions from docetl_support
+from ....docetl_support.validation import (
+    check_pipeline_file,
+    check_pipeline_string,
 )
 
 __all__ = [
@@ -76,4 +92,8 @@ __all__ = [
     'set_intermediate_dir',
     'apply_path_mappings',
     'get_all_file_paths',
+
+    # Validation APIs
+    'check_pipeline_file',
+    'check_pipeline_string',
 ]

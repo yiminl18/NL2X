@@ -17,22 +17,33 @@ import traceback
 from datetime import datetime
 import logging
 
+
+# Custom exception for operator repair
+class OperatorRepairException(Exception):
+    """Exception to signal that an operator needs repair/modification."""
+    def __init__(self, action: str, new_operator: Optional[Dict[str, str]] = None, message: str = ""):
+        self.action = action
+        self.new_operator = new_operator
+        self.message = message
+        super().__init__(message)
+
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
 from .abstract_step_utils.ui import AbstractStepUserInterface
-from .abstract_step_utils.checker_utils import validate_pipeline_static
-from .abstract_step_utils.log_utils import PipelineFileManager
+from .abstract_step_utils.validation import validate_pipeline_static
+from .abstract_step_utils.file_manager import PipelineFileManager
 from model.litellm_client import llm_call, is_cached
 
 # Schema tracking utilities using base system
-from .abstract_step_utils.base_schema_tracker import (
+from .abstract_step_utils.schema_tracker import (
     BaseSystemSchemaTracker,
     infer_schema_from_samples,
     format_fields_for_prompt,
 )
-from .abstract_step_utils.prompt_abstract import (
+from .abstract_step_utils.prompts import (
     get_operator_selection_prompt,
     get_abstract_operator_prompt,
+    get_operator_repair_prompt,
 )
 from .abstract.support import (
     BaseSystem,
@@ -315,20 +326,69 @@ class AbstractStepBaseline(BaselineInterface):
             verbose=self.config.verbose
         )
 
+        # Use while loop to support dynamic operator list modification
         filled_operators = []
-        for i, op in enumerate(operators):
-            filled_op = self._generate_operator_details(
-                operator=op,
-                query=query,
-                dataset_samples=dataset_samples,
-                dataset_path=dataset_path,
-                previous_operators=filled_operators,
-                schema_tracker=schema_tracker,
-                operator_index=i,
-                attempt=attempt,
-                total_operators=len(operators)
-            )
-            filled_operators.append(filled_op)
+        current_index = 0
+
+        while current_index < len(operators):
+            op = operators[current_index]
+
+            try:
+                filled_op = self._generate_operator_details(
+                    operator=op,
+                    query=query,
+                    dataset_samples=dataset_samples,
+                    dataset_path=dataset_path,
+                    previous_operators=filled_operators,
+                    schema_tracker=schema_tracker,
+                    operator_index=current_index,
+                    attempt=attempt,
+                    total_operators=len(operators)
+                )
+                filled_operators.append(filled_op)
+
+                # Move to next operator
+                current_index += 1
+
+            except OperatorRepairException as e:
+                # Handle operator repair
+                self._log(f"Caught repair exception: {e.action}", level='info')
+
+                # Apply operator modification
+                operators, new_index, action_desc = self._apply_operator_modification(
+                    action=e.action,
+                    operators_list=operators,
+                    current_index=current_index,
+                    new_operator=e.new_operator
+                )
+
+                if e.action == "DELETE":
+                    # Remove the corresponding filled operator if it was added
+                    # Note: No need to rollback schema since operator wasn't applied yet
+                    if current_index < len(filled_operators):
+                        filled_operators.pop(current_index)
+
+                elif e.action in ["INSERT_BEFORE", "REPLACE"]:
+                    # For INSERT_BEFORE and REPLACE, we need to regenerate from current position
+                    # Remove the current filled operator if it exists (for REPLACE case)
+                    # Note: No need to rollback schema since operator wasn't applied yet
+                    if current_index < len(filled_operators):
+                        filled_operators.pop(current_index)
+
+                elif e.action == "INSERT_AFTER":
+                    # Current operator stays, insert happens after
+                    # No need to modify filled_operators or schema_tracker
+                    pass
+
+                elif e.action == "CONTINUE":
+                    # Continue to next operator
+                    pass
+
+                # Update current_index based on modification
+                current_index = new_index
+
+                # Update total_operators display (will be used in next iteration)
+                self._log(f"Updated operators list: {len(operators)} operators total", level='info')
 
         # Validate compatibility with base system
         operator_types = [op.type for op in filled_operators]
@@ -613,46 +673,77 @@ class AbstractStepBaseline(BaselineInterface):
                 self.logger.warning(f"Failed to parse operator {operator_index}: {e}")
             raise
 
-        # Apply operator to schema tracker (validates and updates schema)
-        success, errors = schema_tracker.apply_operator(abstract_operator)
-        if not success:
-            error_msg = f"Failed to apply operator {abstract_operator.name} ({abstract_operator.type}) to schema: {', '.join(errors)}"
-            raise ValueError(error_msg)
-
         if self.config.verbose:
             self.logger.info(f"Generated operator {operator_index + 1}/{total_operators}: {op_type}")
 
-        # Perform incremental validation after applying operator to schema
-        all_operators = previous_operators + [abstract_operator]
-        validation_passed, validation_errors, validation_warnings, temp_file_path = self._validate_incremental_pipeline(
-            operators=all_operators,
-            query=query,
-            dataset_path=dataset_path,
-            operator_index=operator_index
-        )
+        # Perform incremental validation BEFORE applying operator to schema
+        # Validate current operator directly using schema tracker
+        # Convert abstract operator to base system format for validation
+        if self.base_system == BaseSystem.DOCETL:
+            base_operator = abstract_to_docetl(abstract_operator)
+        else:
+            raise ValueError(f"Unsupported base system: {self.base_system.value}")
+
+        validation_passed, validation_errors = schema_tracker.validate_operator(base_operator)
 
         # Handle validation results - only show errors
         if not validation_passed:
-            # Ask user for decision via UI
-            user_decision = self.ui.confirm_validation_error(
+            # Analyze errors and suggest repair using LLM
+            self._log(f"Validation failed for operator {operator_index + 1}, analyzing errors...", level='info')
+
+            all_operators = previous_operators + [abstract_operator]
+            repair_suggestion = self._analyze_and_suggest_repair(
+                validation_errors=validation_errors,
+                validation_warnings=[],  # No warnings from direct validation
+                operator=operator,  # Dict with type and purpose
                 operator_index=operator_index,
-                total_operators=total_operators,
-                errors=validation_errors,
-                warnings=validation_warnings
+                all_operators=all_operators,
+                query=query,
+                dataset_samples=dataset_samples,
+                schema_tracker=schema_tracker
             )
 
-            if user_decision == 'abort':
-                # Clean up temp file if it exists
-                if temp_file_path and os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
-                raise ValueError(f"Pipeline generation aborted due to validation errors in operator {operator_index + 1}")
-            else:
-                # User chose to continue despite errors
-                self._log(f"⚠ Continuing with validation errors in operator {operator_index + 1}", level='warning', force=True)
+            if repair_suggestion:
+                # Display repair suggestion and get user confirmation
+                user_decision = self.ui.confirm_repair_suggestion(
+                    operator_index=operator_index,
+                    total_operators=total_operators,
+                    repair_suggestion=repair_suggestion
+                )
 
-        # Clean up temp validation file
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+                if user_decision == 'accept':
+                    # Raise exception with repair action to be handled by caller
+                    raise OperatorRepairException(
+                        action=repair_suggestion['action'],
+                        new_operator=repair_suggestion.get('new_operator'),
+                        message=f"Repair action: {repair_suggestion['action']}"
+                    )
+                elif user_decision == 'skip':
+                    # User chose to continue despite errors
+                    self._log(f"⚠ Continuing with validation errors in operator {operator_index + 1}", level='warning', force=True)
+                else:  # abort
+                    raise ValueError(f"Pipeline generation aborted due to validation errors in operator {operator_index + 1}")
+            else:
+                # Fallback to original behavior if repair analysis fails
+                user_decision = self.ui.confirm_validation_error(
+                    operator_index=operator_index,
+                    total_operators=total_operators,
+                    errors=validation_errors,
+                    warnings=[]
+                )
+
+                if user_decision == 'abort':
+                    raise ValueError(f"Pipeline generation aborted due to validation errors in operator {operator_index + 1}")
+                else:
+                    # User chose to continue despite errors
+                    self._log(f"⚠ Continuing with validation errors in operator {operator_index + 1}", level='warning', force=True)
+
+        # Update schema after validation (even if validation failed but user chose to continue)
+        try:
+            schema_tracker.update_schema(base_operator)
+        except Exception as e:
+            error_msg = f"Failed to update schema for operator {abstract_operator.name} ({abstract_operator.type}): {str(e)}"
+            raise ValueError(error_msg)
 
         # Display generated operator and ask for confirmation
         user_choice = self.ui.display_generated_operator(
@@ -676,20 +767,14 @@ class AbstractStepBaseline(BaselineInterface):
             # Create operator from regenerated LLM response
             abstract_operator = self._create_operator_from_response(llm_response, operator_index, op_type)
 
-            # Apply operator to schema tracker (validates and updates schema)
-            success, errors = schema_tracker.apply_operator(abstract_operator)
-            if not success:
-                error_msg = f"Failed to apply regenerated operator {abstract_operator.name} ({abstract_operator.type}) to schema: {', '.join(errors)}"
-                raise ValueError(error_msg)
+            # Validate regenerated operator directly using schema tracker
+            # Convert abstract operator to base system format for validation
+            if self.base_system == BaseSystem.DOCETL:
+                base_operator = abstract_to_docetl(abstract_operator)
+            else:
+                raise ValueError(f"Unsupported base system: {self.base_system.value}")
 
-            # Perform incremental validation after applying regenerated operator
-            all_operators = previous_operators + [abstract_operator]
-            validation_passed, validation_errors, validation_warnings, temp_file_path = self._validate_incremental_pipeline(
-                operators=all_operators,
-                query=query,
-                dataset_path=dataset_path,
-                operator_index=operator_index
-            )
+            validation_passed, validation_errors = schema_tracker.validate_operator(base_operator)
 
             # Handle validation results - only show errors
             if not validation_passed:
@@ -698,21 +783,21 @@ class AbstractStepBaseline(BaselineInterface):
                     operator_index=operator_index,
                     total_operators=total_operators,
                     errors=validation_errors,
-                    warnings=validation_warnings
+                    warnings=[]
                 )
 
                 if user_decision == 'abort':
-                    # Clean up temp file if it exists
-                    if temp_file_path and os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
                     raise ValueError(f"Pipeline generation aborted due to validation errors in regenerated operator {operator_index + 1}")
                 else:
                     # User chose to continue despite errors
                     self._log(f"⚠ Continuing with validation errors in regenerated operator {operator_index + 1}", level='warning', force=True)
 
-            # Clean up temp validation file
-            if temp_file_path and os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+            # Update schema after validation (even if validation failed but user chose to continue)
+            try:
+                schema_tracker.update_schema(base_operator)
+            except Exception as e:
+                error_msg = f"Failed to update schema for regenerated operator {abstract_operator.name} ({abstract_operator.type}): {str(e)}"
+                raise ValueError(error_msg)
 
             # Show regenerated operator
             regenerate_choice = self.ui.display_generated_operator(
@@ -743,111 +828,211 @@ class AbstractStepBaseline(BaselineInterface):
             return abstract_operator, messages
         return abstract_operator
 
-    def _validate_incremental_pipeline(
+    def _analyze_and_suggest_repair(
         self,
-        operators: List[Operator],
+        validation_errors: List[str],
+        validation_warnings: List[str],
+        operator: Dict[str, Any],
+        operator_index: int,
+        all_operators: List[Operator],
         query: str,
-        dataset_path: str,
-        operator_index: int
-    ) -> Tuple[bool, List[str], List[str], Optional[str]]:
+        dataset_samples: List[Dict],
+        schema_tracker: BaseSystemSchemaTracker
+    ) -> Optional[Dict[str, Any]]:
         """
-        Validate the pipeline incrementally after generating each operator.
-
-        This method builds a temporary pipeline with all operators generated so far,
-        converts it to the base system format, and runs static validation.
+        Analyze validation errors and suggest repair using LLM.
 
         Args:
-            operators: List of operators generated so far (including the current one)
-            query: User query
-            dataset_path: Path to dataset
-            operator_index: Index of the current operator (0-based)
+            validation_errors: List of validation error messages
+            validation_warnings: List of validation warning messages
+            operator: The operator that failed validation (dict with type and purpose)
+            operator_index: Index of the failed operator
+            all_operators: All operators generated so far (including the failed one)
+            query: Original user query
+            dataset_samples: Dataset samples
+            schema_tracker: Schema tracker for available fields
 
         Returns:
-            Tuple of (validation_passed, errors, warnings, temp_file_path)
+            Repair suggestion dict with:
+            {
+                "analysis": "Error analysis",
+                "action": "DELETE" | "INSERT_BEFORE" | "INSERT_AFTER" | "REPLACE" | "MODIFY" | "CONTINUE",
+                "new_operator": {"type": "...", "purpose": "..."},  # For INSERT/REPLACE
+                "rationale": "Reason for this repair"
+            }
+            Returns None if LLM call fails
         """
-        import os
-        from datetime import datetime
-
         try:
-            # Build temporary pipeline with operators generated so far
-            pipeline_name = f"validation_temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            # Format validation errors
+            errors_str = "\n".join([f"- {err}" for err in validation_errors])
+            if validation_warnings:
+                errors_str += "\n\nWarnings:\n" + "\n".join([f"- {warn}" for warn in validation_warnings])
 
-            # Build minimal pipeline for validation
-            temp_pipeline = Pipeline.from_operators(
-                operators=operators,
-                name=pipeline_name,
-                input_path=dataset_path,
-                output_path=None,  # Not needed for validation
-                properties={
-                    "query": query,
-                    "base_system": self.base_system.value,
-                    "default_model": "gpt-4o-mini",
-                },
-                dataset_schema=None  # Will be inferred if needed
-            )
+            # Format current pipeline operators
+            pipeline_operators_dicts = [operator_to_dict(op) for op in all_operators[:-1]]  # Exclude the failed one
+            pipeline_operators_str = json.dumps(pipeline_operators_dicts, indent=2) if pipeline_operators_dicts else "None"
 
-            # Convert to base system format
-            if self.base_system == BaseSystem.DOCETL:
-                docetl_operators = [abstract_to_docetl(op) for op in operators]
+            # Get available fields
+            current_schema = schema_tracker.get_current_schema()
+            available_fields_str = format_fields_for_prompt(current_schema)
 
-                # Create temporary output path for validation
-                temp_output_path = os.path.join(
-                    self.pipeline_output_dir,
-                    f"validation_temp_op{operator_index + 1}.json"
-                )
+            # Format dataset samples
+            dataset_samples_str = json.dumps(dataset_samples, indent=2)
 
-                # Build pipeline config
-                pipeline_dict = self.executor.build_pipeline_config(
-                    operators=docetl_operators,
-                    input_path=dataset_path,
-                    output_path=temp_output_path,
-                    dataset_name='input',
-                    step_name='validation_step',
-                    default_model=temp_pipeline.properties.get('default_model', 'gpt-4o-mini')
-                )
-            else:
-                raise ValueError(f"Unsupported base system: {self.base_system.value}")
+            # Get operator info
+            op_type = operator['type']
+            op_purpose = operator['purpose']
 
-            # Save to temporary YAML file for validation
-            temp_yaml_path = self.file_manager.save_yaml(
-                data=pipeline_dict,
+            # Generate repair prompt
+            prompt = get_operator_repair_prompt(
                 query=query,
-                file_type=f'validation_temp_op{operator_index + 1}',
-                subdir_key='pipeline_output'
+                current_operators=len(all_operators) - 1,  # Operators before the failed one
+                operator_index=operator_index,
+                operator_type=op_type,
+                operator_purpose=op_purpose,
+                validation_errors=errors_str,
+                pipeline_operators=pipeline_operators_str,
+                available_fields=available_fields_str,
+                dataset_samples=dataset_samples_str
             )
+            
+            # Print Prompt for Debugging
+            print("\n" + "="*80)
+            print("LLM Repair Prompt")
+            print("="*80)
+            print(prompt)
+            print("="*80)
 
-            self._log(f"Validating incremental pipeline (operators 1-{operator_index + 1})...", level='debug')
+            # Define schema for structured repair suggestion
+            repair_schema = {
+                "type": "object",
+                "properties": {
+                    "analysis": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["DELETE", "INSERT_BEFORE", "REPLACE", "MODIFY"]
+                    },
+                    "new_operator": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string"},
+                            "purpose": {"type": "string"}
+                        }
+                    },
+                    "rationale": {"type": "string"}
+                },
+                "required": ["analysis", "action", "rationale"]
+            }
 
-            # Run static validation
-            validation_result = validate_pipeline_static(
-                system_name=self.base_system.value,
-                pipeline_path=temp_yaml_path,
-                verbose=self.config.verbose,
-                logger=self.logger
-            )
+            system_prompt = "You are an expert AI assistant that analyzes pipeline validation errors and suggests optimal repair strategies. Always respond with valid JSON matching the required schema."
 
-            validation_passed = validation_result.get("passed", False)
-            errors = validation_result.get("errors", [])
-            warnings = validation_result.get("warnings", [])
+            messages = [{"role": "user", "content": prompt}]
 
-            # ANSI color codes
-            GREEN = '\033[32m'
-            ORANGE = '\033[33m'
-            RESET = '\033[0m'
+            self._log(f"Analyzing validation errors for operator {operator_index + 1} using LLM...", level='info')
 
-            # Always show validation results for visibility
-            if validation_passed:
-                print(f"{GREEN}✓ Incremental validation passed for operator {operator_index + 1}{RESET}")
-            else:
-                print(f"{ORANGE}⚠ Incremental validation found {len(errors)} error(s) for operator {operator_index + 1}{RESET}")
+            # Call LLM
+            response = llm_call(messages, schema=repair_schema, system_prompt=system_prompt)
+            repair_suggestion = json.loads(response)
 
-            return validation_passed, errors, warnings, temp_yaml_path
+            self._log(f"LLM repair suggestion: {repair_suggestion['action']}", level='info')
 
+            return repair_suggestion
+
+        except (json.JSONDecodeError, KeyError) as e:
+            self._log(f"Failed to parse repair suggestion from LLM: {e}", level='error', force=True)
+            return None
         except Exception as e:
-            error_msg = f"Failed to validate incremental pipeline: {str(e)}"
-            self._log(error_msg, level='error', force=True)
+            self._log(f"Error during repair analysis: {e}", level='error', force=True)
             self._log(traceback.format_exc(), level='error', force=True)
-            return False, [error_msg], [], None
+            return None
+
+    def _apply_operator_modification(
+        self,
+        action: str,
+        operators_list: List[Dict[str, str]],
+        current_index: int,
+        new_operator: Optional[Dict[str, str]] = None
+    ) -> Tuple[List[Dict[str, str]], int, str]:
+        """
+        Apply operator modification based on repair suggestion.
+
+        Args:
+            action: Modification action (DELETE, INSERT_BEFORE, INSERT_AFTER, REPLACE)
+            operators_list: Current list of operator dicts (with type and purpose)
+            current_index: Index of the operator to modify
+            new_operator: New operator dict for INSERT/REPLACE actions
+
+        Returns:
+            Tuple of (modified_operators_list, new_current_index, action_description)
+            - modified_operators_list: Updated operators list
+            - new_current_index: Adjusted index to continue from
+            - action_description: Human-readable description of what was done
+        """
+        modified_list = operators_list.copy()
+        action_desc = ""
+
+        if action == "DELETE":
+            # Remove the operator at current_index
+            if 0 <= current_index < len(modified_list):
+                removed_op = modified_list.pop(current_index)
+                action_desc = f"Deleted operator {current_index + 1}: {removed_op['type']} - {removed_op['purpose']}"
+                # Continue from the same index (which now points to the next operator)
+                new_index = current_index
+            else:
+                action_desc = f"Invalid index {current_index} for DELETE"
+                new_index = current_index
+
+        elif action == "INSERT_BEFORE":
+            # Insert new operator before current_index
+            if new_operator and 0 <= current_index <= len(modified_list):
+                modified_list.insert(current_index, new_operator)
+                action_desc = f"Inserted {new_operator['type']} operator before position {current_index + 1}"
+                # Current operator is now at current_index + 1, but we need to generate the inserted one first
+                new_index = current_index
+            else:
+                action_desc = f"Invalid INSERT_BEFORE: index={current_index}, new_operator={new_operator}"
+                new_index = current_index
+
+        elif action == "INSERT_AFTER":
+            # Insert new operator after current_index
+            if new_operator and 0 <= current_index < len(modified_list):
+                modified_list.insert(current_index + 1, new_operator)
+                action_desc = f"Inserted {new_operator['type']} operator after position {current_index + 1}"
+                # Skip the current operator and move to the inserted one
+                new_index = current_index + 1
+            else:
+                action_desc = f"Invalid INSERT_AFTER: index={current_index}, new_operator={new_operator}"
+                new_index = current_index
+
+        elif action == "REPLACE":
+            # Replace the operator at current_index
+            if new_operator and 0 <= current_index < len(modified_list):
+                old_op = modified_list[current_index]
+                modified_list[current_index] = new_operator
+                action_desc = f"Replaced operator {current_index + 1}: {old_op['type']} → {new_operator['type']}"
+                # Stay at the same index to regenerate this operator
+                new_index = current_index
+            else:
+                action_desc = f"Invalid REPLACE: index={current_index}, new_operator={new_operator}"
+                new_index = current_index
+
+        elif action == "MODIFY":
+            # Keep the same operator but mark it for regeneration
+            action_desc = f"Will regenerate operator {current_index + 1}"
+            new_index = current_index
+
+        elif action == "CONTINUE":
+            # Continue despite errors
+            action_desc = f"Continuing with operator {current_index + 1} despite validation errors"
+            new_index = current_index + 1
+
+        else:
+            action_desc = f"Unknown action: {action}"
+            new_index = current_index
+
+        self._log(f"Operator modification: {action_desc}", level='info', force=True)
+
+        return modified_list, new_index, action_desc
 
     def _convert_and_execute(
         self,

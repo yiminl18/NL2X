@@ -24,13 +24,13 @@ class Unnest(Operator):
                 },
                 "recursive": {
                     "type": "boolean",
-                    "description": "Whether to recursively unnest nested structures (optional, default: false)"
+                    "description": "Whether to recursively unnest nested structures"
                 },
                 "depth": {
                     "type": "integer",
                     "description": "Maximum depth for recursive unnesting (optional, used with recursive: true)"
                 },
             },
-            "required": ["unnest_key"]
+            "required": ["unnest_key", "recursive"]
         }
 

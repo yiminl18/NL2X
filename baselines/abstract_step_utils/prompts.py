@@ -4,7 +4,7 @@ Abstract Layer Prompts
 
 from string import Template
 from ..abstract.support import BaseSystem, format_operators_with_descriptions
-from .dynamic_inst import get_operator_selection_rules
+from .instructions import get_operator_selection_rules
 
 
 # =============================================================================
@@ -106,10 +106,8 @@ Generate a Map operator with:
 1. **prompt**: A Jinja2 template string that describes the transformation
    - CRITICAL: MUST use {{ input.field_name }} to reference ALL input fields
    - Be specific about what to extract or transform
-   - ✓ CORRECT: "Extract the person's name from: {{ input.text }}"
-   - ✗ WRONG: "Extract the person's name from the field `text`"
-   - ✗ WRONG: "Extract from the 'text' field"
-   - ✗ WRONG: "Extract from field text"
+   - CORRECT: "Extract the person's name from: {{ input.text }}"
+   - WRONG: "Extract the person's name from the field `text`"
    - For each field to be output, explain the meaning of it, for example, "medication: the medication contained in the doctor's prescription in the document" is better than "medication".
 
 2. **output**: Specify output schema as {"field1": "Type1", "field2": "Type2", ...}
@@ -120,7 +118,7 @@ Generate a Map operator with:
 
 COMPLETE EXAMPLES:
 
-Example 1 - Extracting structured data:
+Example - Extracting structured data:
 {
   "prompt": "Analyze the text: {{ input.content }}. Extract the main themes discussed. Return a list of theme names.",
   "output": {
@@ -129,19 +127,9 @@ Example 1 - Extracting structured data:
   },
 }
 
-Example 2 - Sentiment analysis:
-{
-  "prompt": "Analyze sentiment of: {{ input.review_text }}. Return sentiment label and confidence score.",
-  "output": {
-    "sentiment": "String",
-    "confidence": "Float"
-  },
-}
-
 IMPORTANT:
 - Use ONLY available fields in input
 - DO NOT include input fields in output schema (they are automatically preserved)
-- ONLY list NEW fields created by this operator in the output schema
 - Make prompts specific to the task, not generic
 - ALWAYS use Jinja2 format for field references: {{ input.field_name }}
 """)
@@ -183,7 +171,7 @@ Generate a Filter operator with:
 
 COMPLETE EXAMPLES:
 
-Example 1 - Filter by relevance:
+Example - Filter by relevance:
 {
   "prompt": "Is this document relevant to the topic? Title: {{ input.title }}. Content: {{ input.content }}. Return true to keep this document, false to discard it.",
   "input": {"fields": {"title": "String", "content": "String"}},
@@ -193,25 +181,6 @@ Example 1 - Filter by relevance:
     "keep": "Boolean"
   },
   "properties": {}
-}
-
-Example 2 - Filter by score threshold:
-{
-  "prompt": "Check the quality score: {{ input.quality_score }}. Return true if the score is greater than or equal to 7, otherwise return false.",
-  "input": {"fields": {"quality_score": "Float"}},
-  "output": {
-    "quality_score": "Float",
-    "passes_threshold": "Boolean"
-  },
-  "properties": {}
-}
-
-Return JSON:
-{
-  "prompt": "...",
-  "input": {"fields": {...}},
-  "output": {...},
-  "properties": {...}
 }
 
 IMPORTANT:
@@ -253,18 +222,7 @@ Generate a Reduce operator with:
 
 COMPLETE EXAMPLES:
 
-Example 1 - Aggregate themes by category:
-{
-  "reduce_key": "theme",
-  "prompt": "Summarize all viewpoints for the theme '{{ inputs[0].theme }}'. Here are all the viewpoints: {% for item in inputs %}{{ item.viewpoint }}. {% endfor %}Provide: aggregated_summary: a comprehensive summary combining all viewpoints; count: the total number of viewpoints.",
-  "output": {
-    "theme": "String",
-    "aggregated_summary": "String",
-    "count": "Integer"
-  },
-}
-
-Example 2 - Aggregate reviews by product:
+Example - Aggregate reviews by product:
 {
   "reduce_key": "product_id",
   "prompt": "Product: {{ inputs[0].product_name }}. Reviews: {% for review in inputs %}{{ review.text }}. {% endfor %}Provide: product_name: the name of the product; common_themes: a list of common themes mentioned across reviews; average_sentiment: the overall average sentiment (positive/negative/neutral).",
@@ -277,9 +235,7 @@ Example 2 - Aggregate reviews by product:
 }
 
 IMPORTANT:
-- You MUST specify a reduce_key field that exists in available fields
 - You MUST use {{ inputs }} (plural) to reference the group of records
-- Output must include the reduce_key field
 - Create aggregated output schema with new field names
 """)
 
@@ -315,7 +271,7 @@ Generate a Resolve operator with:
 
 COMPLETE EXAMPLES:
 
-Example 1 - Resolve duplicate person names:
+Example - Resolve duplicate person names:
 {
   "comparison_prompt": "Are {{ input1.name }} and {{ input2.name }} the same person? Compare their emails: {{ input1.email }} vs {{ input2.email }}. Return True if they are the same person, False otherwise.",
   "resolution_prompt": "Merge these person records: {% for item in inputs %}Name: {{ item.name }}, Email: {{ item.email }}. {% endfor %}Provide: canonical_name: the most complete/correct name; canonical_email: the primary email address.",
@@ -324,20 +280,6 @@ Example 1 - Resolve duplicate person names:
     "canonical_email": "String"
   },
 }
-
-Example 2 - Resolve similar themes:
-{
-  "comparison_prompt": "Are the themes '{{ input1.theme_name }}' and '{{ input2.theme_name }}' similar or referring to the same concept? Consider their descriptions: {{ input1.description }} vs {{ input2.description }}. Return True if similar, False otherwise.",
-  "resolution_prompt": "Consolidate these similar themes into one unified theme: {% for t in inputs %}Theme: {{ t.theme_name }}, Description: {{ t.description }}. {% endfor %}Provide: unified_theme: a single unified theme name; consolidated_description: a comprehensive description combining all themes.",
-  "output": {
-    "unified_theme": "String",
-    "consolidated_description": "String"
-  },
-}
-
-IMPORTANT:
-- Use {{ input1.field }} and {{ input2.field }} to compare two items.
-- Use {{ inputs }} to merge multiple similar items.
 """)
 
 ABSTRACT_EXTRACT_PROMPT = Template("""
@@ -346,11 +288,8 @@ Generate an Extract operator configuration in abstract layer format.
 An Extract operator pulls verbatim text sections from documents. It extracts exact quotes, specific text spans, or passages without transformation - the output is the original text as-is.
 
 CRITICAL EXTRACT OPERATOR RULES:
-- Extract can ONLY output a SINGLE string field containing the extracted text
+- Extract can ONLY output a SINGLE string field containing the extracted text for each document_key
 - Extract is NOT applicable for tasks needing analysis, transformation, or multiple output fields
-- Extract pulls verbatim text sections from documents (exact text as-is)
-- Use Extract when you need the original text exactly as written
-- Use Map when you need analysis, summarization, structured extraction, or multiple output fields
 
 Context:
 - Query: $query
@@ -372,25 +311,13 @@ Generate an Extract operator with:
    - Usually the text field name
    - Example: ["document"] or ["part1", "part2"]
 
-
 COMPLETE EXAMPLES:
 
-Example 1 - Extract research findings:
+Example - Extract research findings:
 {
   "prompt": "Extract the key findings, conclusions, and important quotes from this research article: {{ input.content }}. Focus on: research results, statistical data, and main conclusions. Return the extracted text verbatim.",
   "document_keys": ["content"],
 }
-
-Example 2 - Extract legal clauses:
-{
-  "prompt": "Extract the liability and indemnification clauses verbatim from this legal contract: {{ input.contract_text }}. Include the exact wording of these specific sections.",
-  "document_keys": ["contract_text"],
-}
-
-IMPORTANT:
-- Extract outputs ONLY a single string field with the extracted verbatim text
-- For tasks requiring multiple structured fields, use Map operator instead
-- Extract is for pulling exact text sections, not for analysis or transformation
 """)
 
 ABSTRACT_UNNEST_PROMPT = Template("""
@@ -415,9 +342,8 @@ Generate an Unnest operator with:
    - Unnest a List[...] field into multiple records, with each element becoming a separate record. 
    - Unnest a Dict{...} field move its fields to the top level of the record - no changes to the number of records.
 
-2. **recursive**: (Optional) Whether to recursively unnest nested structures
-   - Set to true to fully flatten nested structures
-   - Default: false (can be omitted if not needed)
+2. **recursive**: Whether to recursively unnest nested structures
+   - Set to true to fully flatten nested structures. The operator will expand all levels of nested arrays and dictionaries.
 
 3. **depth**: (Optional) Maximum depth for recursive unnesting
    - Used with recursive: true to specify how many levels deep to unnest
@@ -425,41 +351,44 @@ Generate an Unnest operator with:
 
 COMPLETE EXAMPLES:
 
-Example 1 - Unnest array of strings (expand List[String] to multiple records):
+Example 2 - Unnest dictionary (expand Dict fields to top-level fields):
 {
-  "unnest_key": "themes"
+  "unnest_key": "info"
 }
-From {themes: ['A', 'B'], time: '2023-01-01'} to 
+From {info: {'name': 'Tony'}, time: '2023-01-01'} to 
 {
-  "themes": "A",
-  "time": "2023-01-01"
-}
-{
-  "themes": "B",
+  "name": "Tony",
   "time": "2023-01-01"
 }
 
-Example 2 - Unnest array of dictionaries (expand Dict fields to top-level fields):
+Example 1 - Unnest array (expand List[...] to multiple records):
 {
-  "unnest_key": "polarizing_themes"
+  "unnest_key": "infos"
 }
-From {polarizing_themes: {'A': 'B', 'C': 'D'}, time: '2023-01-01'} to 
+From {infos: List[Dict{name: "Tony"}, Dict{name: "John"}] to 
 {
-  "A": "B",
-  "C": "D",
+  "infos": Dict{name: "Tony"},
+  "time": "2023-01-01"
+}
+{
+  "infos": Dict{name: "John"},
   "time": "2023-01-01"
 }
 
-Example 3 - Unnest with recursive flattening:
+Example 3 - Unnest with recursive:
 {
-  "unnest_key": "nested_data",
+  "unnest_key": "infos",
   "recursive": true,
-  "depth": 1
 }
-
-IMPORTANT:
-- The unnest_key MUST be a field that exists in available fields
-- The unnest_key should typically be a List or Dict type field
+From {infos: List[Dict{name: "Tony"}, Dict{name: "John"}], time: '2023-01-01'} to 
+{
+  "name": "Tony",
+  "time": "2023-01-01"
+}
+{
+  "name": "John",
+  "time": "2023-01-01"
+}
 """)
 
 # Map of operator types to their prompts
@@ -525,5 +454,127 @@ Return valid JSON.
         operator_purpose=operator_purpose,
         available_fields=available_fields,
         previous_operators=previous_operators,
+        dataset_samples=dataset_samples
+    )
+
+
+# =============================================================================
+# Operator Repair and Error Analysis
+# =============================================================================
+
+OPERATOR_REPAIR_PROMPT = Template("""
+You are an expert AI assistant that analyzes pipeline validation errors and suggests repairs.
+
+Context:
+- Original Query: $query
+- Current Pipeline State: $current_operators operators have been successfully generated
+- Failed Operator: Operator $operator_index ($operator_type) - $operator_purpose
+
+Validation Errors:
+$validation_errors
+
+Current Pipeline Operators:
+$pipeline_operators
+
+Available Fields Before This Operator:
+$available_fields
+
+Dataset Samples:
+$dataset_samples
+
+Task: Analyze the validation errors and determine the best repair strategy.
+
+Common Error Patterns and Solutions:
+
+1. **Missing Required Field**
+   - Error: Operator references a field that doesn't exist in the schema
+   - Solutions:
+     - INSERT_BEFORE: Add an operator to generate the missing field
+     - DELETE: Remove this operator if the field cannot be generated
+     - REPLACE: Change to a different operator type that uses available fields
+
+2. **Wrong Operator Order**
+   - Error: Operator expects data in a format that hasn't been created yet
+   - Solutions:
+     - DELETE: Remove this operator and let a later operator handle it
+     - INSERT_BEFORE: Add an Unnest/preprocessing operator
+
+3. **Unnecessary Operator**
+   - Error: Operator doesn't contribute to answering the query
+   - Solutions:
+     - DELETE: Simply remove this operator
+
+4. **Type Mismatch/Wrong Accessing Method**
+   - Error: Input field type doesn't match expected type. Or, the opeartor trying to access fields in complex types (Dict, List) with wrong methods
+   - Solutions:
+     - INSERT_BEFORE: 
+      - Add a Unnest operator to flatten the complex type
+      - Add a Map operator to transform simple types (not complex types)
+     - REPLACE: Change to an operator that accepts the available type
+
+5. **Incorrect Operator Choice**
+   - Error: Wrong operator type for the intended purpose
+   - Solutions:
+     - REPLACE: Change to the correct operator type
+
+Based on the errors above, provide:
+1. **analysis**: A clear explanation of what caused the error(s)
+2. **action**: One of: DELETE, INSERT_BEFORE, REPLACE, MODIFY
+   - DELETE: Remove the current operator entirely
+   - INSERT_BEFORE: Insert a new operator before the current one
+   - REPLACE: Replace the current operator with a different type
+   - MODIFY: Keep the same operator type but regenerate with different configuration
+3. **new_operator**: (Only for INSERT_BEFORE, REPLACE)
+   - type: The operator type (Map, Filter, Reduce, Unnest, etc.)
+   - purpose: Brief description of what this operator should do
+4. **rationale**: Why this repair will fix the validation errors
+
+Think step by step:
+- What is the root cause of the validation error?
+- What is the simplest way to fix it?
+- Will this fix allow the pipeline to successfully answer the query?
+- Are there any side effects of this repair?
+
+Provide your analysis and recommendation in the specified JSON format.
+""")
+
+
+def get_operator_repair_prompt(
+    query: str,
+    current_operators: int,
+    operator_index: int,
+    operator_type: str,
+    operator_purpose: str,
+    validation_errors: str,
+    pipeline_operators: str,
+    available_fields: str,
+    dataset_samples: str
+) -> str:
+    """
+    Generate prompt for analyzing validation errors and suggesting repairs.
+
+    Args:
+        query: Original user query
+        current_operators: Number of operators successfully generated so far
+        operator_index: Index of the operator that failed validation
+        operator_type: Type of the failed operator
+        operator_purpose: Purpose of the failed operator
+        validation_errors: List of validation error messages
+        pipeline_operators: JSON string of all operators in pipeline so far
+        available_fields: Formatted string of available fields
+        dataset_samples: Dataset samples
+
+    Returns:
+        Complete prompt string for repair analysis
+    """
+    return OPERATOR_REPAIR_PROMPT.substitute(
+        query=query,
+        current_operators=current_operators,
+        operator_index=operator_index + 1,  # Convert to 1-based for display
+        operator_type=operator_type,
+        operator_purpose=operator_purpose,
+        validation_errors=validation_errors,
+        pipeline_operators=pipeline_operators,
+        available_fields=available_fields,
         dataset_samples=dataset_samples
     )
