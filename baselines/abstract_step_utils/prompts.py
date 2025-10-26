@@ -304,24 +304,56 @@ Generate an Extract operator with:
 
 1. **prompt**: Jinja2 template describing what text section to extract
    - Use {{ input.field }} to reference the document field
-   - Be specific about what text sections to extract verbatim
-   - Example: "Extract the key findings and conclusions section from: {{ input.content }}"
+2. **document_keys**: List of field names containing the documents to extract from.
 
-2. **document_keys**: List of field names containing the documents to extract from
-   - Usually the text field name
-   - Example: ["document"] or ["part1", "part2"]
+EXTRACT LOGIC (Pseudo-Python):
 
-COMPLETE EXAMPLES:
+```python
+def extract(records, prompt, document_keys):
+    \"\"\"
+    Extract operator internal logic:
+    - Processes each record independently
+    - For each document_key, extracts verbatim text using LLM
+    - Creates new field with extracted content (document_key + "_extracted_findings")
+    - Returns records with extracted text added as new fields
+    \"\"\"
+    result = []
 
-Example - Extract research findings:
-{
-  "prompt": "Extract the key findings, conclusions, and important quotes from this research article: {{ input.content }}. Focus on: research results, statistical data, and main conclusions. Return the extracted text verbatim.",
-  "document_keys": ["content"],
-}
+    for record in records:
+        new_record = record.copy()
+
+        # Process each document key specified
+        for doc_key in document_keys:
+            if doc_key not in record:
+                continue
+
+            # Get the text content from the document field
+            document_text = record[doc_key]
+
+            # Render the extraction prompt with record data in strict Jinja2 template format.
+            # Example: "Extract findings from: {{ input.content }}"
+            rendered_prompt = render_template(prompt, {"input": record})
+
+            # Use LLM to identify and extract verbatim text sections
+            # LLM analyzes the document and returns exact text spans
+            extracted_text = llm_extract(
+                instructions=rendered_prompt,
+                source_text=document_text
+            )
+
+            # Store extracted text in new field (original field + "_extracted_findings")
+            output_field = f"{doc_key}_extracted_findings"
+            new_record[output_field] = extracted_text  # Verbatim text
+
+        result.append(new_record)
+
+    return result
+```
+
 """)
 
 ABSTRACT_UNNEST_PROMPT = Template("""
-Generate an Unnest operator configuration in abstract layer format.
+Generate an Unnest operator configuration.
 
 An Unnest operator expands arrays or nested fields. The target of Unnest is to flatten the array or nested structure into simple types.
 
@@ -340,19 +372,52 @@ Generate an Unnest operator with:
 1. **unnest_key**: The field name containing the array or nested structure to expand
    - Must be a field that exists in available fields: $available_fields
    - Should be a Complex type field (e.g., "List[...]]", "Dict{...}")
-   - Unnest a List[...] field into multiple records, with each element becoming a separate record. 
-   - Unnest a Dict{...} field move its fields to the top level of the record - no changes to the number of records.
-
 2. **recursive**: Whether to recursively unnest nested structures
-   - Set to true to fully flatten nested structures. The operator will expand all levels of nested arrays and dictionaries.
-
 3. **depth**: Maximum depth for recursive unnesting
-   - Used with recursive: true to specify how many levels deep to unnest.
-   - Can be omitted if not needed. There's no difference between setting depth to 1 and not setting it. 
 
-Examples (unnest_key = field, recursive = true):
-   - Depth 1: field: List[String] -> field: String, field: List[Dict] -> field: Dict, field: Dict[field2: String] -> field2: String
-   - Depth 2: field: List[List[String]] -> field: String, field: List[Dict{field2: String}] -> field2: String
+UNNEST LOGIC (Pseudo-Python):
+
+```python
+def unnest(records, unnest_key, recursive=False, depth=None):
+    \"\"\"
+    Unnest operator internal logic:
+    - If unnest_key is List: expands into multiple records (one per element)
+    - If unnest_key is Dict: flattens fields to top level (same number of records)
+    - If recursive=True: applies unnesting recursively up to specified `depth`
+    \"\"\"
+    result = []
+
+    for record in records:
+        if unnest_key not in record:
+            result.append(record)
+            continue
+
+        value = record[unnest_key]
+        base_record = {k: v for k, v in record.items() if k != unnest_key}
+
+        if isinstance(value, list):
+            # List: Create separate record for each element
+            for item in value:
+                new_record = base_record.copy()
+                new_record[unnest_key] = item
+                result.append(new_record)
+
+        elif isinstance(value, dict):
+            # Dict: Flatten to top level (no new records)
+            new_record = base_record.copy()
+            new_record.pop(unnest_key, None)
+            new_record.update(value)  # Move dict fields to top level
+            result.append(new_record)
+
+        else:
+            raise ValueError(f"Unnest only supports lists and dicts.")
+
+    # If recursive and depth > 1, apply unnest again
+    if recursive and depth and depth > 1:
+        result = unnest(result, unnest_key, recursive=True, depth=depth-1)
+
+    return result
+```
 """)
 
 # Map of operator types to their prompts
