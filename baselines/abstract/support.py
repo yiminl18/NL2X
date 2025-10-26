@@ -100,7 +100,7 @@ def get_unsupported_operators(base_system: BaseSystem) -> Set[str]:
     return BASE_SYSTEM_UNSUPPORTED.get(base_system, set()).copy()
 
 
-def validate_pipeline_compatibility(
+def check_pipeline_compatibility(
     operator_types: List[str],
     base_system: BaseSystem
 ) -> Tuple[bool, List[str]]:
@@ -115,20 +115,6 @@ def validate_pipeline_compatibility(
         (is_compatible, unsupported_operators)
         - is_compatible: True if all operators supported
         - unsupported_operators: List of unsupported operator types
-
-    Example:
-        >>> is_valid, unsupported = validate_pipeline_compatibility(
-        ...     ['Map', 'Filter', 'Reduce'], BaseSystem.DOCETL
-        ... )
-        >>> is_valid
-        True
-        >>> is_valid, unsupported = validate_pipeline_compatibility(
-        ...     ['Map', 'Index', 'Filter'], BaseSystem.DOCETL
-        ... )
-        >>> is_valid
-        False
-        >>> 'Index' in unsupported
-        True
     """
     supported = get_supported_operators(base_system)
     unsupported = [op for op in operator_types if op not in supported]

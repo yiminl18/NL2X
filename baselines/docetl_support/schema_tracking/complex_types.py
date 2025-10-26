@@ -149,35 +149,31 @@ def generate_access_suggestions(field_name: str, parent_field: str, base_type: s
 
     Returns:
         List of suggestion strings
-
-    Examples:
-        >>> generate_access_suggestions('name', 'medications', 'list')
-        ['1. Use an Unnest operator to expand the medications field first',
-         '2. Access via index in Jinja2: {{ input.medications[0].name }}',
-         '3. Use a for loop in Jinja2: {% for item in input.medications %}{{ item.name }}{% endfor %}']
     """
     suggestions = []
 
     if base_type == 'list':
         # List of dicts - suggest unnest or indexed access
         suggestions.append(
-            f"1. Use an Unnest operator to expand the '{parent_field}' field first"
+            f"1. Use an Unnest operator to expand the '{parent_field}' to simple type field first"
         )
         suggestions.append(
-            f"2. Access via index in Jinja2: {{{{ input.{parent_field}[0].{field_name} }}}}"
+            f"2. Use a for loop in Jinja2: {{% for item in input.{parent_field} %}}{{{{ item.{field_name} }}}}{{% endfor %}}"
         )
         suggestions.append(
-            f"3. Use a for loop in Jinja2: {{% for item in input.{parent_field} %}}{{{{ item.{field_name} }}}}{{% endfor %}}"
+            f"3. Access via index in Jinja2: {{{{ input.{parent_field}[0].{field_name} }}}}"
         )
 
     elif base_type == 'dict':
         # Dict with fields - suggest dotted access
         suggestions.append(
-            f"1. Access via dotted notation in Jinja2: {{{{ input.{parent_field}.{field_name} }}}}"
+            f"1. Use an Unnest operator to expand the '{parent_field}' to simple type field first"
         )
         suggestions.append(
-            f"2. Use an Unnest operator to expand the '{parent_field}' field if needed"
+            f"2. Access via dotted notation in Jinja2: {{{{ input.{parent_field}.{field_name} }}}}"
         )
+
+
 
     return suggestions
 

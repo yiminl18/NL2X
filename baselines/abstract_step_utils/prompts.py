@@ -94,9 +94,10 @@ A Map operator transforms EACH record independently using an LLM (1-to-1 mapping
 
 Context:
 - Query: $query
-- Operator Purpose: $operator_purpose
+- Current Task: $operator_purpose
+- Next Task: $next_operator_purpose
 - Available Fields (with types): $available_fields
-- Previous Operators: $previous_operators
+- Last Operator: $last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -106,8 +107,6 @@ Generate a Map operator with:
 1. **prompt**: A Jinja2 template string that describes the transformation
    - CRITICAL: MUST use {{ input.field_name }} to reference ALL input fields
    - Be specific about what to extract or transform
-   - CORRECT: "Extract the person's name from: {{ input.text }}"
-   - WRONG: "Extract the person's name from the field `text`"
    - For each field to be output, explain the meaning of it, for example, "medication: the medication contained in the doctor's prescription in the document" is better than "medication".
 
 2. **output**: Specify output schema as {"field1": "Type1", "field2": "Type2", ...}
@@ -129,7 +128,6 @@ Example - Extracting structured data:
 
 IMPORTANT:
 - Use ONLY available fields in input
-- DO NOT include input fields in output schema (they are automatically preserved)
 - Make prompts specific to the task, not generic
 - ALWAYS use Jinja2 format for field references: {{ input.field_name }}
 """)
@@ -141,9 +139,10 @@ A Filter operator keeps or discards records based on a condition.
 
 Context:
 - Query: $query
-- Operator Purpose: $operator_purpose
+- Current Task: $operator_purpose
+- Next Task: $next_operator_purpose
 - Available Fields (with types): $available_fields
-- Previous Operators: $previous_operators
+- Last Operator: $last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -163,7 +162,7 @@ Generate a Filter operator with:
 
 3. **output**: Specify output schema
    - MUST include a Boolean field for the filter decision
-   - Include all input fields (filters preserve all fields)
+   - Input fields are automatically carried forward, so only list the fields you CREATE
    - Type specifications: String, Integer, Float, Boolean, List[Type], Dict{field: Type}
    - Example: {"id": "Integer", "text": "String", "score": "Float", "keep": "Boolean"}
 
@@ -185,9 +184,7 @@ Example - Filter by relevance:
 
 IMPORTANT:
 - The output schema MUST have a Boolean field
-- Filter output includes all input fields plus the Boolean decision field
 - Make the filtering condition clear and specific
-- Use Jinja2 format: {{ input.field_name }}
 """)
 
 ABSTRACT_REDUCE_PROMPT = Template("""
@@ -197,9 +194,10 @@ A Reduce operator aggregates/groups records by a key field.
 
 Context:
 - Query: $query
-- Operator Purpose: $operator_purpose
+- Current Task: $operator_purpose
+- Next Task: $next_operator_purpose
 - Available Fields (with types): $available_fields
-- Previous Operators: $previous_operators
+- Last Operator: $last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -246,9 +244,10 @@ A Resolve operator deduplicates or standardizes entities using comparison and re
 
 Context:
 - Query: $query
-- Operator Purpose: $operator_purpose
+- Current Task: $operator_purpose
+- Next Task: $next_operator_purpose
 - Available Fields (with types): $available_fields
-- Previous Operators: $previous_operators
+- Last Operator: $last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -293,9 +292,10 @@ CRITICAL EXTRACT OPERATOR RULES:
 
 Context:
 - Query: $query
-- Operator Purpose: $operator_purpose
+- Current Task: $operator_purpose
+- Next Task: $next_operator_purpose
 - Available Fields (with types): $available_fields
-- Previous Operators: $previous_operators
+- Last Operator: $last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -323,13 +323,14 @@ Example - Extract research findings:
 ABSTRACT_UNNEST_PROMPT = Template("""
 Generate an Unnest operator configuration in abstract layer format.
 
-An Unnest operator expands arrays or nested fields.
+An Unnest operator expands arrays or nested fields. The target of Unnest is to flatten the array or nested structure into simple types.
 
 Context:
 - Query: $query
-- Operator Purpose: $operator_purpose
+- Current Task: $operator_purpose
+- Next Task: $next_operator_purpose
 - Available Fields (with types): $available_fields
-- Previous Operators: $previous_operators
+- Last Operator: $last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -345,50 +346,13 @@ Generate an Unnest operator with:
 2. **recursive**: Whether to recursively unnest nested structures
    - Set to true to fully flatten nested structures. The operator will expand all levels of nested arrays and dictionaries.
 
-3. **depth**: (Optional) Maximum depth for recursive unnesting
-   - Used with recursive: true to specify how many levels deep to unnest
-   - Can be omitted if not needed
+3. **depth**: Maximum depth for recursive unnesting
+   - Used with recursive: true to specify how many levels deep to unnest.
+   - Can be omitted if not needed. There's no difference between setting depth to 1 and not setting it. 
 
-COMPLETE EXAMPLES:
-
-Example 2 - Unnest dictionary (expand Dict fields to top-level fields):
-{
-  "unnest_key": "info"
-}
-From {info: {'name': 'Tony'}, time: '2023-01-01'} to 
-{
-  "name": "Tony",
-  "time": "2023-01-01"
-}
-
-Example 1 - Unnest array (expand List[...] to multiple records):
-{
-  "unnest_key": "infos"
-}
-From {infos: List[Dict{name: "Tony"}, Dict{name: "John"}] to 
-{
-  "infos": Dict{name: "Tony"},
-  "time": "2023-01-01"
-}
-{
-  "infos": Dict{name: "John"},
-  "time": "2023-01-01"
-}
-
-Example 3 - Unnest with recursive:
-{
-  "unnest_key": "infos",
-  "recursive": true,
-}
-From {infos: List[Dict{name: "Tony"}, Dict{name: "John"}], time: '2023-01-01'} to 
-{
-  "name": "Tony",
-  "time": "2023-01-01"
-}
-{
-  "name": "John",
-  "time": "2023-01-01"
-}
+Examples (unnest_key = field, recursive = true):
+   - Depth 1: field: List[String] -> field: String, field: List[Dict] -> field: Dict, field: Dict[field2: String] -> field2: String
+   - Depth 2: field: List[List[String]] -> field: String, field: List[Dict{field2: String}] -> field2: String
 """)
 
 # Map of operator types to their prompts
@@ -408,19 +372,21 @@ def get_abstract_operator_prompt(
     operator_purpose: str,
     query: str,
     dataset_samples: str,
-    previous_operators: str,
-    available_fields: str
+    last_operator: str,
+    available_fields: str,
+    next_operator_purpose: str
 ) -> str:
     """
     Get the appropriate prompt based on operator type.
 
     Args:
         operator_type: Operator type (Map, Filter, etc.)
-        operator_purpose: Operator purpose
+        operator_purpose: Current operator purpose
         query: User query
         dataset_samples: Dataset samples
-        previous_operators: Previous operators (JSON string)
+        last_operator: Last operator details (JSON string) or "None"
         available_fields: Available fields (formatted string)
+        next_operator_purpose: Next operator purpose or "None"
 
     Returns:
         Complete prompt string
@@ -437,9 +403,10 @@ Generate a {operator_type} operator configuration in abstract layer format.
 
 Context:
 - Query: {query}
-- Operator Purpose: {operator_purpose}
+- Current Task: {operator_purpose}
+- Next Task: {next_operator_purpose}
 - Available Fields: {available_fields}
-- Previous Operators: {previous_operators}
+- Last Operator: {last_operator}
 
 Dataset Samples:
 {dataset_samples}
@@ -453,128 +420,7 @@ Return valid JSON.
         query=query,
         operator_purpose=operator_purpose,
         available_fields=available_fields,
-        previous_operators=previous_operators,
-        dataset_samples=dataset_samples
-    )
-
-
-# =============================================================================
-# Operator Repair and Error Analysis
-# =============================================================================
-
-OPERATOR_REPAIR_PROMPT = Template("""
-You are an expert AI assistant that analyzes pipeline validation errors and suggests repairs.
-
-Context:
-- Original Query: $query
-- Current Pipeline State: $current_operators operators have been successfully generated
-- Failed Operator: Operator $operator_index ($operator_type) - $operator_purpose
-
-Validation Errors:
-$validation_errors
-
-Current Pipeline Operators:
-$pipeline_operators
-
-Available Fields Before This Operator:
-$available_fields
-
-Dataset Samples:
-$dataset_samples
-
-Task: Analyze the validation errors and determine the best repair strategy.
-
-Common Error Patterns and Solutions:
-
-1. **Missing Required Field**
-   - Error: Operator references a field that doesn't exist in the schema
-   - Solutions:
-     - INSERT_BEFORE: Add an operator to generate the missing field
-     - DELETE: Remove this operator if the field cannot be generated
-     - REPLACE: Change to a different operator type that uses available fields
-
-2. **Wrong Operator Order**
-   - Error: Operator expects data in a format that hasn't been created yet
-   - Solutions:
-     - DELETE: Remove this operator and let a later operator handle it
-     - INSERT_BEFORE: Add an Unnest/preprocessing operator
-
-3. **Unnecessary Operator**
-   - Error: Operator doesn't contribute to answering the query
-   - Solutions:
-     - DELETE: Simply remove this operator
-
-4. **Type Mismatch/Wrong Accessing Method**
-   - Error: Input field type doesn't match expected type. Or, the opeartor trying to access fields in complex types (Dict, List) with wrong methods
-   - Solutions:
-     - INSERT_BEFORE: 
-      - Add a Unnest operator to flatten the complex type
-      - Add a Map operator to transform simple types (not complex types)
-     - REPLACE: Change to an operator that accepts the available type
-
-5. **Incorrect Operator Choice**
-   - Error: Wrong operator type for the intended purpose
-   - Solutions:
-     - REPLACE: Change to the correct operator type
-
-Based on the errors above, provide:
-1. **analysis**: A clear explanation of what caused the error(s)
-2. **action**: One of: DELETE, INSERT_BEFORE, REPLACE, MODIFY
-   - DELETE: Remove the current operator entirely
-   - INSERT_BEFORE: Insert a new operator before the current one
-   - REPLACE: Replace the current operator with a different type
-   - MODIFY: Keep the same operator type but regenerate with different configuration
-3. **new_operator**: (Only for INSERT_BEFORE, REPLACE)
-   - type: The operator type (Map, Filter, Reduce, Unnest, etc.)
-   - purpose: Brief description of what this operator should do
-4. **rationale**: Why this repair will fix the validation errors
-
-Think step by step:
-- What is the root cause of the validation error?
-- What is the simplest way to fix it?
-- Will this fix allow the pipeline to successfully answer the query?
-- Are there any side effects of this repair?
-
-Provide your analysis and recommendation in the specified JSON format.
-""")
-
-
-def get_operator_repair_prompt(
-    query: str,
-    current_operators: int,
-    operator_index: int,
-    operator_type: str,
-    operator_purpose: str,
-    validation_errors: str,
-    pipeline_operators: str,
-    available_fields: str,
-    dataset_samples: str
-) -> str:
-    """
-    Generate prompt for analyzing validation errors and suggesting repairs.
-
-    Args:
-        query: Original user query
-        current_operators: Number of operators successfully generated so far
-        operator_index: Index of the operator that failed validation
-        operator_type: Type of the failed operator
-        operator_purpose: Purpose of the failed operator
-        validation_errors: List of validation error messages
-        pipeline_operators: JSON string of all operators in pipeline so far
-        available_fields: Formatted string of available fields
-        dataset_samples: Dataset samples
-
-    Returns:
-        Complete prompt string for repair analysis
-    """
-    return OPERATOR_REPAIR_PROMPT.substitute(
-        query=query,
-        current_operators=current_operators,
-        operator_index=operator_index + 1,  # Convert to 1-based for display
-        operator_type=operator_type,
-        operator_purpose=operator_purpose,
-        validation_errors=validation_errors,
-        pipeline_operators=pipeline_operators,
-        available_fields=available_fields,
+        last_operator=last_operator,
+        next_operator_purpose=next_operator_purpose,
         dataset_samples=dataset_samples
     )

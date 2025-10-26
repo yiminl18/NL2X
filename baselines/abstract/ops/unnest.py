@@ -28,9 +28,9 @@ class Unnest(Operator):
                 },
                 "depth": {
                     "type": "integer",
-                    "description": "Maximum depth for recursive unnesting (optional, used with recursive: true)"
+                    "description": "Maximum depth for recursive unnesting"
                 },
             },
-            "required": ["unnest_key", "recursive"]
+            "required": ["unnest_key", "recursive", "depth"]
         }
 

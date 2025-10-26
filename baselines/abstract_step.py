@@ -17,16 +17,6 @@ import traceback
 from datetime import datetime
 import logging
 
-
-# Custom exception for operator repair
-class OperatorRepairException(Exception):
-    """Exception to signal that an operator needs repair/modification."""
-    def __init__(self, action: str, new_operator: Optional[Dict[str, str]] = None, message: str = ""):
-        self.action = action
-        self.new_operator = new_operator
-        self.message = message
-        super().__init__(message)
-
 from .base import BaselineInterface, BaselineResult
 from . import register_baseline
 from .abstract_step_utils.ui import AbstractStepUserInterface
@@ -43,12 +33,11 @@ from .abstract_step_utils.schema_tracker import (
 from .abstract_step_utils.prompts import (
     get_operator_selection_prompt,
     get_abstract_operator_prompt,
-    get_operator_repair_prompt,
 )
 from .abstract.support import (
     BaseSystem,
     get_supported_operators,
-    validate_pipeline_compatibility,
+    check_pipeline_compatibility,
 )
 from .abstract import ops
 from .abstract.ops.base import Operator
@@ -326,73 +315,33 @@ class AbstractStepBaseline(BaselineInterface):
             verbose=self.config.verbose
         )
 
-        # Use while loop to support dynamic operator list modification
+        # Generate details for each operator
         filled_operators = []
-        current_index = 0
 
-        while current_index < len(operators):
-            op = operators[current_index]
+        for operator_index, op in enumerate(operators):
+            # Get last operator (None if this is the first)
+            last_operator = filled_operators[-1] if filled_operators else None
 
-            try:
-                filled_op = self._generate_operator_details(
-                    operator=op,
-                    query=query,
-                    dataset_samples=dataset_samples,
-                    dataset_path=dataset_path,
-                    previous_operators=filled_operators,
-                    schema_tracker=schema_tracker,
-                    operator_index=current_index,
-                    attempt=attempt,
-                    total_operators=len(operators)
-                )
-                filled_operators.append(filled_op)
+            # Get next operator purpose (None if this is the last)
+            next_operator_purpose = operators[operator_index + 1]['purpose'] if operator_index + 1 < len(operators) else None
 
-                # Move to next operator
-                current_index += 1
-
-            except OperatorRepairException as e:
-                # Handle operator repair
-                self._log(f"Caught repair exception: {e.action}", level='info')
-
-                # Apply operator modification
-                operators, new_index, action_desc = self._apply_operator_modification(
-                    action=e.action,
-                    operators_list=operators,
-                    current_index=current_index,
-                    new_operator=e.new_operator
-                )
-
-                if e.action == "DELETE":
-                    # Remove the corresponding filled operator if it was added
-                    # Note: No need to rollback schema since operator wasn't applied yet
-                    if current_index < len(filled_operators):
-                        filled_operators.pop(current_index)
-
-                elif e.action in ["INSERT_BEFORE", "REPLACE"]:
-                    # For INSERT_BEFORE and REPLACE, we need to regenerate from current position
-                    # Remove the current filled operator if it exists (for REPLACE case)
-                    # Note: No need to rollback schema since operator wasn't applied yet
-                    if current_index < len(filled_operators):
-                        filled_operators.pop(current_index)
-
-                elif e.action == "INSERT_AFTER":
-                    # Current operator stays, insert happens after
-                    # No need to modify filled_operators or schema_tracker
-                    pass
-
-                elif e.action == "CONTINUE":
-                    # Continue to next operator
-                    pass
-
-                # Update current_index based on modification
-                current_index = new_index
-
-                # Update total_operators display (will be used in next iteration)
-                self._log(f"Updated operators list: {len(operators)} operators total", level='info')
+            filled_op = self._generate_operator_details(
+                operator=op,
+                query=query,
+                dataset_samples=dataset_samples,
+                dataset_path=dataset_path,
+                last_operator=last_operator,
+                schema_tracker=schema_tracker,
+                operator_index=operator_index,
+                attempt=attempt,
+                total_operators=len(operators),
+                next_operator_purpose=next_operator_purpose
+            )
+            filled_operators.append(filled_op)
 
         # Validate compatibility with base system
         operator_types = [op.type for op in filled_operators]
-        is_compatible, unsupported = validate_pipeline_compatibility(operator_types, self.base_system)
+        is_compatible, unsupported = check_pipeline_compatibility(operator_types, self.base_system)
         if not is_compatible:
             raise ValueError(
                 f"Pipeline contains unsupported operators for {self.base_system.value}: {unsupported}"
@@ -579,12 +528,13 @@ class AbstractStepBaseline(BaselineInterface):
         query: str,
         dataset_samples: List[Dict],
         dataset_path: str,
-        previous_operators: List[Operator],
+        last_operator: Optional[Operator],
         schema_tracker: BaseSystemSchemaTracker = None,
         collect_messages: bool = False,
         operator_index: int = 0,
         attempt: int = 0,
-        total_operators: int = 1
+        total_operators: int = 1,
+        next_operator_purpose: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Step 2: Generate details for a single abstract operator.
@@ -594,12 +544,13 @@ class AbstractStepBaseline(BaselineInterface):
             query: User query
             dataset_samples: Sample data (list of dicts)
             dataset_path: Path to dataset file
-            previous_operators: Previously generated operators
+            last_operator: Last generated operator (None if this is the first)
             schema_tracker: Schema tracker using base system
             collect_messages: Whether to collect messages
             operator_index: Index of this operator
             attempt: Attempt number
             total_operators: Total number of operators
+            next_operator_purpose: Purpose of next operator (None if this is the last)
 
         Returns:
             Filled operator configuration
@@ -613,12 +564,14 @@ class AbstractStepBaseline(BaselineInterface):
 
         dataset_samples_str = json.dumps(dataset_samples, indent=2)
 
-        # Format previous operators (convert Operator objects to dicts)
-        if previous_operators:
-            previous_operators_dicts = [operator_to_dict(op) for op in previous_operators]
-            previous_operators_str = json.dumps(previous_operators_dicts, indent=2)
+        # Format last operator (convert Operator object to dict)
+        if last_operator:
+            last_operator_str = json.dumps(operator_to_dict(last_operator), indent=2)
         else:
-            previous_operators_str = "None"
+            last_operator_str = "None"
+
+        # Format next operator purpose
+        next_operator_purpose_str = next_operator_purpose if next_operator_purpose else "None"
 
         # Get operator-specific prompt
         prompt = get_abstract_operator_prompt(
@@ -626,8 +579,9 @@ class AbstractStepBaseline(BaselineInterface):
             operator_purpose=operator_purpose,
             query=query,
             dataset_samples=dataset_samples_str,
-            previous_operators=previous_operators_str,
-            available_fields=available_fields_str
+            last_operator=last_operator_str,
+            available_fields=available_fields_str,
+            next_operator_purpose=next_operator_purpose_str
         )
 
         # Prepare LLM call parameters
@@ -688,55 +642,19 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Handle validation results - only show errors
         if not validation_passed:
-            # Analyze errors and suggest repair using LLM
-            self._log(f"Validation failed for operator {operator_index + 1}, analyzing errors...", level='info')
-
-            all_operators = previous_operators + [abstract_operator]
-            repair_suggestion = self._analyze_and_suggest_repair(
-                validation_errors=validation_errors,
-                validation_warnings=[],  # No warnings from direct validation
-                operator=operator,  # Dict with type and purpose
+            # Ask user for decision via UI
+            user_decision = self.ui.confirm_validation_error(
                 operator_index=operator_index,
-                all_operators=all_operators,
-                query=query,
-                dataset_samples=dataset_samples,
-                schema_tracker=schema_tracker
+                total_operators=total_operators,
+                errors=validation_errors,
+                warnings=[]
             )
 
-            if repair_suggestion:
-                # Display repair suggestion and get user confirmation
-                user_decision = self.ui.confirm_repair_suggestion(
-                    operator_index=operator_index,
-                    total_operators=total_operators,
-                    repair_suggestion=repair_suggestion
-                )
-
-                if user_decision == 'accept':
-                    # Raise exception with repair action to be handled by caller
-                    raise OperatorRepairException(
-                        action=repair_suggestion['action'],
-                        new_operator=repair_suggestion.get('new_operator'),
-                        message=f"Repair action: {repair_suggestion['action']}"
-                    )
-                elif user_decision == 'skip':
-                    # User chose to continue despite errors
-                    self._log(f"⚠ Continuing with validation errors in operator {operator_index + 1}", level='warning', force=True)
-                else:  # abort
-                    raise ValueError(f"Pipeline generation aborted due to validation errors in operator {operator_index + 1}")
+            if user_decision == 'abort':
+                raise ValueError(f"Pipeline generation aborted due to validation errors in operator {operator_index + 1}")
             else:
-                # Fallback to original behavior if repair analysis fails
-                user_decision = self.ui.confirm_validation_error(
-                    operator_index=operator_index,
-                    total_operators=total_operators,
-                    errors=validation_errors,
-                    warnings=[]
-                )
-
-                if user_decision == 'abort':
-                    raise ValueError(f"Pipeline generation aborted due to validation errors in operator {operator_index + 1}")
-                else:
-                    # User chose to continue despite errors
-                    self._log(f"⚠ Continuing with validation errors in operator {operator_index + 1}", level='warning', force=True)
+                # User chose to continue despite errors
+                self._log(f"⚠ Continuing with validation errors in operator {operator_index + 1}", level='warning', force=True)
 
         # Update schema after validation (even if validation failed but user chose to continue)
         try:
@@ -816,223 +734,18 @@ class AbstractStepBaseline(BaselineInterface):
                     query=query,
                     dataset_samples=dataset_samples,
                     dataset_path=dataset_path,
-                    previous_operators=previous_operators,
+                    last_operator=last_operator,
                     schema_tracker=schema_tracker,
                     collect_messages=collect_messages,
                     operator_index=operator_index,
                     attempt=attempt,
-                    total_operators=total_operators
+                    total_operators=total_operators,
+                    next_operator_purpose=next_operator_purpose
                 )
 
         if collect_messages:
             return abstract_operator, messages
         return abstract_operator
-
-    def _analyze_and_suggest_repair(
-        self,
-        validation_errors: List[str],
-        validation_warnings: List[str],
-        operator: Dict[str, Any],
-        operator_index: int,
-        all_operators: List[Operator],
-        query: str,
-        dataset_samples: List[Dict],
-        schema_tracker: BaseSystemSchemaTracker
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Analyze validation errors and suggest repair using LLM.
-
-        Args:
-            validation_errors: List of validation error messages
-            validation_warnings: List of validation warning messages
-            operator: The operator that failed validation (dict with type and purpose)
-            operator_index: Index of the failed operator
-            all_operators: All operators generated so far (including the failed one)
-            query: Original user query
-            dataset_samples: Dataset samples
-            schema_tracker: Schema tracker for available fields
-
-        Returns:
-            Repair suggestion dict with:
-            {
-                "analysis": "Error analysis",
-                "action": "DELETE" | "INSERT_BEFORE" | "INSERT_AFTER" | "REPLACE" | "MODIFY" | "CONTINUE",
-                "new_operator": {"type": "...", "purpose": "..."},  # For INSERT/REPLACE
-                "rationale": "Reason for this repair"
-            }
-            Returns None if LLM call fails
-        """
-        try:
-            # Format validation errors
-            errors_str = "\n".join([f"- {err}" for err in validation_errors])
-            if validation_warnings:
-                errors_str += "\n\nWarnings:\n" + "\n".join([f"- {warn}" for warn in validation_warnings])
-
-            # Format current pipeline operators
-            pipeline_operators_dicts = [operator_to_dict(op) for op in all_operators[:-1]]  # Exclude the failed one
-            pipeline_operators_str = json.dumps(pipeline_operators_dicts, indent=2) if pipeline_operators_dicts else "None"
-
-            # Get available fields
-            current_schema = schema_tracker.get_current_schema()
-            available_fields_str = format_fields_for_prompt(current_schema)
-
-            # Format dataset samples
-            dataset_samples_str = json.dumps(dataset_samples, indent=2)
-
-            # Get operator info
-            op_type = operator['type']
-            op_purpose = operator['purpose']
-
-            # Generate repair prompt
-            prompt = get_operator_repair_prompt(
-                query=query,
-                current_operators=len(all_operators) - 1,  # Operators before the failed one
-                operator_index=operator_index,
-                operator_type=op_type,
-                operator_purpose=op_purpose,
-                validation_errors=errors_str,
-                pipeline_operators=pipeline_operators_str,
-                available_fields=available_fields_str,
-                dataset_samples=dataset_samples_str
-            )
-            
-            # Print Prompt for Debugging
-            print("\n" + "="*80)
-            print("LLM Repair Prompt")
-            print("="*80)
-            print(prompt)
-            print("="*80)
-
-            # Define schema for structured repair suggestion
-            repair_schema = {
-                "type": "object",
-                "properties": {
-                    "analysis": {"type": "string"},
-                    "action": {
-                        "type": "string",
-                        "enum": ["DELETE", "INSERT_BEFORE", "REPLACE", "MODIFY"]
-                    },
-                    "new_operator": {
-                        "type": "object",
-                        "properties": {
-                            "type": {"type": "string"},
-                            "purpose": {"type": "string"}
-                        }
-                    },
-                    "rationale": {"type": "string"}
-                },
-                "required": ["analysis", "action", "rationale"]
-            }
-
-            system_prompt = "You are an expert AI assistant that analyzes pipeline validation errors and suggests optimal repair strategies. Always respond with valid JSON matching the required schema."
-
-            messages = [{"role": "user", "content": prompt}]
-
-            self._log(f"Analyzing validation errors for operator {operator_index + 1} using LLM...", level='info')
-
-            # Call LLM
-            response = llm_call(messages, schema=repair_schema, system_prompt=system_prompt)
-            repair_suggestion = json.loads(response)
-
-            self._log(f"LLM repair suggestion: {repair_suggestion['action']}", level='info')
-
-            return repair_suggestion
-
-        except (json.JSONDecodeError, KeyError) as e:
-            self._log(f"Failed to parse repair suggestion from LLM: {e}", level='error', force=True)
-            return None
-        except Exception as e:
-            self._log(f"Error during repair analysis: {e}", level='error', force=True)
-            self._log(traceback.format_exc(), level='error', force=True)
-            return None
-
-    def _apply_operator_modification(
-        self,
-        action: str,
-        operators_list: List[Dict[str, str]],
-        current_index: int,
-        new_operator: Optional[Dict[str, str]] = None
-    ) -> Tuple[List[Dict[str, str]], int, str]:
-        """
-        Apply operator modification based on repair suggestion.
-
-        Args:
-            action: Modification action (DELETE, INSERT_BEFORE, INSERT_AFTER, REPLACE)
-            operators_list: Current list of operator dicts (with type and purpose)
-            current_index: Index of the operator to modify
-            new_operator: New operator dict for INSERT/REPLACE actions
-
-        Returns:
-            Tuple of (modified_operators_list, new_current_index, action_description)
-            - modified_operators_list: Updated operators list
-            - new_current_index: Adjusted index to continue from
-            - action_description: Human-readable description of what was done
-        """
-        modified_list = operators_list.copy()
-        action_desc = ""
-
-        if action == "DELETE":
-            # Remove the operator at current_index
-            if 0 <= current_index < len(modified_list):
-                removed_op = modified_list.pop(current_index)
-                action_desc = f"Deleted operator {current_index + 1}: {removed_op['type']} - {removed_op['purpose']}"
-                # Continue from the same index (which now points to the next operator)
-                new_index = current_index
-            else:
-                action_desc = f"Invalid index {current_index} for DELETE"
-                new_index = current_index
-
-        elif action == "INSERT_BEFORE":
-            # Insert new operator before current_index
-            if new_operator and 0 <= current_index <= len(modified_list):
-                modified_list.insert(current_index, new_operator)
-                action_desc = f"Inserted {new_operator['type']} operator before position {current_index + 1}"
-                # Current operator is now at current_index + 1, but we need to generate the inserted one first
-                new_index = current_index
-            else:
-                action_desc = f"Invalid INSERT_BEFORE: index={current_index}, new_operator={new_operator}"
-                new_index = current_index
-
-        elif action == "INSERT_AFTER":
-            # Insert new operator after current_index
-            if new_operator and 0 <= current_index < len(modified_list):
-                modified_list.insert(current_index + 1, new_operator)
-                action_desc = f"Inserted {new_operator['type']} operator after position {current_index + 1}"
-                # Skip the current operator and move to the inserted one
-                new_index = current_index + 1
-            else:
-                action_desc = f"Invalid INSERT_AFTER: index={current_index}, new_operator={new_operator}"
-                new_index = current_index
-
-        elif action == "REPLACE":
-            # Replace the operator at current_index
-            if new_operator and 0 <= current_index < len(modified_list):
-                old_op = modified_list[current_index]
-                modified_list[current_index] = new_operator
-                action_desc = f"Replaced operator {current_index + 1}: {old_op['type']} → {new_operator['type']}"
-                # Stay at the same index to regenerate this operator
-                new_index = current_index
-            else:
-                action_desc = f"Invalid REPLACE: index={current_index}, new_operator={new_operator}"
-                new_index = current_index
-
-        elif action == "MODIFY":
-            # Keep the same operator but mark it for regeneration
-            action_desc = f"Will regenerate operator {current_index + 1}"
-            new_index = current_index
-
-        elif action == "CONTINUE":
-            # Continue despite errors
-            action_desc = f"Continuing with operator {current_index + 1} despite validation errors"
-            new_index = current_index + 1
-
-        else:
-            action_desc = f"Unknown action: {action}"
-            new_index = current_index
-
-        self._log(f"Operator modification: {action_desc}", level='info', force=True)
-
-        return modified_list, new_index, action_desc
 
     def _convert_and_execute(
         self,
