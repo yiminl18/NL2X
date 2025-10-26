@@ -26,16 +26,7 @@ $available_operators
 
 COMPLETE EXAMPLES FROM REAL PIPELINES:
 
-Example 1: Presidential Debate Themes Analysis
-Query: "Extract themes and viewpoints from debate transcripts and analyze how those themes evolve over time across multiple debates"
-Dataset: Collection of presidential debate transcripts with fields: title, date, year, content
-
-Selected operators and reasoning:
-- Map: extract themes and viewpoints from each debate transcript (transforms each debate into structured themes with viewpoints)
-- Unnest: expand the themes array into individual theme records (needed because Map outputs a list of themes per debate)
-- Reduce: aggregate viewpoints by theme to analyze evolution over time (groups all instances of the same theme across debates)
-
-Example 2: Mining Product Reviews for Polarizing Themes
+Example 1: Mining Product Reviews for Polarizing Themes
 Query: "Identify polarizing themes in video game reviews that divide player opinions, resolve similar themes across reviews, and aggregate them to find common polarizing themes across different games"
 Dataset: Video game reviews with fields: app_name, concatenated_reviews
 
