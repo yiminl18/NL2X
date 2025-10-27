@@ -17,14 +17,15 @@ class AbstractStepUserInterface:
     for debug and confirm modes during abstract pipeline generation.
     """
 
-    # ANSI Color codes - 淡雅配色方案
-    CYAN = '\033[96m'      # 淡青色 - 提示框架
-    BLUE = '\033[94m'      # 淡蓝色 - 信息标签
-    GREEN = '\033[92m'     # 淡绿色 - 成功消息
-    YELLOW = '\033[93m'    # 淡黄色 - 警告/注意
-    MAGENTA = '\033[95m'   # 淡紫色 - 特殊标记
-    RESET = '\033[0m'      # 重置颜色
-    BOLD = '\033[1m'       # 粗体
+    # ANSI Color codes
+    CYAN = '\033[96m'      # Cyan - framework/borders
+    BLUE = '\033[94m'      # Blue - info labels
+    GREEN = '\033[92m'     # Green - success messages
+    YELLOW = '\033[93m'    # Yellow - warnings
+    MAGENTA = '\033[95m'   # Magenta - special markers
+    RED = '\033[91m'       # Red - errors/failures
+    RESET = '\033[0m'      # Reset all formatting
+    BOLD = '\033[1m'       # Bold text
 
     def __init__(self, config):
         """
@@ -35,11 +36,71 @@ class AbstractStepUserInterface:
         """
         self.config = config
 
-    def confirm_step_before_llm(self, step_name: str, iteration: int, step_type: str, step_prompt: str = "") -> str:
+    def display_pipeline_progress(
+        self,
+        filled_operators: List[Any],
+        current_position: int,
+        status: str = "generating",
+        failed_position: int = None,
+        max_display_slots: int = 10
+    ) -> None:
+        """
+        Display visual pipeline generation progress.
+
+        Args:
+            filled_operators: List of successfully added operators
+            current_position: Current position being processed (0-based)
+            status: Current status - "generating", "repair", or "complete"
+            failed_position: Position of failed operator (used in repair mode)
+            max_display_slots: Unused, kept for compatibility
+        """
+        # Build pipeline visualization
+        slots = []
+
+        # Add filled operators
+        for i, op in enumerate(filled_operators):
+            op_type = op.type if hasattr(op, 'type') else str(op)
+            label = f"{i+1}:{op_type}"
+
+            if status == "repair" and i == failed_position:
+                # Failed operator - red double brackets
+                slots.append(f"{self.RED}[[{label}]{self.RESET}")
+            else:
+                # Completed operator - green text
+                slots.append(f"{self.GREEN}[{label}]{self.RESET}")
+
+        # Add current position indicator
+        if status == "generating" or (status == "repair" and current_position < len(filled_operators)):
+            # Current position - bold magenta
+            if current_position < len(filled_operators):
+                # Replace the current slot with highlighted version
+                op = filled_operators[current_position]
+                op_type = op.type if hasattr(op, 'type') else str(op)
+                label = f"{current_position+1}:{op_type}"
+                slots[current_position] = f"{self.BOLD}{self.MAGENTA}**[{label}]**{self.RESET}"
+            else:
+                # Current position is after all filled operators
+                label = f"{current_position+1}"
+                slots.append(f"{self.BOLD}{self.MAGENTA}**[{label}]**{self.RESET}")
+        elif status == "repair" and current_position not in (None, failed_position):
+            # Insert position - bold magenta (for INSERT_BEFORE)
+            label = f"{current_position+1}"
+            # Insert at the correct position
+            if current_position <= len(slots):
+                slots.insert(current_position, f"{self.BOLD}{self.MAGENTA}**[{label}]**{self.RESET}")
+
+        # No pending slots - keep it clean
+
+        # Display the pipeline
+        pipeline_str = "".join(slots)
+        print(f"\n{self.CYAN}Pipeline:{self.RESET} {pipeline_str}\n")
+
+    def confirm_step_before_llm(self, filled_operators: List[Any], step_name: str, iteration: int, step_type: str, step_prompt: str = "") -> str:
         """
         Ask for confirmation before calling LLM for a step in JIT pipeline generation.
 
         Args:
+            filled_operators: List of successfully added operators
             step_name: Descriptive name of what's being done (e.g., "Operator 1", "Map operator")
             iteration: Current iteration/operator number (1-based)
             step_type: "selection" for operator selection, "filling" for operator configuration
@@ -53,11 +114,18 @@ class AbstractStepUserInterface:
         if not (self.config.confirm or self.config.debug):
             return 'continue'
 
+        # Display pipeline progress
+        self.display_pipeline_progress(
+            filled_operators=filled_operators,
+            current_position=iteration - 1,  # Convert 1-based to 0-based
+            status="generating"
+        )
+
         # Two-step JIT style prompt
         step_emoji = "🎯" if step_type == "selection" else "⚙️"
         step_label = "Select" if step_type == "selection" else "Configure"
 
-        print(f"\n{self.CYAN}{self.BOLD}➡️  Iteration {iteration} - {step_emoji} {step_label}:{self.RESET} {self.BLUE}{step_name}{self.RESET}")
+        print(f"{self.CYAN}{self.BOLD}➡️  Operator {iteration} - {step_emoji} {step_label}:{self.RESET} {self.BLUE}{step_name}{self.RESET}")
 
         # Show 'p' option if prompt exists
         if step_prompt:
@@ -255,6 +323,7 @@ class AbstractStepUserInterface:
 
     def confirm_operator_before_llm(
         self,
+        filled_operators: List[Any],
         operator_index: int,
         total_operators: int,
         operator_type: str,
@@ -266,8 +335,9 @@ class AbstractStepUserInterface:
         Ask for confirmation before generating a single operator.
 
         Args:
+            filled_operators: List of successfully added operators
             operator_index: Current operator index (0-based)
-            total_operators: Total number of operators to generate
+            total_operators: Total number of operators (unused, kept for compatibility)
             operator_type: Type of the operator (Map, Filter, etc.)
             operator_purpose: Purpose of the operator
             prompt: The prompt that will be sent to LLM
@@ -281,7 +351,14 @@ class AbstractStepUserInterface:
         if not (self.config.confirm or self.config.debug):
             return 'continue'
 
-        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        # Display pipeline progress
+        self.display_pipeline_progress(
+            filled_operators=filled_operators,
+            current_position=operator_index,
+            status="generating"
+        )
+
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
         mode_text = f"{self.BLUE}[DEBUG MODE]{self.RESET}" if self.config.debug else f"{self.BLUE}[CONFIRM MODE]{self.RESET}"
         cache_text = f" {self.YELLOW}(CACHED){self.RESET}" if is_cached else ""
         print(f"{mode_text} {self.BOLD}Operator {operator_index + 1} - Filling Details{self.RESET}{cache_text}")
@@ -335,6 +412,7 @@ class AbstractStepUserInterface:
 
     def display_generated_operator(
         self,
+        filled_operators: List[Any],
         operator_index: int,
         total_operators: int,
         operator_type: str,
@@ -344,8 +422,9 @@ class AbstractStepUserInterface:
         Display generated operator configuration and ask for confirmation.
 
         Args:
+            filled_operators: List of successfully added operators
             operator_index: Current operator index (0-based)
-            total_operators: Total number of operators
+            total_operators: Total number of operators (unused, kept for compatibility)
             operator_type: Type of the operator
             operator_config: Generated operator configuration
 
@@ -357,7 +436,14 @@ class AbstractStepUserInterface:
         if not (self.config.confirm or self.config.debug):
             return 'continue'
 
-        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        # Display pipeline progress
+        self.display_pipeline_progress(
+            filled_operators=filled_operators,
+            current_position=operator_index,
+            status="generating"
+        )
+
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
         print(f"{self.GREEN}✅ Generated Operator {operator_index + 1}: {self.BOLD}{operator_type}{self.RESET}")
         print(f"{self.CYAN}{'='*80}{self.RESET}")
 
@@ -502,6 +588,7 @@ class AbstractStepUserInterface:
 
     def confirm_validation_error(
         self,
+        filled_operators: List[Any],
         operator_index: int,
         total_operators: int,
         errors: List[str],
@@ -511,8 +598,9 @@ class AbstractStepUserInterface:
         Display validation errors and ask user whether to continue.
 
         Args:
+            filled_operators: List of successfully added operators
             operator_index: Current operator index (0-based)
-            total_operators: Total number of operators
+            total_operators: Total number of operators (unused, kept for compatibility)
             errors: List of validation error messages
             warnings: List of validation warning messages
 
@@ -522,7 +610,15 @@ class AbstractStepUserInterface:
         """
         RED = '\033[91m'  # Bright red for errors
 
-        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        # Display pipeline progress with failed operator highlighted
+        self.display_pipeline_progress(
+            filled_operators=filled_operators,
+            current_position=operator_index,
+            status="repair",
+            failed_position=operator_index
+        )
+
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
         print(f"{self.YELLOW}⚠️  VALIDATION ERROR - Operator {operator_index + 1}{self.RESET}")
         print(f"{self.CYAN}{'='*80}{self.RESET}")
 
@@ -570,6 +666,7 @@ class AbstractStepUserInterface:
 
     def confirm_repair_suggestion(
         self,
+        filled_operators: List[Any],
         operator_index: int,
         total_operators: int,
         repair_suggestion: Dict[str, Any]
@@ -578,8 +675,9 @@ class AbstractStepUserInterface:
         Display LLM's repair suggestion and get user confirmation.
 
         Args:
+            filled_operators: List of successfully added operators
             operator_index: Current operator index (0-based)
-            total_operators: Total number of operators
+            total_operators: Total number of operators (unused, kept for compatibility)
             repair_suggestion: LLM's repair suggestion dict with:
                 - analysis: Error analysis
                 - action: Repair action (DELETE, INSERT_BEFORE, etc.)
@@ -591,7 +689,15 @@ class AbstractStepUserInterface:
             'skip' - Skip the suggestion and continue with errors
             'abort' - Abort pipeline generation
         """
-        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        # Display pipeline progress with failed operator highlighted
+        self.display_pipeline_progress(
+            filled_operators=filled_operators,
+            current_position=operator_index,
+            status="repair",
+            failed_position=operator_index
+        )
+
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
         print(f"{self.MAGENTA}{self.BOLD}🔧 REPAIR SUGGESTION - Operator {operator_index + 1}{self.RESET}")
         print(f"{self.CYAN}{'='*80}{self.RESET}")
 

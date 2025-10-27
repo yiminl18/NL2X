@@ -281,7 +281,8 @@ class AbstractStepBaseline(BaselineInterface):
         dataset_samples: List[Dict],
         current_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
-        attempt: int = 0
+        attempt: int = 0,
+        bypass_cache: bool = False
     ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """
         Select the next operator type using JIT approach (selection only, not configuration).
@@ -355,6 +356,7 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Confirm with user in debug/confirm mode
         user_choice = self.ui.confirm_step_before_llm(
+            filled_operators=current_operators,
             step_name=f"Operator {len(current_operators) + 1}",
             iteration=len(current_operators) + 1,
             step_type="selection",
@@ -364,9 +366,9 @@ class AbstractStepBaseline(BaselineInterface):
         if user_choice == 'abort':
             raise ValueError(f"User aborted at operator {len(current_operators) + 1}")
 
-        # Call LLM
-        bypass_cache = (user_choice == 'regenerate')
-        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
+        # Call LLM (bypass cache if requested or after repair)
+        should_bypass_cache = bypass_cache or (user_choice == 'regenerate')
+        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=should_bypass_cache)
 
         try:
             result = json.loads(response)
@@ -437,7 +439,9 @@ class AbstractStepBaseline(BaselineInterface):
         current_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
         operator_index: int,
-        attempt: int = 0
+        attempt: int = 0,
+        repair_context: Optional[Dict[str, Any]] = None,
+        bypass_cache: bool = False
     ) -> Operator:
         """
         Fill in complete configuration for a selected operator.
@@ -451,6 +455,8 @@ class AbstractStepBaseline(BaselineInterface):
             schema_tracker: Current schema tracker
             operator_index: Index of this operator in pipeline
             attempt: Attempt number
+            repair_context: Optional repair context from previous failed attempt
+                           (contains failed_config, validation_errors, repair_rationale)
 
         Returns:
             Fully configured Operator object
@@ -481,6 +487,32 @@ class AbstractStepBaseline(BaselineInterface):
             available_fields=available_fields_str
         )
 
+        # Add repair context if this is a regeneration after failed validation
+        if repair_context:
+            repair_section = "\n\n" + "="*20 + "\n"
+            repair_section += "⚠️  PREVIOUS ATTEMPT FAILED - READ THIS CAREFULLY\n"
+
+            if 'failed_config' in repair_context:
+                repair_section += "FAILED OPERATOR CONFIGURATION:\n"
+                repair_section += json.dumps(repair_context['failed_config'], indent=2)
+                repair_section += "\n\n"
+
+            if 'validation_errors' in repair_context:
+                repair_section += "VALIDATION ERRORS:\n"
+                for i, error in enumerate(repair_context['validation_errors'], 1):
+                    repair_section += f"{i}. {error}\n"
+                repair_section += "\n"
+
+            if 'repair_rationale' in repair_context:
+                repair_section += "REPAIR GUIDANCE:\n"
+                repair_section += repair_context['repair_rationale']
+                repair_section += "\n\n"
+
+            repair_section += "Please regenerate the operator configuration addressing the above errors.\n"
+            repair_section += "="*20
+
+            prompt = prompt + repair_section
+
         # Get operator-specific schema
         parameters = self._get_abstract_operator_schema(op_type)
         system_prompt = f"You are an AI assistant that generates abstract layer {op_type} operator configurations. Always respond with valid JSON matching the required schema."
@@ -489,6 +521,7 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Confirm with user in debug/confirm mode
         user_choice = self.ui.confirm_operator_before_llm(
+            filled_operators=current_operators,
             operator_index=operator_index,
             total_operators=operator_index + 1,
             operator_type=op_type,
@@ -500,9 +533,9 @@ class AbstractStepBaseline(BaselineInterface):
         if user_choice == 'abort':
             raise ValueError(f"User aborted at operator {operator_index + 1}")
 
-        # Call LLM
-        bypass_cache = (user_choice == 'regenerate')
-        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
+        # Call LLM (bypass cache if requested or after repair)
+        should_bypass_cache = bypass_cache or (user_choice == 'regenerate')
+        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=should_bypass_cache)
 
         try:
             llm_response = json.loads(response)
@@ -531,6 +564,7 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Display generated operator
         user_choice = self.ui.display_generated_operator(
+            filled_operators=current_operators,
             operator_index=operator_index,
             total_operators=operator_index + 1,
             operator_type=op_type,
@@ -540,7 +574,7 @@ class AbstractStepBaseline(BaselineInterface):
         if user_choice == 'abort':
             raise ValueError(f"User aborted after filling operator {operator_index + 1}")
         elif user_choice == 'regenerate':
-            # Recursively regenerate
+            # Recursively regenerate (bypass cache on regeneration)
             return self._fill_operator_details(
                 op_type=op_type,
                 op_purpose=op_purpose,
@@ -549,7 +583,9 @@ class AbstractStepBaseline(BaselineInterface):
                 current_operators=current_operators,
                 schema_tracker=schema_tracker,
                 operator_index=operator_index,
-                attempt=attempt
+                attempt=attempt,
+                repair_context=None,
+                bypass_cache=True
             )
 
         return abstract_operator
@@ -612,7 +648,7 @@ class AbstractStepBaseline(BaselineInterface):
                 "analysis": {"type": "string"},
                 "action": {
                     "type": "string",
-                    "enum": ["DELETE", "INSERT_BEFORE", "INSERT_AFTER", "REPLACE", "MODIFY"]
+                    "enum": ["DELETE", "INSERT_BEFORE", "REPLACE", "MODIFY"]
                 },
                 "rationale": {"type": "string"},
                 "new_operator": {
@@ -649,10 +685,7 @@ class AbstractStepBaseline(BaselineInterface):
         repair_suggestion: Dict[str, Any],
         current_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
-        operator_index: int,
-        query: str,
-        dataset_samples: List[Dict],
-        attempt: int
+        operator_index: int
     ) -> Tuple[int, bool]:
         """
         Apply repair action to operator list.
@@ -662,9 +695,6 @@ class AbstractStepBaseline(BaselineInterface):
             current_operators: Current list of operators (will be modified)
             schema_tracker: Schema tracker (will be modified)
             operator_index: Index of operator to repair
-            query: User query
-            dataset_samples: Dataset samples
-            attempt: Attempt number
 
         Returns:
             Tuple of (new_position, should_regenerate)
@@ -690,13 +720,6 @@ class AbstractStepBaseline(BaselineInterface):
             # Just continue - next generation will insert before
             self._log(f"Will insert new operator before position {operator_index + 1}", force=True)
             return operator_index, True
-
-        elif action == 'INSERT_AFTER':
-            # Keep current operator, insert after it
-            # Schema needs to be updated to include current operator's output
-            self._log(f"Will insert new operator after position {operator_index + 1}", force=True)
-            # Continue from next position
-            return operator_index + 1, True
 
         elif action == 'REPLACE':
             # Remove current operator and rollback schema
@@ -751,31 +774,51 @@ class AbstractStepBaseline(BaselineInterface):
             verbose=self.config.verbose
         )
 
-        # JIT generation loop
+        # JIT generation loop with position-based tracking
         filled_operators = []
         max_operators = 20  # Safety limit
         max_repair_attempts = 3  # Max repair attempts per operator
 
-        for iteration in range(max_operators):
+        # Track pending repair context for regeneration
+        pending_repair_context = None
+        pending_op_type = None
+        pending_op_purpose = None
+        bypass_cache_next = False  # Track if we should bypass cache after repair
+
+        # Use position-based loop instead of iteration-based
+        current_position = 0
+        while current_position < max_operators:
             if self.config.verbose:
-                self.logger.info(f"Iteration {iteration + 1}: Selecting next operator...")
+                self.logger.info(f"Position {current_position}: Generating operator {current_position + 1}...")
 
-            # Step 1: Select next operator type
-            is_end, op_type, op_purpose, end_reason = self._select_next_operator(
-                query=query,
-                dataset_samples=dataset_samples,
-                current_operators=filled_operators,
-                schema_tracker=schema_tracker,
-                attempt=attempt
-            )
-
-            # Check if pipeline is complete
-            if is_end:
+            # Step 1: Select next operator type (skip if we have a pending operator from repair)
+            if pending_op_type is not None:
+                # Using operator type from repair suggestion
+                op_type = pending_op_type
+                op_purpose = pending_op_purpose
                 if self.config.verbose:
-                    self.logger.info(f"Pipeline complete after {len(filled_operators)} operators: {end_reason}")
-                break
+                    if pending_repair_context is not None:
+                        self.logger.info(f"Regenerating operator at position {current_position}: {op_type} with repair context")
+                    else:
+                        self.logger.info(f"Inserting new operator at position {current_position}: {op_type} (from repair suggestion)")
+            else:
+                # Normal operator selection
+                is_end, op_type, op_purpose, end_reason = self._select_next_operator(
+                    query=query,
+                    dataset_samples=dataset_samples,
+                    current_operators=filled_operators,
+                    schema_tracker=schema_tracker,
+                    attempt=attempt,
+                    bypass_cache=bypass_cache_next
+                )
 
-            # Step 2: Fill operator details
+                # Check if pipeline is complete
+                if is_end:
+                    if self.config.verbose:
+                        self.logger.info(f"Pipeline complete after {len(filled_operators)} operators: {end_reason}")
+                    break
+
+            # Step 2: Fill operator details (with repair context if available)
             operator = self._fill_operator_details(
                 op_type=op_type,
                 op_purpose=op_purpose,
@@ -783,9 +826,17 @@ class AbstractStepBaseline(BaselineInterface):
                 dataset_samples=dataset_samples,
                 current_operators=filled_operators,
                 schema_tracker=schema_tracker,
-                operator_index=len(filled_operators),
-                attempt=attempt
+                operator_index=current_position,
+                attempt=attempt,
+                repair_context=pending_repair_context,
+                bypass_cache=bypass_cache_next
             )
+
+            # Clear repair context and cache bypass flag after use
+            pending_repair_context = None
+            pending_op_type = None
+            pending_op_purpose = None
+            bypass_cache_next = False
 
             # Step 3: Validate operator against current schema
             if self.base_system == BaseSystem.DOCETL:
@@ -798,7 +849,7 @@ class AbstractStepBaseline(BaselineInterface):
             # Handle validation errors with repair mechanism
             repair_attempts = 0
             while not validation_passed and repair_attempts < max_repair_attempts:
-                self._log(f"⚠ Validation failed for operator {len(filled_operators) + 1}", level='warning', force=True)
+                self._log(f"⚠ Validation failed for operator at position {current_position}", level='warning', force=True)
 
                 # Get repair suggestion from LLM
                 repair_suggestion = self._analyze_and_suggest_repair(
@@ -807,46 +858,77 @@ class AbstractStepBaseline(BaselineInterface):
                     failed_operator=operator,
                     validation_errors=validation_errors,
                     schema_tracker=schema_tracker,
-                    operator_index=len(filled_operators)
+                    operator_index=current_position
                 )
 
                 # Ask user to confirm repair
                 user_decision = self.ui.confirm_repair_suggestion(
-                    operator_index=len(filled_operators),
-                    total_operators=len(filled_operators) + 1,
+                    filled_operators=filled_operators,
+                    operator_index=current_position,
+                    total_operators=current_position + 1,
                     repair_suggestion=repair_suggestion
                 )
 
                 if user_decision == 'abort':
-                    raise ValueError(f"User aborted pipeline generation at operator {len(filled_operators) + 1}")
+                    raise ValueError(f"User aborted pipeline generation at position {current_position}")
                 elif user_decision == 'skip':
                     # User chose to continue with errors
-                    self._log(f"⚠ Continuing with validation errors in operator {len(filled_operators) + 1}", level='warning', force=True)
+                    self._log(f"⚠ Continuing with validation errors at position {current_position}", level='warning', force=True)
                     validation_passed = True  # Force continue
                     break
                 else:  # accept
-                    # Apply repair
+                    # Store repair context before applying repair
+                    repair_action = repair_suggestion.get('action')
+
+                    if repair_action == 'MODIFY':
+                        # For MODIFY: regenerate same operator type with repair context
+                        pending_repair_context = {
+                            'failed_config': operator_to_dict(operator),
+                            'validation_errors': validation_errors,
+                            'repair_rationale': repair_suggestion.get('rationale', ''),
+                            'repair_action': repair_action
+                        }
+                        pending_op_type = op_type
+                        pending_op_purpose = op_purpose
+                    elif repair_action in ['INSERT_BEFORE', 'REPLACE']:
+                        # For INSERT_BEFORE/REPLACE: use new operator suggested by LLM
+                        new_operator = repair_suggestion.get('new_operator', {})
+                        if new_operator:
+                            pending_op_type = new_operator.get('type')
+                            pending_op_purpose = new_operator.get('purpose', '')
+                            # Don't set repair_context for new operators
+                            pending_repair_context = None
+                        else:
+                            # Fallback: ask LLM to select new operator
+                            pending_repair_context = None
+                            pending_op_type = None
+                            pending_op_purpose = None
+
+                    # Apply repair and get new position
                     new_position, should_regenerate = self._apply_repair(
                         repair_suggestion=repair_suggestion,
                         current_operators=filled_operators,
                         schema_tracker=schema_tracker,
-                        operator_index=len(filled_operators),
-                        query=query,
-                        dataset_samples=dataset_samples,
-                        attempt=attempt
+                        operator_index=current_position
                     )
 
-                    # Regenerate from new position
+                    # Handle repair regeneration
                     if should_regenerate:
                         repair_attempts += 1
-                        # Break out of validation loop and continue main loop
+                        # Set position for next iteration and bypass cache
+                        current_position = new_position
+                        bypass_cache_next = True
+                        if self.config.verbose:
+                            self.logger.info(f"Repair applied, continuing from position {current_position}")
+                        # Use continue to restart loop from new position without validation
                         break
 
             # If we exhausted repair attempts, ask user
             if not validation_passed and repair_attempts >= max_repair_attempts:
                 user_decision = self.ui.confirm_validation_error(
-                    operator_index=len(filled_operators),
-                    total_operators=len(filled_operators) + 1,
+                    filled_operators=filled_operators,
+                    operator_index=current_position,
+                    total_operators=current_position + 1,
                     errors=validation_errors,
                     warnings=[]
                 )
@@ -857,9 +939,10 @@ class AbstractStepBaseline(BaselineInterface):
                     # Force continue
                     validation_passed = True
 
-            # Update schema and add operator if validation passed
+            # Update schema and add operator if validation passed without repair
+            # OR if validation passed after user skipped errors
             if validation_passed and repair_attempts == 0:
-                # Only update schema if we didn't apply repairs (repairs handle schema themselves)
+                # Normal path: validation passed on first try
                 try:
                     schema_tracker.update_schema(base_operator)
                 except Exception as e:
@@ -870,6 +953,29 @@ class AbstractStepBaseline(BaselineInterface):
 
                 if self.config.verbose:
                     self.logger.info(f"✓ Added operator {len(filled_operators)}: {operator.type}")
+
+                # Move to next position
+                current_position += 1
+
+            elif validation_passed and repair_attempts > 0:
+                # Validation passed but we applied repairs
+                # This means user chose to skip errors
+                try:
+                    schema_tracker.update_schema(base_operator)
+                except Exception as e:
+                    error_msg = f"Failed to update schema for operator {operator.name} ({operator.type}): {str(e)}"
+                    raise ValueError(error_msg)
+
+                filled_operators.append(operator)
+
+                if self.config.verbose:
+                    self.logger.info(f"✓ Added operator {len(filled_operators)}: {operator.type} (with skipped errors)")
+
+                # Move to next position
+                current_position += 1
+            # If validation_passed is False and repair_attempts > 0, the repair was applied
+            # and we already set current_position in the repair handling above
+            # So we don't increment position here - just continue to next iteration
 
         # Check if we have any operators
         if not filled_operators:

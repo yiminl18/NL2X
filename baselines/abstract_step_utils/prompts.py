@@ -86,8 +86,12 @@ A Map operator transforms EACH record independently using an LLM (1-to-1 mapping
 Context:
 - Query: $query
 - Operator Task: $operator_purpose
-- Available Fields (with types): $available_fields
-- Last Operator: $last_operator
+
+Available Fields (with types):
+$available_fields
+
+Last Operator:
+$last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -130,8 +134,12 @@ A Filter operator keeps or discards records based on a condition.
 Context:
 - Query: $query
 - Operator Task: $operator_purpose
-- Available Fields (with types): $available_fields
-- Last Operator: $last_operator
+
+Available Fields (with types):
+$available_fields
+
+Last Operator:
+$last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -184,8 +192,12 @@ A Reduce operator aggregates/groups records by a key field.
 Context:
 - Query: $query
 - Operator Task: $operator_purpose
-- Available Fields (with types): $available_fields
-- Last Operator: $last_operator
+
+Available Fields (with types):
+$available_fields
+
+Last Operator:
+$last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -233,8 +245,12 @@ A Resolve operator deduplicates or standardizes entities using comparison and re
 Context:
 - Query: $query
 - Operator Task: $operator_purpose
-- Available Fields (with types): $available_fields
-- Last Operator: $last_operator
+
+Available Fields (with types):
+$available_fields
+
+Last Operator:
+$last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -280,8 +296,12 @@ CRITICAL EXTRACT OPERATOR RULES:
 Context:
 - Query: $query
 - Operator Task: $operator_purpose
-- Available Fields (with types): $available_fields
-- Last Operator: $last_operator
+
+Available Fields (with types):
+$available_fields
+
+Last Operator:
+$last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -346,8 +366,12 @@ An Unnest operator expands arrays or nested fields. The target of Unnest is to f
 Context:
 - Query: $query
 - Operator Task: $operator_purpose
-- Available Fields (with types): $available_fields
-- Last Operator: $last_operator
+
+Available Fields (with types):
+$available_fields
+
+Last Operator:
+$last_operator
 
 Dataset Samples:
 $dataset_samples
@@ -452,8 +476,12 @@ Generate a {operator_type} operator configuration in abstract layer format.
 Context:
 - Query: {query}
 - Operator Task: {operator_purpose}
-- Available Fields: {available_fields}
-- Last Operator: {last_operator}
+
+Available Fields:
+{available_fields}
+
+Last Operator:
+{last_operator}
 
 Dataset Samples:
 {dataset_samples}
@@ -593,19 +621,18 @@ Analyze the validation errors and suggest ONE repair action to fix the pipeline.
 Available Repair Actions:
 1. DELETE - Remove the problematic operator entirely
 2. INSERT_BEFORE - Insert a new operator BEFORE the failed operator to prepare the data
-3. INSERT_AFTER - Insert a new operator AFTER the failed operator (keep the failed operator)
-4. REPLACE - Replace the failed operator with a different operator type
-5. MODIFY - Regenerate the same operator type with different configuration
+3. REPLACE - Replace the failed operator with a different operator type
+4. MODIFY - Regenerate the same operator type with different configuration
 
 Response Format (JSON):
 {
   "analysis": "Brief analysis of what went wrong and why",
-  "action": "DELETE|INSERT_BEFORE|INSERT_AFTER|REPLACE|MODIFY",
+  "action": "DELETE|INSERT_BEFORE|REPLACE|MODIFY",
   "rationale": "Explanation of why this action will fix the error",
   "new_operator": {
     "type": "operator_type",
     "purpose": "what this operator will do"
-  }  // Only needed for INSERT_BEFORE, INSERT_AFTER, REPLACE
+  }  // Only needed for INSERT_BEFORE, REPLACE
 }
 
 Guidelines:
