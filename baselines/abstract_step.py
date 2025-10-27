@@ -22,7 +22,7 @@ from . import register_baseline
 from .abstract_step_utils.ui import AbstractStepUserInterface
 from .abstract_step_utils.validation import validate_pipeline_static
 from .abstract_step_utils.file_manager import PipelineFileManager
-from model.litellm_client import llm_call, is_cached
+from model.litellm_client import llm_call
 
 # Schema tracking utilities using base system
 from .abstract_step_utils.schema_tracker import (
@@ -31,7 +31,8 @@ from .abstract_step_utils.schema_tracker import (
     format_fields_for_prompt,
 )
 from .abstract_step_utils.prompts import (
-    get_operator_selection_prompt,
+    get_next_operator_prompt,
+    get_operator_repair_prompt,
     get_abstract_operator_prompt,
 )
 from .abstract.support import (
@@ -39,7 +40,6 @@ from .abstract.support import (
     get_supported_operators,
     check_pipeline_compatibility,
 )
-from .abstract import ops
 from .abstract.ops.base import Operator
 from .abstract.pipeline import Pipeline
 from .abstract.convert.docetl import (
@@ -275,6 +275,448 @@ class AbstractStepBaseline(BaselineInterface):
             "average_time": self.total_time / max(1, self.total_queries),
         }
 
+    def _select_next_operator(
+        self,
+        query: str,
+        dataset_samples: List[Dict],
+        current_operators: List[Operator],
+        schema_tracker: BaseSystemSchemaTracker,
+        attempt: int = 0
+    ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
+        """
+        Select the next operator type using JIT approach (selection only, not configuration).
+
+        Args:
+            query: User query
+            dataset_samples: Sample data
+            current_operators: List of operators generated so far
+            schema_tracker: Current schema tracker
+            attempt: Attempt number
+
+        Returns:
+            Tuple of (is_end, op_type, op_purpose, end_reason)
+            - is_end: True if pipeline is complete
+            - op_type: Operator type string (None if is_end)
+            - op_purpose: Operator purpose string (None if is_end)
+            - end_reason: Reason for ending (None if not is_end)
+        """
+        if self.config.verbose:
+            self.logger.info(f"Generating next operator (current: {len(current_operators)} operators)...")
+
+        # Format current pipeline state
+        if current_operators:
+            pipeline_state_parts = []
+            for i, op in enumerate(current_operators):
+                op_dict = operator_to_dict(op)
+                pipeline_state_parts.append(f"{i+1}. {op.type} ({op.name}):\n{json.dumps(op_dict, indent=2)}")
+            current_pipeline_state = "\n\n".join(pipeline_state_parts)
+        else:
+            current_pipeline_state = "No operators yet (this will be the first operator)"
+
+        # Get current schema
+        current_schema = schema_tracker.get_current_schema()
+        available_fields_str = format_fields_for_prompt(current_schema)
+
+        # Format dataset samples
+        dataset_samples_str = json.dumps(dataset_samples, indent=2)
+
+        # Get prompt
+        prompt = get_next_operator_prompt(
+            query=query,
+            dataset_samples=dataset_samples_str,
+            current_pipeline_state=current_pipeline_state,
+            available_fields=available_fields_str,
+            base_system=self.base_system
+        )
+
+        # Define schema for response
+        parameters = {
+            "type": "object",
+            "properties": {
+                "end": {"type": "boolean"},
+                "reason": {"type": "string"},
+                "operator": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string"},
+                        "purpose": {"type": "string"}
+                    }
+                }
+            },
+            "required": ["end"]
+        }
+
+        system_prompt = f"You are an AI assistant that builds data processing pipelines one operator at a time for {self.base_system.value}. Always respond with valid JSON matching the required schema."
+
+        messages = [{"role": "user", "content": prompt}]
+
+        # Confirm with user in debug/confirm mode
+        user_choice = self.ui.confirm_step_before_llm(
+            step_name=f"Next Operator Generation (Operator {len(current_operators) + 1})",
+            step_number=f"{len(current_operators) + 1}",
+            total_steps="?",
+            step_prompt=prompt if self.config.debug else ""
+        )
+
+        if user_choice == 'abort':
+            raise ValueError(f"User aborted at operator {len(current_operators) + 1}")
+
+        # Call LLM
+        bypass_cache = (user_choice == 'regenerate')
+        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
+
+        try:
+            result = json.loads(response)
+        except json.JSONDecodeError as e:
+            self._log(f"Failed to parse next operator response: {e}", level='error', force=True)
+            raise
+
+        # Check if pipeline is complete
+        if result.get('end', False):
+            end_reason = result.get('reason', 'Pipeline complete')
+            self._log(f"Pipeline generation complete: {end_reason}", force=True)
+            return True, None, None, end_reason
+
+        # Extract operator type and purpose
+        operator_data = result.get('operator')
+        if not operator_data:
+            raise ValueError("LLM response missing 'operator' field")
+
+        op_type = operator_data.get('type')
+        if not op_type:
+            raise ValueError("Operator missing 'type' field")
+
+        op_purpose = operator_data.get('purpose', '')
+
+        if self.config.verbose:
+            self.logger.info(f"Selected operator {len(current_operators) + 1}: {op_type} - {op_purpose}")
+
+        return False, op_type, op_purpose, None
+
+    def _get_abstract_operator_schema(self, op_type: str) -> Dict[str, Any]:
+        """
+        Get the JSON schema for a specific operator type.
+
+        Args:
+            op_type: Operator type (Map, Filter, etc.)
+
+        Returns:
+            JSON schema dictionary for the operator
+        """
+        from .abstract import ops
+
+        operator_schema_map = {
+            'Map': ops.Map,
+            'Filter': ops.Filter,
+            'Reduce': ops.Reduce,
+            'Resolve': ops.Resolve,
+            'Extract': ops.Extract,
+            'Join': ops.Join,
+            'Rank': ops.Rank,
+            'TopK': ops.TopK,
+            'Cluster': ops.Cluster,
+            'Split': ops.Split,
+            'Gather': ops.Gather,
+            'Unnest': ops.Unnest,
+            'Sample': ops.Sample,
+        }
+
+        # Get the operator class and call its get_json_schema() method
+        operator_class = operator_schema_map.get(op_type, Operator)
+        return operator_class.get_json_schema()
+
+    def _fill_operator_details(
+        self,
+        op_type: str,
+        op_purpose: str,
+        query: str,
+        dataset_samples: List[Dict],
+        current_operators: List[Operator],
+        schema_tracker: BaseSystemSchemaTracker,
+        operator_index: int,
+        attempt: int = 0
+    ) -> Operator:
+        """
+        Fill in complete configuration for a selected operator.
+
+        Args:
+            op_type: Operator type (Map, Filter, etc.)
+            op_purpose: Operator purpose/description
+            query: User query
+            dataset_samples: Sample data
+            current_operators: List of operators generated so far
+            schema_tracker: Current schema tracker
+            operator_index: Index of this operator in pipeline
+            attempt: Attempt number
+
+        Returns:
+            Fully configured Operator object
+        """
+        if self.config.verbose:
+            self.logger.info(f"Filling details for operator {operator_index + 1}: {op_type}")
+
+        # Get current schema
+        current_schema = schema_tracker.get_current_schema()
+        available_fields_str = format_fields_for_prompt(current_schema)
+
+        # Format dataset samples
+        dataset_samples_str = json.dumps(dataset_samples, indent=2)
+
+        # Format last operator
+        last_operator_str = "None"
+        if current_operators:
+            last_op = current_operators[-1]
+            last_operator_str = json.dumps(operator_to_dict(last_op), indent=2)
+
+        # Get operator-specific prompt
+        prompt = get_abstract_operator_prompt(
+            operator_type=op_type,
+            operator_purpose=op_purpose,
+            query=query,
+            dataset_samples=dataset_samples_str,
+            last_operator=last_operator_str,
+            available_fields=available_fields_str,
+            next_operator_purpose="None"  # We don't know next operator in JIT approach
+        )
+
+        # Get operator-specific schema
+        parameters = self._get_abstract_operator_schema(op_type)
+        system_prompt = f"You are an AI assistant that generates abstract layer {op_type} operator configurations. Always respond with valid JSON matching the required schema."
+
+        messages = [{"role": "user", "content": prompt}]
+
+        # Confirm with user in debug/confirm mode
+        user_choice = self.ui.confirm_operator_before_llm(
+            operator_index=operator_index,
+            total_operators=operator_index + 1,
+            operator_type=op_type,
+            operator_purpose=op_purpose,
+            prompt=prompt,
+            is_cached=False
+        )
+
+        if user_choice == 'abort':
+            raise ValueError(f"User aborted at operator {operator_index + 1}")
+
+        # Call LLM
+        bypass_cache = (user_choice == 'regenerate')
+        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
+
+        try:
+            llm_response = json.loads(response)
+        except json.JSONDecodeError as e:
+            self._log(f"Failed to parse operator details: {e}", level='error', force=True)
+            raise
+
+        # Create Operator object from response
+        abstract_operator = Operator()
+        abstract_operator.name = f"op_{operator_index}_{op_type.lower()}"
+        abstract_operator.type = op_type
+        abstract_operator.source = {
+            "system": "abstract",
+            "name": abstract_operator.name
+        }
+
+        abstract_operator.input = llm_response.get('input', {})
+        abstract_operator.output = llm_response.get('output', {})
+        abstract_operator.properties = {}
+        for key, value in llm_response.items():
+            if key not in ['input', 'output']:
+                abstract_operator.properties[key] = value
+
+        if self.config.verbose:
+            self.logger.info(f"Filled operator {operator_index + 1}: {op_type} with complete configuration")
+
+        # Display generated operator
+        user_choice = self.ui.display_generated_operator(
+            operator_index=operator_index,
+            total_operators=operator_index + 1,
+            operator_type=op_type,
+            operator_config=llm_response
+        )
+
+        if user_choice == 'abort':
+            raise ValueError(f"User aborted after filling operator {operator_index + 1}")
+        elif user_choice == 'regenerate':
+            # Recursively regenerate
+            return self._fill_operator_details(
+                op_type=op_type,
+                op_purpose=op_purpose,
+                query=query,
+                dataset_samples=dataset_samples,
+                current_operators=current_operators,
+                schema_tracker=schema_tracker,
+                operator_index=operator_index,
+                attempt=attempt
+            )
+
+        return abstract_operator
+
+    def _analyze_and_suggest_repair(
+        self,
+        query: str,
+        current_operators: List[Operator],
+        failed_operator: Operator,
+        validation_errors: List[str],
+        schema_tracker: BaseSystemSchemaTracker,
+        operator_index: int
+    ) -> Dict[str, Any]:
+        """
+        Analyze validation errors and get LLM's repair suggestion.
+
+        Args:
+            query: User query
+            current_operators: Current operators in pipeline
+            failed_operator: Operator that failed validation
+            validation_errors: List of validation error messages
+            schema_tracker: Current schema tracker
+            operator_index: Index of failed operator
+
+        Returns:
+            Repair suggestion dictionary with action, analysis, rationale, and optional new_operator
+        """
+        if self.config.verbose:
+            self.logger.info(f"Analyzing validation errors for operator {operator_index + 1}...")
+
+        # Format current pipeline
+        pipeline_parts = []
+        for i, op in enumerate(current_operators):
+            op_dict = operator_to_dict(op)
+            pipeline_parts.append(f"{i+1}. {op.type} ({op.name}):\n{json.dumps(op_dict, indent=2)}")
+        current_pipeline = "\n\n".join(pipeline_parts) if pipeline_parts else "Empty pipeline"
+
+        # Format failed operator
+        failed_op_dict = operator_to_dict(failed_operator)
+        failed_operator_str = json.dumps(failed_op_dict, indent=2)
+
+        # Get available fields
+        current_schema = schema_tracker.get_current_schema()
+        available_fields_str = format_fields_for_prompt(current_schema)
+
+        # Get repair prompt
+        prompt = get_operator_repair_prompt(
+            query=query,
+            current_pipeline=current_pipeline,
+            failed_operator=failed_operator_str,
+            validation_errors=validation_errors,
+            available_fields=available_fields_str,
+            operator_index=operator_index
+        )
+
+        # Define schema for repair response
+        parameters = {
+            "type": "object",
+            "properties": {
+                "analysis": {"type": "string"},
+                "action": {
+                    "type": "string",
+                    "enum": ["DELETE", "INSERT_BEFORE", "INSERT_AFTER", "REPLACE", "MODIFY"]
+                },
+                "rationale": {"type": "string"},
+                "new_operator": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string"},
+                        "purpose": {"type": "string"}
+                    }
+                }
+            },
+            "required": ["analysis", "action", "rationale"]
+        }
+
+        system_prompt = "You are an AI assistant that analyzes validation errors and suggests repairs for data processing pipelines. Always respond with valid JSON matching the required schema."
+
+        messages = [{"role": "user", "content": prompt}]
+
+        # Call LLM
+        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=False)
+
+        try:
+            repair_suggestion = json.loads(response)
+        except json.JSONDecodeError as e:
+            self._log(f"Failed to parse repair suggestion: {e}", level='error', force=True)
+            raise
+
+        if self.config.verbose:
+            self.logger.info(f"Repair suggestion: {repair_suggestion.get('action')}")
+
+        return repair_suggestion
+
+    def _apply_repair(
+        self,
+        repair_suggestion: Dict[str, Any],
+        current_operators: List[Operator],
+        schema_tracker: BaseSystemSchemaTracker,
+        operator_index: int,
+        query: str,
+        dataset_samples: List[Dict],
+        attempt: int
+    ) -> Tuple[int, bool]:
+        """
+        Apply repair action to operator list.
+
+        Args:
+            repair_suggestion: LLM's repair suggestion
+            current_operators: Current list of operators (will be modified)
+            schema_tracker: Schema tracker (will be modified)
+            operator_index: Index of operator to repair
+            query: User query
+            dataset_samples: Dataset samples
+            attempt: Attempt number
+
+        Returns:
+            Tuple of (new_position, should_regenerate)
+            - new_position: Position to continue generation from
+            - should_regenerate: Whether to regenerate from this position
+        """
+        action = repair_suggestion.get('action')
+
+        if self.config.verbose:
+            self.logger.info(f"Applying repair action: {action} at position {operator_index}")
+
+        if action == 'DELETE':
+            # Remove operator and rollback schema
+            if operator_index < len(current_operators):
+                removed_op = current_operators.pop(operator_index)
+                schema_tracker.rollback(steps=1)
+                self._log(f"Deleted operator {operator_index + 1}: {removed_op.type}", force=True)
+            # Continue from same position (since we removed one)
+            return operator_index, True
+
+        elif action == 'INSERT_BEFORE':
+            # Schema is already at correct state (before failed operator)
+            # Just continue - next generation will insert before
+            self._log(f"Will insert new operator before position {operator_index + 1}", force=True)
+            return operator_index, True
+
+        elif action == 'INSERT_AFTER':
+            # Keep current operator, insert after it
+            # Schema needs to be updated to include current operator's output
+            self._log(f"Will insert new operator after position {operator_index + 1}", force=True)
+            # Continue from next position
+            return operator_index + 1, True
+
+        elif action == 'REPLACE':
+            # Remove current operator and rollback schema
+            if operator_index < len(current_operators):
+                removed_op = current_operators.pop(operator_index)
+                schema_tracker.rollback(steps=1)
+                self._log(f"Removed operator {operator_index + 1} for replacement: {removed_op.type}", force=True)
+            # Continue from same position with new operator
+            return operator_index, True
+
+        elif action == 'MODIFY':
+            # Remove current operator and rollback schema, then regenerate
+            if operator_index < len(current_operators):
+                removed_op = current_operators.pop(operator_index)
+                schema_tracker.rollback(steps=1)
+                self._log(f"Removed operator {operator_index + 1} for modification: {removed_op.type}", force=True)
+            # Continue from same position
+            return operator_index, True
+
+        else:
+            raise ValueError(f"Unknown repair action: {action}")
+
     def _build_abstract_pipeline(
         self,
         query: str,
@@ -283,7 +725,7 @@ class AbstractStepBaseline(BaselineInterface):
         attempt: int = 0
     ) -> Pipeline:
         """
-        Build complete abstract pipeline.
+        Build complete abstract pipeline using JIT (Just-in-Time) step-by-step generation.
 
         Args:
             query: User query
@@ -295,15 +737,7 @@ class AbstractStepBaseline(BaselineInterface):
             Abstract Pipeline object
         """
         if self.config.verbose:
-            self.logger.info("Step 1: Selecting operators...")
-
-        operators = self._select_operators(query, dataset_samples, attempt)
-
-        if not operators:
-            raise ValueError("No operators selected")
-
-        if self.config.verbose:
-            self.logger.info(f"Step 2: Generating details for {len(operators)} operators...")
+            self.logger.info("Building pipeline using JIT step-by-step generation...")
 
         # Initialize schema tracker using base system - only use first sample
         samples_list = [dataset_samples[0]] if dataset_samples else [{}]
@@ -315,29 +749,129 @@ class AbstractStepBaseline(BaselineInterface):
             verbose=self.config.verbose
         )
 
-        # Generate details for each operator
+        # JIT generation loop
         filled_operators = []
+        max_operators = 20  # Safety limit
+        max_repair_attempts = 3  # Max repair attempts per operator
 
-        for operator_index, op in enumerate(operators):
-            # Get last operator (None if this is the first)
-            last_operator = filled_operators[-1] if filled_operators else None
+        for iteration in range(max_operators):
+            if self.config.verbose:
+                self.logger.info(f"Iteration {iteration + 1}: Selecting next operator...")
 
-            # Get next operator purpose (None if this is the last)
-            next_operator_purpose = operators[operator_index + 1]['purpose'] if operator_index + 1 < len(operators) else None
-
-            filled_op = self._generate_operator_details(
-                operator=op,
+            # Step 1: Select next operator type
+            is_end, op_type, op_purpose, end_reason = self._select_next_operator(
                 query=query,
                 dataset_samples=dataset_samples,
-                dataset_path=dataset_path,
-                last_operator=last_operator,
+                current_operators=filled_operators,
                 schema_tracker=schema_tracker,
-                operator_index=operator_index,
-                attempt=attempt,
-                total_operators=len(operators),
-                next_operator_purpose=next_operator_purpose
+                attempt=attempt
             )
-            filled_operators.append(filled_op)
+
+            # Check if pipeline is complete
+            if is_end:
+                if self.config.verbose:
+                    self.logger.info(f"Pipeline complete after {len(filled_operators)} operators: {end_reason}")
+                break
+
+            # Step 2: Fill operator details
+            operator = self._fill_operator_details(
+                op_type=op_type,
+                op_purpose=op_purpose,
+                query=query,
+                dataset_samples=dataset_samples,
+                current_operators=filled_operators,
+                schema_tracker=schema_tracker,
+                operator_index=len(filled_operators),
+                attempt=attempt
+            )
+
+            # Step 3: Validate operator against current schema
+            if self.base_system == BaseSystem.DOCETL:
+                base_operator = abstract_to_docetl(operator)
+            else:
+                raise ValueError(f"Unsupported base system: {self.base_system.value}")
+
+            validation_passed, validation_errors = schema_tracker.validate_operator(base_operator)
+
+            # Handle validation errors with repair mechanism
+            repair_attempts = 0
+            while not validation_passed and repair_attempts < max_repair_attempts:
+                self._log(f"⚠ Validation failed for operator {len(filled_operators) + 1}", level='warning', force=True)
+
+                # Get repair suggestion from LLM
+                repair_suggestion = self._analyze_and_suggest_repair(
+                    query=query,
+                    current_operators=filled_operators,
+                    failed_operator=operator,
+                    validation_errors=validation_errors,
+                    schema_tracker=schema_tracker,
+                    operator_index=len(filled_operators)
+                )
+
+                # Ask user to confirm repair
+                user_decision = self.ui.confirm_repair_suggestion(
+                    operator_index=len(filled_operators),
+                    total_operators=len(filled_operators) + 1,
+                    repair_suggestion=repair_suggestion
+                )
+
+                if user_decision == 'abort':
+                    raise ValueError(f"User aborted pipeline generation at operator {len(filled_operators) + 1}")
+                elif user_decision == 'skip':
+                    # User chose to continue with errors
+                    self._log(f"⚠ Continuing with validation errors in operator {len(filled_operators) + 1}", level='warning', force=True)
+                    validation_passed = True  # Force continue
+                    break
+                else:  # accept
+                    # Apply repair
+                    new_position, should_regenerate = self._apply_repair(
+                        repair_suggestion=repair_suggestion,
+                        current_operators=filled_operators,
+                        schema_tracker=schema_tracker,
+                        operator_index=len(filled_operators),
+                        query=query,
+                        dataset_samples=dataset_samples,
+                        attempt=attempt
+                    )
+
+                    # Regenerate from new position
+                    if should_regenerate:
+                        repair_attempts += 1
+                        # Break out of validation loop and continue main loop
+                        break
+
+            # If we exhausted repair attempts, ask user
+            if not validation_passed and repair_attempts >= max_repair_attempts:
+                user_decision = self.ui.confirm_validation_error(
+                    operator_index=len(filled_operators),
+                    total_operators=len(filled_operators) + 1,
+                    errors=validation_errors,
+                    warnings=[]
+                )
+
+                if user_decision == 'abort':
+                    raise ValueError(f"Pipeline generation aborted after {max_repair_attempts} repair attempts")
+                else:
+                    # Force continue
+                    validation_passed = True
+
+            # Update schema and add operator if validation passed
+            if validation_passed and repair_attempts == 0:
+                # Only update schema if we didn't apply repairs (repairs handle schema themselves)
+                try:
+                    schema_tracker.update_schema(base_operator)
+                except Exception as e:
+                    error_msg = f"Failed to update schema for operator {operator.name} ({operator.type}): {str(e)}"
+                    raise ValueError(error_msg)
+
+                filled_operators.append(operator)
+
+                if self.config.verbose:
+                    self.logger.info(f"✓ Added operator {len(filled_operators)}: {operator.type}")
+
+        # Check if we have any operators
+        if not filled_operators:
+            raise ValueError("No operators generated - pipeline is empty")
 
         # Validate compatibility with base system
         operator_types = [op.type for op in filled_operators]
@@ -371,381 +905,6 @@ class AbstractStepBaseline(BaselineInterface):
             self.logger.info(f"Successfully built abstract pipeline with {len(filled_operators)} operators")
 
         return abstract_pipeline
-
-    def _select_operators(
-        self,
-        query: str,
-        dataset_samples: List[Dict],
-        attempt: int = 0,
-        collect_messages: bool = False
-    ) -> List[Dict[str, str]]:
-        """
-        Step 1: Select abstract operators needed for the pipeline.
-
-        Args:
-            query: User query
-            dataset_samples: Sample data (list of dicts)
-            attempt: Attempt number (for retry logic)
-            collect_messages: Whether to collect messages for debugging
-
-        Returns:
-            List of selected operators with type and purpose
-        """
-        dataset_samples_str = json.dumps(dataset_samples, indent=2)
-
-        # Get operator selection prompt (filtered by base system support)
-        prompt = get_operator_selection_prompt(
-            query=query,
-            dataset_samples=dataset_samples_str,
-            base_system=self.base_system
-        )
-
-        # Confirm before calling LLM in confirm/debug mode
-        user_choice = self.ui.confirm_step_before_llm(
-            step_name="Operator Selection (Abstract Layer)",
-            step_number="1",
-            step_prompt=prompt
-        )
-        if user_choice == 'abort':
-            raise ValueError("User aborted pipeline generation at Step 1")
-
-        # Define schema for structured operator selection
-        # Only include operators supported by the base system
-        supported_ops = get_supported_operators(self.base_system)
-        operator_enum = sorted([op for op in supported_ops])
-
-        parameters = {
-            "type": "object",
-            "properties": {
-                "operators": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "type": {
-                                "type": "string",
-                                "enum": operator_enum  # Only supported operators
-                            },
-                            "purpose": {"type": "string"}
-                        },
-                        "required": ["type", "purpose"]
-                    }
-                }
-            },
-            "required": ["operators"]
-        }
-
-        system_prompt = f"You are an AI assistant that selects appropriate abstract operators for data processing pipelines. Only use operators supported by {self.base_system.value}. Always respond with valid JSON matching the required schema."
-
-        messages = [{"role": "user", "content": prompt}]
-
-        try:
-            bypass_cache = (user_choice == 'regenerate')
-            response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
-
-            result = json.loads(response)
-            operators = result.get("operators", [])
-
-            if collect_messages:
-                messages.append({"role": "assistant", "content": response})
-
-        except (json.JSONDecodeError, KeyError) as e:
-            if self.config.verbose:
-                self.logger.warning(f"Failed to parse structured operator selection: {e}")
-            operators = []
-
-        if self.config.verbose:
-            self.logger.info(f"Selected {len(operators)} operators: {[op['type'] for op in operators]}")
-
-        # Confirm this step in confirm/debug mode
-        if not self.ui.confirm_step_execution("Step 1: Operator Selection (Abstract)", operators, query, attempt):
-            raise ValueError("User aborted pipeline generation at operator selection step")
-
-        if collect_messages:
-            return operators, messages
-        return operators
-
-    def _create_operator_from_response(
-        self,
-        llm_response: Dict[str, Any],
-        operator_index: int,
-        op_type: str
-    ) -> Operator:
-        """
-        Create an Operator object from LLM response.
-
-        Args:
-            llm_response: Parsed JSON response from LLM
-            operator_index: Index of this operator in the pipeline
-            op_type: Type of the operator (e.g., 'Map', 'Filter')
-
-        Returns:
-            Operator object with populated fields
-        """
-        abstract_operator = Operator()
-        abstract_operator.name = f"op_{operator_index}_{op_type.lower()}"
-        abstract_operator.type = op_type
-        abstract_operator.source = {
-            "system": "abstract",
-            "name": abstract_operator.name
-        }
-
-        abstract_operator.input = llm_response.get('input', {})
-        abstract_operator.output = llm_response.get('output', {})
-
-        # Store other properties
-        abstract_operator.properties = {}
-        for key, value in llm_response.items():
-            if key not in ['input', 'output']:
-                abstract_operator.properties[key] = value
-
-        return abstract_operator
-
-    def _get_abstract_operator_schema(self, op_type: str) -> Dict[str, Any]:
-        operator_schema_map = {
-            'Map': ops.Map,
-            'Filter': ops.Filter,
-            'Reduce': ops.Reduce,
-            'Resolve': ops.Resolve,
-            'Extract': ops.Extract,
-            'Join': ops.Join,
-            'Rank': ops.Rank,
-            'TopK': ops.TopK,
-            'Cluster': ops.Cluster,
-            'Split': ops.Split,
-            'Gather': ops.Gather,
-            'Unnest': ops.Unnest,
-            'Sample': ops.Sample,
-        }
-
-        # Get the operator class and call its get_json_schema() method
-        operator_class = operator_schema_map.get(op_type, Operator)
-        return operator_class.get_json_schema()
-
-    def _generate_operator_details(
-        self,
-        operator: Dict[str, Any],
-        query: str,
-        dataset_samples: List[Dict],
-        dataset_path: str,
-        last_operator: Optional[Operator],
-        schema_tracker: BaseSystemSchemaTracker = None,
-        collect_messages: bool = False,
-        operator_index: int = 0,
-        attempt: int = 0,
-        total_operators: int = 1,
-        next_operator_purpose: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Step 2: Generate details for a single abstract operator.
-
-        Args:
-            operator: Operator framework (type and purpose)
-            query: User query
-            dataset_samples: Sample data (list of dicts)
-            dataset_path: Path to dataset file
-            last_operator: Last generated operator (None if this is the first)
-            schema_tracker: Schema tracker using base system
-            collect_messages: Whether to collect messages
-            operator_index: Index of this operator
-            attempt: Attempt number
-            total_operators: Total number of operators
-            next_operator_purpose: Purpose of next operator (None if this is the last)
-
-        Returns:
-            Filled operator configuration
-        """
-        op_type = operator['type']
-        operator_purpose = operator['purpose']
-
-        # Get current schema in abstract format for LLM prompt
-        current_schema = schema_tracker.get_current_schema()
-        available_fields_str = format_fields_for_prompt(current_schema)
-
-        dataset_samples_str = json.dumps(dataset_samples, indent=2)
-
-        # Format last operator (convert Operator object to dict)
-        if last_operator:
-            last_operator_str = json.dumps(operator_to_dict(last_operator), indent=2)
-        else:
-            last_operator_str = "None"
-
-        # Format next operator purpose
-        next_operator_purpose_str = next_operator_purpose if next_operator_purpose else "None"
-
-        # Get operator-specific prompt
-        prompt = get_abstract_operator_prompt(
-            operator_type=op_type,
-            operator_purpose=operator_purpose,
-            query=query,
-            dataset_samples=dataset_samples_str,
-            last_operator=last_operator_str,
-            available_fields=available_fields_str,
-            next_operator_purpose=next_operator_purpose_str
-        )
-
-        # Prepare LLM call parameters
-        parameters = self._get_abstract_operator_schema(op_type)
-        system_prompt = f"You are an AI assistant that generates abstract layer {op_type} operator configurations. Always respond with valid JSON matching the required schema."
-        messages = [{"role": "user", "content": prompt}]
-
-        # Check if this prompt is already cached
-        prompt_is_cached = is_cached(
-            messages=messages,
-            schema=parameters,
-            system_prompt=system_prompt
-        )
-
-        # Confirm this operator generation with user
-        user_choice = self.ui.confirm_operator_before_llm(
-            operator_index=operator_index,
-            total_operators=total_operators,
-            operator_type=op_type,
-            operator_purpose=operator_purpose,
-            prompt=prompt,
-            is_cached=prompt_is_cached,
-        )
-
-        if user_choice == 'abort':
-            raise ValueError(f"User aborted operator generation at operator {operator_index + 1}")
-
-        try:
-            bypass_cache = (user_choice == 'regenerate')
-            response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=bypass_cache)
-
-            llm_response = json.loads(response)
-
-            # Create operator from LLM response
-            abstract_operator = self._create_operator_from_response(llm_response, operator_index, op_type)
-
-            # Collect response for debugging
-            if collect_messages:
-                messages.append({"role": "assistant", "content": response})
-
-        except (json.JSONDecodeError, KeyError) as e:
-            if self.config.verbose:
-                self.logger.warning(f"Failed to parse operator {operator_index}: {e}")
-            raise
-
-        if self.config.verbose:
-            self.logger.info(f"Generated operator {operator_index + 1}/{total_operators}: {op_type}")
-
-        # Perform incremental validation BEFORE applying operator to schema
-        # Validate current operator directly using schema tracker
-        # Convert abstract operator to base system format for validation
-        if self.base_system == BaseSystem.DOCETL:
-            base_operator = abstract_to_docetl(abstract_operator)
-        else:
-            raise ValueError(f"Unsupported base system: {self.base_system.value}")
-
-        validation_passed, validation_errors = schema_tracker.validate_operator(base_operator)
-
-        # Handle validation results - only show errors
-        if not validation_passed:
-            # Ask user for decision via UI
-            user_decision = self.ui.confirm_validation_error(
-                operator_index=operator_index,
-                total_operators=total_operators,
-                errors=validation_errors,
-                warnings=[]
-            )
-
-            if user_decision == 'abort':
-                raise ValueError(f"Pipeline generation aborted due to validation errors in operator {operator_index + 1}")
-            else:
-                # User chose to continue despite errors
-                self._log(f"⚠ Continuing with validation errors in operator {operator_index + 1}", level='warning', force=True)
-
-        # Update schema after validation (even if validation failed but user chose to continue)
-        try:
-            schema_tracker.update_schema(base_operator)
-        except Exception as e:
-            error_msg = f"Failed to update schema for operator {abstract_operator.name} ({abstract_operator.type}): {str(e)}"
-            raise ValueError(error_msg)
-
-        # Display generated operator and ask for confirmation
-        user_choice = self.ui.display_generated_operator(
-            operator_index=operator_index,
-            total_operators=total_operators,
-            operator_type=op_type,
-            operator_config=llm_response
-        )
-
-        if user_choice == 'abort':
-            raise ValueError(f"User aborted after generating operator {operator_index + 1}")
-        elif user_choice == 'regenerate':
-            # Recursively regenerate this operator with force_regenerate flag
-            if self.config.verbose:
-                self.logger.info(f"Regenerating operator {operator_index + 1}...")
-
-            response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=True)
-
-            llm_response = json.loads(response)
-
-            # Create operator from regenerated LLM response
-            abstract_operator = self._create_operator_from_response(llm_response, operator_index, op_type)
-
-            # Validate regenerated operator directly using schema tracker
-            # Convert abstract operator to base system format for validation
-            if self.base_system == BaseSystem.DOCETL:
-                base_operator = abstract_to_docetl(abstract_operator)
-            else:
-                raise ValueError(f"Unsupported base system: {self.base_system.value}")
-
-            validation_passed, validation_errors = schema_tracker.validate_operator(base_operator)
-
-            # Handle validation results - only show errors
-            if not validation_passed:
-                # Ask user for decision via UI
-                user_decision = self.ui.confirm_validation_error(
-                    operator_index=operator_index,
-                    total_operators=total_operators,
-                    errors=validation_errors,
-                    warnings=[]
-                )
-
-                if user_decision == 'abort':
-                    raise ValueError(f"Pipeline generation aborted due to validation errors in regenerated operator {operator_index + 1}")
-                else:
-                    # User chose to continue despite errors
-                    self._log(f"⚠ Continuing with validation errors in regenerated operator {operator_index + 1}", level='warning', force=True)
-
-            # Update schema after validation (even if validation failed but user chose to continue)
-            try:
-                schema_tracker.update_schema(base_operator)
-            except Exception as e:
-                error_msg = f"Failed to update schema for regenerated operator {abstract_operator.name} ({abstract_operator.type}): {str(e)}"
-                raise ValueError(error_msg)
-
-            # Show regenerated operator
-            regenerate_choice = self.ui.display_generated_operator(
-                operator_index=operator_index,
-                total_operators=total_operators,
-                operator_type=op_type,
-                operator_config=llm_response
-            )
-
-            if regenerate_choice == 'abort':
-                raise ValueError(f"User aborted after regenerating operator {operator_index + 1}")
-            elif regenerate_choice == 'regenerate':
-                # User wants to regenerate again - recursive call
-                return self._generate_operator_details(
-                    operator=operator,
-                    query=query,
-                    dataset_samples=dataset_samples,
-                    dataset_path=dataset_path,
-                    last_operator=last_operator,
-                    schema_tracker=schema_tracker,
-                    collect_messages=collect_messages,
-                    operator_index=operator_index,
-                    attempt=attempt,
-                    total_operators=total_operators,
-                    next_operator_purpose=next_operator_purpose
-                )
-
-        if collect_messages:
-            return abstract_operator, messages
-        return abstract_operator
 
     def _convert_and_execute(
         self,

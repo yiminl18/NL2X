@@ -5,7 +5,7 @@ Abstract Layer Prompts
 from string import Template
 from ..abstract.support import BaseSystem, format_operators_with_descriptions
 from .instructions import get_operator_selection_rules
-
+from typing import List
 
 # =============================================================================
 # Step 1: Operator Selection
@@ -479,4 +479,173 @@ Return valid JSON.
         last_operator=last_operator,
         next_operator_purpose=next_operator_purpose,
         dataset_samples=dataset_samples
+    )
+
+
+# =============================================================================
+# JIT Step-by-Step: Next Operator Generation
+# =============================================================================
+
+NEXT_OPERATOR_PROMPT = Template("""
+You are an AI assistant that builds data processing pipelines one operator at a time.
+
+Task: Analyze the current pipeline state and determine the NEXT operator type needed, OR decide if the pipeline is complete.
+
+Query: $query
+
+Dataset Structure and Samples:
+$dataset_samples
+
+Current Pipeline State:
+$current_pipeline_state
+
+Available Fields (with types):
+$available_fields
+
+Available Abstract Operators:
+$available_operators
+
+IMPORTANT RULES:
+$important_rules
+
+Your Task:
+1. Analyze the query and current pipeline state
+2. Determine if the pipeline is COMPLETE (query can be fully answered with current operators)
+3. If COMPLETE: Return {"end": true, "reason": "explanation of why pipeline is complete"}
+4. If NOT COMPLETE: Select the TYPE and PURPOSE of the NEXT operator needed
+
+IMPORTANT: You are ONLY selecting the operator type and purpose in this step. The detailed configuration (prompt, input/output schemas, etc.) will be generated in the next step.
+
+For the next operator, provide:
+- type: The operator type to use (e.g., "Map", "Filter", "Reduce")
+- purpose: Brief description of what this operator will do in the pipeline
+
+Response Format:
+Either:
+{"end": true, "reason": "Pipeline complete because..."}
+
+OR:
+{"end": false, "operator": {"type": "OperatorType", "purpose": "what this operator will do"}}
+
+Remember:
+- Stop when the pipeline can fully answer the query
+- Each operator should have a clear purpose in the overall pipeline
+""")
+
+
+def get_next_operator_prompt(
+    query: str,
+    dataset_samples: str,
+    current_pipeline_state: str,
+    available_fields: str,
+    base_system: BaseSystem
+) -> str:
+    """
+    Generate prompt for JIT next operator selection and configuration.
+
+    Args:
+        query: User query
+        dataset_samples: Dataset samples (JSON formatted string)
+        current_pipeline_state: Current operators in pipeline (formatted string)
+        available_fields: Available fields (formatted string)
+        base_system: Base system type
+
+    Returns:
+        Complete prompt string
+    """
+    operators_info = format_operators_with_descriptions(base_system)
+    rules_text = get_operator_selection_rules()
+
+    return NEXT_OPERATOR_PROMPT.substitute(
+        query=query,
+        dataset_samples=dataset_samples,
+        current_pipeline_state=current_pipeline_state,
+        available_fields=available_fields,
+        available_operators=operators_info,
+        important_rules=rules_text
+    )
+
+
+# =============================================================================
+# JIT Step-by-Step: Operator Repair
+# =============================================================================
+
+OPERATOR_REPAIR_PROMPT = Template("""
+You are an AI assistant that analyzes validation errors in data processing pipelines and suggests repairs.
+
+Query: $query
+
+Current Pipeline:
+$current_pipeline
+
+Failed Operator (at position $operator_index):
+$failed_operator
+
+Validation Errors:
+$validation_errors
+
+Available Fields Before This Operator:
+$available_fields
+
+Your Task:
+Analyze the validation errors and suggest ONE repair action to fix the pipeline.
+
+Available Repair Actions:
+1. DELETE - Remove the problematic operator entirely
+2. INSERT_BEFORE - Insert a new operator BEFORE the failed operator to prepare the data
+3. INSERT_AFTER - Insert a new operator AFTER the failed operator (keep the failed operator)
+4. REPLACE - Replace the failed operator with a different operator type
+5. MODIFY - Regenerate the same operator type with different configuration
+
+Response Format (JSON):
+{
+  "analysis": "Brief analysis of what went wrong and why",
+  "action": "DELETE|INSERT_BEFORE|INSERT_AFTER|REPLACE|MODIFY",
+  "rationale": "Explanation of why this action will fix the error",
+  "new_operator": {
+    "type": "operator_type",
+    "purpose": "what this operator will do"
+  }  // Only needed for INSERT_BEFORE, INSERT_AFTER, REPLACE
+}
+
+Guidelines:
+- Choose the SIMPLEST fix that addresses the validation error
+- If a field is missing, consider INSERT_BEFORE to create it or MODIFY to use correct fields
+- If operator type is wrong, use REPLACE
+- If operator is unnecessary, use DELETE
+- Provide clear rationale for your choice
+""")
+
+
+def get_operator_repair_prompt(
+    query: str,
+    current_pipeline: str,
+    failed_operator: str,
+    validation_errors: List[str],
+    available_fields: str,
+    operator_index: int
+) -> str:
+    """
+    Generate prompt for operator repair analysis.
+
+    Args:
+        query: User query
+        current_pipeline: Current pipeline state (formatted string)
+        failed_operator: Failed operator configuration (JSON string)
+        validation_errors: List of validation error messages
+        available_fields: Available fields (formatted string)
+        operator_index: Index of failed operator
+
+    Returns:
+        Complete prompt string
+    """
+    errors_text = "\n".join(f"- {error}" for error in validation_errors)
+
+    return OPERATOR_REPAIR_PROMPT.substitute(
+        query=query,
+        current_pipeline=current_pipeline,
+        failed_operator=failed_operator,
+        validation_errors=errors_text,
+        available_fields=available_fields,
+        operator_index=operator_index
     )
