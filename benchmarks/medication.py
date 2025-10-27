@@ -40,7 +40,7 @@ class MedicationDataLoader:
    - Identify any mentioned side effects
    - Identify the therapeutic uses (what conditions/symptoms the medication was prescribed for)
 
-Return your answer as a JSON object with the following structure:
+Return your answer with the following structure:
 {
   "medications": [
     {
@@ -50,8 +50,7 @@ Return your answer as a JSON object with the following structure:
     }
   ]
 }
-
-Base your analysis solely on information from the provided transcript. Include quotes from the transcript where relevant."""
+"""
 @register_benchmark("medication")
 class MedicationBenchmark(BenchmarkInterface):
     def _setup(self):

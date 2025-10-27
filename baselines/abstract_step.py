@@ -329,6 +329,9 @@ class AbstractStepBaseline(BaselineInterface):
             base_system=self.base_system
         )
 
+        # Get supported operators for this base system to use as enum
+        supported_ops = get_supported_operators(self.base_system)
+
         # Define schema for response
         parameters = {
             "type": "object",
@@ -338,7 +341,7 @@ class AbstractStepBaseline(BaselineInterface):
                 "operator": {
                     "type": "object",
                     "properties": {
-                        "type": {"type": "string"},
+                        "type": {"type": "string", "enum": supported_ops},
                         "purpose": {"type": "string"}
                     }
                 }
@@ -352,10 +355,10 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Confirm with user in debug/confirm mode
         user_choice = self.ui.confirm_step_before_llm(
-            step_name=f"Next Operator Generation (Operator {len(current_operators) + 1})",
-            step_number=f"{len(current_operators) + 1}",
-            total_steps="?",
-            step_prompt=prompt if self.config.debug else ""
+            step_name=f"Operator {len(current_operators) + 1}",
+            iteration=len(current_operators) + 1,
+            step_type="selection",
+            step_prompt=prompt  # Always pass prompt, UI will handle display based on mode
         )
 
         if user_choice == 'abort':
@@ -475,8 +478,7 @@ class AbstractStepBaseline(BaselineInterface):
             query=query,
             dataset_samples=dataset_samples_str,
             last_operator=last_operator_str,
-            available_fields=available_fields_str,
-            next_operator_purpose="None"  # We don't know next operator in JIT approach
+            available_fields=available_fields_str
         )
 
         # Get operator-specific schema

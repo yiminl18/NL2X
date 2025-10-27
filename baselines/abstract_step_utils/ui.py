@@ -17,6 +17,15 @@ class AbstractStepUserInterface:
     for debug and confirm modes during abstract pipeline generation.
     """
 
+    # ANSI Color codes - 淡雅配色方案
+    CYAN = '\033[96m'      # 淡青色 - 提示框架
+    BLUE = '\033[94m'      # 淡蓝色 - 信息标签
+    GREEN = '\033[92m'     # 淡绿色 - 成功消息
+    YELLOW = '\033[93m'    # 淡黄色 - 警告/注意
+    MAGENTA = '\033[95m'   # 淡紫色 - 特殊标记
+    RESET = '\033[0m'      # 重置颜色
+    BOLD = '\033[1m'       # 粗体
+
     def __init__(self, config):
         """
         Initialize the user interface.
@@ -26,15 +35,15 @@ class AbstractStepUserInterface:
         """
         self.config = config
 
-    def confirm_step_before_llm(self, step_name: str, step_number: str, total_steps: str = "2", step_prompt: str = "") -> str:
+    def confirm_step_before_llm(self, step_name: str, iteration: int, step_type: str, step_prompt: str = "") -> str:
         """
-        Ask for confirmation before calling LLM for a step.
+        Ask for confirmation before calling LLM for a step in JIT pipeline generation.
 
         Args:
-            step_name: Name of the step
-            step_number: Current step number
-            total_steps: Total number of steps
-            step_prompt: Prompt for the current step
+            step_name: Descriptive name of what's being done (e.g., "Operator 1", "Map operator")
+            iteration: Current iteration/operator number (1-based)
+            step_type: "selection" for operator selection, "filling" for operator configuration
+            step_prompt: Prompt content (press 'p' to view)
 
         Returns:
             'continue' if user wants to continue
@@ -44,23 +53,36 @@ class AbstractStepUserInterface:
         if not (self.config.confirm or self.config.debug):
             return 'continue'
 
-        if step_prompt:
-            print(f"\n📝 Step Prompt:")
-            print("-"*40)
-            print(step_prompt)
-            print("-"*40)
+        # Two-step JIT style prompt
+        step_emoji = "🎯" if step_type == "selection" else "⚙️"
+        step_label = "Select" if step_type == "selection" else "Configure"
 
-        print(f"\n➡️  Next: Step {step_number}/{total_steps} - {step_name}")
-        print("Continue? (Y/r/n): ", end="")
+        print(f"\n{self.CYAN}{self.BOLD}➡️  Iteration {iteration} - {step_emoji} {step_label}:{self.RESET} {self.BLUE}{step_name}{self.RESET}")
+
+        # Show 'p' option if prompt exists
+        if step_prompt:
+            print(f"{self.CYAN}Continue? (Y/r/n/p - p=view prompt):{self.RESET} ", end="")
+        else:
+            print(f"{self.CYAN}Continue? (Y/r/n):{self.RESET} ", end="")
+
         user_input = input().strip().lower()
 
+        # Handle 'p' to view full prompt
+        if user_input == 'p' and step_prompt:
+            print(f"\n{self.CYAN}📝 Prompt:{self.RESET}")
+            print(f"{self.CYAN}{'-'*40}{self.RESET}")
+            print(step_prompt)
+            print(f"{self.CYAN}{'-'*40}{self.RESET}")
+            print(f"\n{self.CYAN}Continue? (Y/r/n):{self.RESET} ", end="")
+            user_input = input().strip().lower()
+
         if user_input == 'r':
-            print("🔄 Regenerating response (bypassing cache)...")
+            print(f"{self.YELLOW}🔄 Regenerating (bypassing cache)...{self.RESET}")
             return 'regenerate'
         elif user_input == 'n':
-            print("❌ User aborted pipeline generation")
+            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
             return 'abort'
-        else:  # Default to 'y' or empty input
+        else:
             return 'continue'
 
     def confirm_step_execution(self, step_name: str, result: Any, query: str, attempt: int) -> bool:
@@ -259,47 +281,56 @@ class AbstractStepUserInterface:
         if not (self.config.confirm or self.config.debug):
             return 'continue'
 
-        print("\n" + "="*80)
-        mode_text = "[DEBUG MODE]" if self.config.debug else "[CONFIRM MODE]"
-        cache_text = " (CACHED)" if is_cached else ""
-        print(f"{mode_text} Operator {operator_index + 1}/{total_operators} - Generation{cache_text}")
-        print("="*80)
+        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        mode_text = f"{self.BLUE}[DEBUG MODE]{self.RESET}" if self.config.debug else f"{self.BLUE}[CONFIRM MODE]{self.RESET}"
+        cache_text = f" {self.YELLOW}(CACHED){self.RESET}" if is_cached else ""
+        print(f"{mode_text} {self.BOLD}Operator {operator_index + 1} - Filling Details{self.RESET}{cache_text}")
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
 
-        print(f"\n📋 Operator Type: {operator_type}")
-        print(f"📋 Purpose: {operator_purpose}")
-        print("-"*40)
+        print(f"\n{self.BLUE}📋 Type:{self.RESET} {operator_type}")
+        print(f"{self.BLUE}📋 Purpose:{self.RESET} {operator_purpose}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
-        # Show prompt preview (first 500 chars)
-        print("\n📝 Prompt Preview:")
-        print("-"*40)
-        print(prompt)
-        print("-"*40)
-
-        # Show cache status and appropriate prompt
+        # Show cache status
         if is_cached:
-            print("\n💾 This prompt is CACHED. Type 'r' to bypass the cache and regenerate.")
-            print("➡️  Generate this operator? (Y/r/n): ", end="")
+            print(f"\n{self.YELLOW}💾 This prompt is CACHED. Type 'r' to bypass cache.{self.RESET}")
+            print(f"{self.CYAN}Proceed? (Y/r/n/p - p=view prompt):{self.RESET} ", end="")
         else:
-            print("\n➡️  Generate this operator? (Y/n): ", end="")
+            print(f"\n{self.CYAN}Proceed? (Y/n/p - p=view prompt):{self.RESET} ", end="")
 
         user_input = input().strip().lower()
 
+        # Handle 'p' to view full prompt
+        if user_input == 'p':
+            print(f"\n{self.CYAN}📝 Prompt:{self.RESET}")
+            print(f"{self.CYAN}{'-'*40}{self.RESET}")
+            print(prompt)
+            print(f"{self.CYAN}{'-'*40}{self.RESET}")
+
+            # Re-prompt after showing full prompt
+            if is_cached:
+                print(f"\n{self.CYAN}Proceed? (Y/r/n):{self.RESET} ", end="")
+            else:
+                print(f"\n{self.CYAN}Proceed? (Y/n):{self.RESET} ", end="")
+            user_input = input().strip().lower()
+
+        # Handle other inputs
         if user_input == 'r':
             if is_cached:
-                print("🔄 Regenerating operator (bypassing cache)...")
+                print(f"{self.YELLOW}🔄 Regenerating (bypassing cache)...{self.RESET}")
                 return 'regenerate'
             else:
                 # If not cached and user types 'r', treat as invalid and default to continue
-                print("✅ Generating operator...")
+                print(f"{self.GREEN}✅ Generating operator...{self.RESET}")
                 return 'continue'
         elif user_input == 'n':
-            print("❌ User aborted operator generation")
+            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
             return 'abort'
         else:  # Default to 'y' or empty input
             if is_cached:
-                print("✅ Using cached response...")
+                print(f"{self.GREEN}✅ Using cached response...{self.RESET}")
             else:
-                print("✅ Generating operator...")
+                print(f"{self.GREEN}✅ Generating operator...{self.RESET}")
             return 'continue'
 
     def display_generated_operator(
@@ -326,48 +357,44 @@ class AbstractStepUserInterface:
         if not (self.config.confirm or self.config.debug):
             return 'continue'
 
-        print("\n" + "="*80)
-        print(f"✅ Generated Operator {operator_index + 1}/{total_operators}: {operator_type}")
-        print("="*80)
+        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        print(f"{self.GREEN}✅ Generated Operator {operator_index + 1}: {self.BOLD}{operator_type}{self.RESET}")
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
 
-        print(f"\n📋 Operator Configuration:")
-        print("-"*40)
+        print(f"\n{self.BLUE}📋 Configuration:{self.RESET}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
         # Format and display the configuration
         config_str = json.dumps(operator_config, indent=2, ensure_ascii=False)
         print(config_str)
-        print("-"*40)
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
         # Show key information
         if 'prompt' in operator_config:
             prompt_preview = operator_config['prompt'][:200] + "..." if len(operator_config.get('prompt', '')) > 200 else operator_config.get('prompt', '')
-            print(f"\n📝 Prompt: {prompt_preview}")
+            print(f"\n{self.BLUE}📝 Prompt:{self.RESET} {prompt_preview}")
 
         if 'input' in operator_config:
-            print(f"\n📥 Input Schema: {json.dumps(operator_config['input'], indent=2)}")
+            print(f"\n{self.BLUE}📥 Input Schema:{self.RESET}")
+            print(json.dumps(operator_config['input'], indent=2))
 
         if 'output' in operator_config:
-            print(f"\n📤 Output Schema: {json.dumps(operator_config['output'], indent=2)}")
+            print(f"\n{self.BLUE}📤 Output Schema:{self.RESET}")
+            print(json.dumps(operator_config['output'], indent=2))
 
         # Ask for confirmation
-        if operator_index + 1 < total_operators:
-            print(f"\n➡️  Continue to next operator ({operator_index + 2}/{total_operators})? (Y/r/n): ", end="")
-        else:
-            print(f"\n➡️  This is the last operator. Continue to pipeline conversion? (Y/r/n): ", end="")
+        print(f"\n{self.CYAN}Proceed? (Y/r/n):{self.RESET} ", end="")
 
         user_input = input().strip().lower()
 
         if user_input == 'r':
-            print("🔄 Regenerating this operator...")
+            print(f"{self.YELLOW}🔄 Regenerating operator...{self.RESET}")
             return 'regenerate'
         elif user_input == 'n':
-            print("❌ User aborted operator generation")
+            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
             return 'abort'
         else:
-            if operator_index + 1 < total_operators:
-                print("✅ Proceeding to next operator...")
-            else:
-                print("✅ Proceeding to pipeline conversion...")
+            print(f"{self.GREEN}✅ Proceeding...{self.RESET}")
             return 'continue'
 
     def display_pipeline_summary(
@@ -385,22 +412,22 @@ class AbstractStepUserInterface:
         if not (self.config.confirm or self.config.debug):
             return
 
-        print("\n" + "="*80)
-        print("📊 Abstract Pipeline Summary")
-        print("="*80)
+        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        print(f"{self.BOLD}{self.GREEN}📊 Pipeline Complete - Summary{self.RESET}")
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
 
-        print(f"\n📋 Query:")
-        print("-"*40)
+        print(f"\n{self.BLUE}📋 Query:{self.RESET}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
         print(query[:200] + "..." if len(query) > 200 else query)
-        print("-"*40)
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
-        print(f"\n🔧 Pipeline Operators ({len(operators)} total):")
-        print("-"*40)
+        print(f"\n{self.BLUE}🔧 Pipeline Operators ({len(operators)} total):{self.RESET}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
         for i, op in enumerate(operators):
             op_type = op.type if hasattr(op, 'type') else 'Unknown'
             op_name = op.name if hasattr(op, 'name') else f'op_{i}'
-            print(f"  {i+1}. {op_name} ({op_type})")
-        print("-"*40)
+            print(f"  {self.GREEN}{i+1}.{self.RESET} {op_name} ({self.BOLD}{op_type}{self.RESET})")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
     def _parse_operator_output_fields(self, operator: Dict[str, Any]) -> List[str]:
         """
@@ -493,21 +520,18 @@ class AbstractStepUserInterface:
             'continue' if user wants to continue despite errors
             'abort' if user wants to abort pipeline generation
         """
-        # ANSI color codes
-        ORANGE = '\033[33m'
-        RED = '\033[31m'
-        RESET = '\033[0m'
+        RED = '\033[91m'  # Bright red for errors
 
-        print("\n" + "="*80)
-        print(f"{ORANGE}⚠️  VALIDATION ERROR - Operator {operator_index + 1}/{total_operators}{RESET}")
-        print("="*80)
+        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        print(f"{self.YELLOW}⚠️  VALIDATION ERROR - Operator {operator_index + 1}{self.RESET}")
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
 
-        print(f"\n{ORANGE}Static validation found issues with the current pipeline:{RESET}")
-        print("-"*40)
+        print(f"\n{self.YELLOW}Validation found issues with this operator:{self.RESET}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
         # Display errors
         if errors:
-            print(f"\n{RED}Errors ({len(errors)}):{RESET}")
+            print(f"\n{RED}❌ Errors ({len(errors)}):{self.RESET}")
             for i, error in enumerate(errors, 1):
                 # Extract message from error dict if available
                 error_msg = error.get('message', str(error)) if isinstance(error, dict) else str(error)
@@ -515,34 +539,33 @@ class AbstractStepUserInterface:
 
         # Display warnings
         if warnings:
-            print(f"\n{ORANGE}Warnings ({len(warnings)}):{RESET}")
+            print(f"\n{self.YELLOW}⚠️  Warnings ({len(warnings)}):{self.RESET}")
             for i, warning in enumerate(warnings, 1):
                 # Extract message from warning dict if available
                 warning_msg = warning.get('message', str(warning)) if isinstance(warning, dict) else str(warning)
                 print(f"  {i}. {warning_msg}")
 
-        print("-"*40)
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
         # If not in confirm/debug mode, default to abort
         if not (self.config.confirm or self.config.debug):
-            print(f"\n{RED}❌ Aborting due to validation errors{RESET}")
+            print(f"\n{RED}❌ Aborting due to validation errors{self.RESET}")
             return 'abort'
 
         # Ask user for decision in confirm/debug mode
-        print(f"\n{ORANGE}The generated pipeline has validation errors.{RESET}")
-        print("This may cause issues during execution.")
-        print("\nOptions:")
+        print(f"\n{self.YELLOW}This operator has validation errors that may cause issues.{self.RESET}")
+        print(f"\n{self.CYAN}Options:{self.RESET}")
         print("  Y - Continue anyway (errors will be recorded)")
         print("  N - Abort pipeline generation")
-        print("\n➡️  Continue despite validation errors? (y/N): ", end="")
+        print(f"\n{self.CYAN}Continue despite errors? (y/N):{self.RESET} ", end="")
 
         user_input = input().strip().lower()
 
         if user_input == 'y':
-            print(f"{ORANGE}⚠️  Continuing with validation errors...{RESET}")
+            print(f"{self.YELLOW}⚠️  Continuing with validation errors...{self.RESET}")
             return 'continue'
         else:
-            print(f"{RED}❌ Pipeline generation aborted due to validation errors{RESET}")
+            print(f"{RED}❌ Aborted{self.RESET}")
             return 'abort'
 
     def confirm_repair_suggestion(
@@ -568,21 +591,15 @@ class AbstractStepUserInterface:
             'skip' - Skip the suggestion and continue with errors
             'abort' - Abort pipeline generation
         """
-        # ANSI color codes
-        CYAN = '\033[36m'
-        GREEN = '\033[32m'
-        ORANGE = '\033[33m'
-        RESET = '\033[0m'
-
-        print("\n" + "="*80)
-        print(f"{CYAN} REPAIR SUGGESTION - Operator {operator_index + 1}/{total_operators}{RESET}")
-        print("="*80)
+        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        print(f"{self.MAGENTA}{self.BOLD}🔧 REPAIR SUGGESTION - Operator {operator_index + 1}{self.RESET}")
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
 
         # Display error analysis
-        print(f"\n{CYAN}📊 Error Analysis:{RESET}")
-        print("-"*40)
+        print(f"\n{self.BLUE}📊 Error Analysis:{self.RESET}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
         print(repair_suggestion.get('analysis', 'N/A'))
-        print("-"*40)
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
         # Display suggested action
         action = repair_suggestion.get('action', 'UNKNOWN')
@@ -596,38 +613,38 @@ class AbstractStepUserInterface:
         }
 
         action_desc = action_descriptions.get(action, f'Unknown action: {action}')
-        print(f"\n{GREEN}💡 Suggested Action: {action}{RESET}")
+        print(f"\n{self.GREEN}💡 Suggested Action: {self.BOLD}{action}{self.RESET}")
         print(f"   {action_desc}")
 
         # Display new operator info if applicable
         if action in ['INSERT_BEFORE', 'INSERT_AFTER', 'REPLACE']:
             new_operator = repair_suggestion.get('new_operator', {})
             if new_operator:
-                print(f"\n{CYAN}🆕 New Operator Details:{RESET}")
+                print(f"\n{self.BLUE}🆕 New Operator:{self.RESET}")
                 print(f"   Type: {new_operator.get('type', 'N/A')}")
                 print(f"   Purpose: {new_operator.get('purpose', 'N/A')}")
 
         # Display rationale
-        print(f"\n{CYAN}📝 Rationale:{RESET}")
-        print("-"*40)
+        print(f"\n{self.BLUE}📝 Rationale:{self.RESET}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
         print(repair_suggestion.get('rationale', 'N/A'))
-        print("-"*40)
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
         # Get user decision
-        print(f"\n{GREEN}Options:{RESET}")
-        print("  A - Accept and apply this repair suggestion")
-        print("  S - Skip this suggestion and continue with validation errors")
-        print("  N - Abort pipeline generation")
-        print(f"\n➡️  Apply this repair? (A/s/n): ", end="")
+        print(f"\n{self.CYAN}Options:{self.RESET}")
+        print("  A - Accept and apply this repair")
+        print("  S - Skip and continue with errors")
+        print("  N - Abort generation")
+        print(f"\n{self.CYAN}Apply this repair? (A/s/n):{self.RESET} ", end="")
 
         user_input = input().strip().lower()
 
         if user_input == 'a' or user_input == '':
-            print(f"{GREEN}✅ Applying repair suggestion...{RESET}")
+            print(f"{self.GREEN}✅ Applying repair...{self.RESET}")
             return 'accept'
         elif user_input == 's':
-            print(f"{ORANGE}⚠️  Skipping repair, continuing with errors...{RESET}")
+            print(f"{self.YELLOW}⚠️  Skipping repair...{self.RESET}")
             return 'skip'
         else:
-            print(f"{ORANGE}❌ Pipeline generation aborted{RESET}")
+            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
             return 'abort'

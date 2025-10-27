@@ -85,8 +85,7 @@ A Map operator transforms EACH record independently using an LLM (1-to-1 mapping
 
 Context:
 - Query: $query
-- Current Task: $operator_purpose
-- Next Task: $next_operator_purpose
+- Operator Task: $operator_purpose
 - Available Fields (with types): $available_fields
 - Last Operator: $last_operator
 
@@ -130,8 +129,7 @@ A Filter operator keeps or discards records based on a condition.
 
 Context:
 - Query: $query
-- Current Task: $operator_purpose
-- Next Task: $next_operator_purpose
+- Operator Task: $operator_purpose
 - Available Fields (with types): $available_fields
 - Last Operator: $last_operator
 
@@ -185,8 +183,7 @@ A Reduce operator aggregates/groups records by a key field.
 
 Context:
 - Query: $query
-- Current Task: $operator_purpose
-- Next Task: $next_operator_purpose
+- Operator Task: $operator_purpose
 - Available Fields (with types): $available_fields
 - Last Operator: $last_operator
 
@@ -235,8 +232,7 @@ A Resolve operator deduplicates or standardizes entities using comparison and re
 
 Context:
 - Query: $query
-- Current Task: $operator_purpose
-- Next Task: $next_operator_purpose
+- Operator Task: $operator_purpose
 - Available Fields (with types): $available_fields
 - Last Operator: $last_operator
 
@@ -283,8 +279,7 @@ CRITICAL EXTRACT OPERATOR RULES:
 
 Context:
 - Query: $query
-- Current Task: $operator_purpose
-- Next Task: $next_operator_purpose
+- Operator Task: $operator_purpose
 - Available Fields (with types): $available_fields
 - Last Operator: $last_operator
 
@@ -350,8 +345,7 @@ An Unnest operator expands arrays or nested fields. The target of Unnest is to f
 
 Context:
 - Query: $query
-- Current Task: $operator_purpose
-- Next Task: $next_operator_purpose
+- Operator Task: $operator_purpose
 - Available Fields (with types): $available_fields
 - Last Operator: $last_operator
 
@@ -429,20 +423,18 @@ def get_abstract_operator_prompt(
     query: str,
     dataset_samples: str,
     last_operator: str,
-    available_fields: str,
-    next_operator_purpose: str
+    available_fields: str
 ) -> str:
     """
     Get the appropriate prompt based on operator type.
 
     Args:
         operator_type: Operator type (Map, Filter, etc.)
-        operator_purpose: Current operator purpose
+        operator_purpose: Operator task description
         query: User query
         dataset_samples: Dataset samples
         last_operator: Last operator details (JSON string) or "None"
         available_fields: Available fields (formatted string)
-        next_operator_purpose: Next operator purpose or "None"
 
     Returns:
         Complete prompt string
@@ -459,8 +451,7 @@ Generate a {operator_type} operator configuration in abstract layer format.
 
 Context:
 - Query: {query}
-- Current Task: {operator_purpose}
-- Next Task: {next_operator_purpose}
+- Operator Task: {operator_purpose}
 - Available Fields: {available_fields}
 - Last Operator: {last_operator}
 
@@ -477,7 +468,6 @@ Return valid JSON.
         operator_purpose=operator_purpose,
         available_fields=available_fields,
         last_operator=last_operator,
-        next_operator_purpose=next_operator_purpose,
         dataset_samples=dataset_samples
     )
 
@@ -514,11 +504,21 @@ Your Task:
 3. If COMPLETE: Return {"end": true, "reason": "explanation of why pipeline is complete"}
 4. If NOT COMPLETE: Select the TYPE and PURPOSE of the NEXT operator needed
 
-IMPORTANT: You are ONLY selecting the operator type and purpose in this step. The detailed configuration (prompt, input/output schemas, etc.) will be generated in the next step.
-
 For the next operator, provide:
 - type: The operator type to use (e.g., "Map", "Filter", "Reduce")
 - purpose: Brief description of what this operator will do in the pipeline
+
+Full Pipeline Examples: 
+
+Example 1: Mining Product Reviews for Polarizing Themes
+Query: "Identify polarizing themes in video game reviews that divide player opinions, resolve similar themes across reviews, and aggregate them to find common polarizing themes across different games"
+Dataset: Video game reviews with fields: app_name, concatenated_reviews
+
+Selected operators and reasoning:
+- Map: identify polarizing themes from concatenated reviews (analyzes each game's reviews to find divisive topics)
+- Unnest: expand polarizing_themes array into individual theme records (needed to process each theme separately)
+- Resolve: deduplicate and consolidate similar themes (merges themes that are essentially the same but worded differently)
+- Reduce: aggregate common themes across different games by theme (groups resolved themes to find patterns across games)
 
 Response Format:
 Either:

@@ -55,18 +55,9 @@ OPERATOR_SELECTION_RULES: List[Dict[str, Union[str, Dict, int]]] = [
         "rule": {
             "title": "Map and Extract have similar functions - do not use both together",
             "items": [
+                "Map: Multiple fields, analysis, transformation, structured data",
                 "Extract: SINGLE string field ONLY, cannot specify the output schema (verbatim text, no analysis/transformation)",
-                "Map: Multiple fields, analysis, transformation, structured data"
-            ]
-        },
-        "score": 1
-    },
-    {
-        "rule": {
-            "title": "Map and Filter operators:",
-            "items": [
-                "Map: Use for generating new fields or structuring data (transforms each record independently with analysis/transformation)",
-                "Filter: Use for selecting/filtering records based on conditions"
+                "Conclusion: Use Map unless you are exactly sure the needed information is continuous verbatim text and only ONE field is needed"
             ]
         },
         "score": 1

@@ -2,7 +2,7 @@
 Base System Support
 """
 
-from typing import Set, Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any
 from enum import Enum
 
 
@@ -17,16 +17,12 @@ ALL_ABSTRACT_OPERATORS = {
     'Index', 'Project', 'Search'
 }
 
-BASE_SYSTEM_SUPPORT: Dict[BaseSystem, Set[str]] = {
-    BaseSystem.DOCETL: {
-        'Map', 'Filter', 'Reduce', 'Resolve', 'Join',
-        'Rank', 'TopK', 'Extract', 'Cluster',
-        'Split', 'Gather', 'Unnest', 'Sample'
-    },
-}
-
-BASE_SYSTEM_UNSUPPORTED: Dict[BaseSystem, Set[str]] = {
-    BaseSystem.DOCETL: {'Index', 'Project', 'Search'}
+BASE_SYSTEM_SUPPORT: Dict[BaseSystem, List[str]] = {
+    BaseSystem.DOCETL: [
+        'Map', 'Filter', 'Reduce', 'Resolve', 'Unnest', 'Extract',
+        # 'Rank', 'Join', 'TopK', 'Cluster',
+        # 'Split', 'Gather', 'Sample'
+    ],
 }
 
 OPERATOR_DESCRIPTIONS = {
@@ -38,8 +34,8 @@ OPERATOR_DESCRIPTIONS = {
             'example': '{"content": "The new product exceeded expectations...", "title": "Product Review", "date": "2024-01-15"}'
         },
         'output_schema': {
-            'description': 'Original fields plus newly generated fields from analysis',
-            'example': '{"content": "...", "title": "...", "date": "...", "sentiment": "positive", "themes": ["quality", "value"], "summary": "Positive review highlighting product quality"}'
+            'description': 'Newly generated fields from extraction, transformation, analysis, classification, or any other operation that results in new information.',
+            'example': '{"sentiment": "positive", "themes": ["quality", "value"], "summary": "Positive review highlighting product quality"}'
         }
     },
     'Filter': {
@@ -116,14 +112,14 @@ OPERATOR_DESCRIPTIONS = {
     },
     'Extract': {
         'description': 'Verbatim extract span from text',
-        'core_function': 'Pulls exact text spans from documents without transformation. Only extracts verbatim content like quotes, findings, or specific sections. Cannot analyze or generate new information - use Map for transformations.',
+        'core_function': 'Pulls exact text spans from documents without transformation. Only extracts verbatim content like quotes, findings, or specific sections. Note that extract can only generate ONE field per input field. Use Map for transformations or multiple fields extraction from the same input field.',
         'input_schema': {
             'description': 'Documents containing text to extract from',
             'example': '{"research_paper": "Abstract: This study examines... Findings: We discovered that... Conclusion: The results suggest..."}'
         },
         'output_schema': {
-            'description': 'Extracted verbatim text spans as new fields',
-            'example': '{"key_findings": "We discovered that...", "conclusion": "The results suggest..."}'
+            'description': 'Extracted verbatim text spans as a new field',
+            'example': '{"key_findings": "We discovered that..."}'
         }
     },
     'Cluster': {
@@ -225,17 +221,17 @@ OPERATOR_DESCRIPTIONS = {
 }
 
 
-def get_supported_operators(base_system: BaseSystem) -> Set[str]:
+def get_supported_operators(base_system: BaseSystem) -> List[str]:
     """
-    Get the set of operators supported by the specified base system.
+    Get the list of operators supported by the specified base system.
 
     Args:
         base_system: Base system enum value
 
     Returns:
-        Set of supported operator types
+        List of supported operator types in order
     """
-    return BASE_SYSTEM_SUPPORT.get(base_system, set()).copy()
+    return BASE_SYSTEM_SUPPORT.get(base_system, []).copy()
 
 
 def is_operator_supported(operator_type: str, base_system: BaseSystem) -> bool:
@@ -250,20 +246,6 @@ def is_operator_supported(operator_type: str, base_system: BaseSystem) -> bool:
         True if supported, False otherwise
     """
     return operator_type in BASE_SYSTEM_SUPPORT.get(base_system, set())
-
-
-def get_unsupported_operators(base_system: BaseSystem) -> Set[str]:
-    """
-    Get the set of operators NOT supported by the specified base system.
-
-    Args:
-        base_system: Base system enum value
-
-    Returns:
-        Set of unsupported operator types
-    """
-    return BASE_SYSTEM_UNSUPPORTED.get(base_system, set()).copy()
-
 
 def check_pipeline_compatibility(
     operator_types: List[str],
@@ -295,7 +277,7 @@ def format_operators_with_descriptions(base_system: BaseSystem) -> str:
     Returns:
         Formatted string with detailed operator information
     """
-    supported = sorted(get_supported_operators(base_system))
+    supported = get_supported_operators(base_system)
     lines = []
 
     for op_type in supported:
@@ -332,24 +314,5 @@ def get_base_system_info(base_system: BaseSystem) -> Dict[str, any]:
     return {
         'name': base_system.value,
         'supported_operators': get_supported_operators(base_system),
-        'unsupported_operators': get_unsupported_operators(base_system),
         'operator_count': len(get_supported_operators(base_system))
     }
-
-
-def filter_unsupported_operators(
-    operators: List[Dict[str, str]],
-    base_system: BaseSystem
-) -> List[Dict[str, str]]:
-    """
-    Filter out unsupported operators from a list.
-
-    Args:
-        operators: List of operators, each containing a 'type' field
-        base_system: Base system enum value
-
-    Returns:
-        Filtered list of operators
-    """
-    supported = get_supported_operators(base_system)
-    return [op for op in operators if op.get('type') in supported]
