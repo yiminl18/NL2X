@@ -5,7 +5,8 @@ Abstract Layer Prompts
 from string import Template
 from ..abstract.support import BaseSystem, format_operators_with_descriptions
 from .instructions import get_operator_selection_rules
-from typing import List
+from typing import List, Dict, Any
+import json
 
 # =============================================================================
 # Step 1: Operator Selection
@@ -379,27 +380,26 @@ $dataset_samples
 Generate an Unnest operator with:
 
 1. **unnest_key**: The field name containing the array or nested structure to expand
-   - Must be a field that exists in available fields: $available_fields
+   - Must be a field that exists in available fields
    - Should be a Complex type field (e.g., "List[...]]", "Dict{...}")
-2. **recursive**: Whether to recursively unnest nested structures
-3. **depth**: Maximum depth for recursive unnesting
+2. **recursive**: Whether to recursively unnest nested structures. It's useful for flattening multi-level arrays or dicts such as "List[Dict{...}]".
 
 UNNEST LOGIC (Pseudo-Python):
 
 ```python
-def unnest(records, unnest_key, recursive=False, depth=None):
+def unnest(records, unnest_key, recursive=False, depth=0):
     \"\"\"
     Unnest operator internal logic:
     - If unnest_key is List: expands into multiple records (one per element)
     - If unnest_key is Dict: flattens fields to top level (same number of records)
-    - If recursive=True: applies unnesting recursively up to specified `depth`
+    - If recursive=True: applies unnesting recursively
     \"\"\"
     result = []
-
+    
     for record in records:
-        if unnest_key not in record:
-            result.append(record)
-            continue
+        if unnest_key not in record or (not recursive and depth > 0):
+            # If unnest_key not found, we can exit from recursion
+            return records
 
         value = record[unnest_key]
         base_record = {k: v for k, v in record.items() if k != unnest_key}
@@ -421,9 +421,9 @@ def unnest(records, unnest_key, recursive=False, depth=None):
         else:
             raise ValueError(f"Unnest only supports lists and dicts.")
 
-    # If recursive and depth > 1, apply unnest again
-    if recursive and depth and depth > 1:
-        result = unnest(result, unnest_key, recursive=True, depth=depth-1)
+    # If recursive, apply unnest again
+    if recursive:
+        result = unnest(result, unnest_key, recursive=True, depth=depth+1)
 
     return result
 ```
@@ -599,7 +599,7 @@ def get_next_operator_prompt(
 # =============================================================================
 
 OPERATOR_REPAIR_PROMPT = Template("""
-You are an AI assistant that analyzes validation errors in data processing pipelines and suggests repairs.
+You are an AI assistant that analyzes validation errors in data processing pipelines and suggests operator repairs.
 
 Query: $query
 
@@ -616,31 +616,37 @@ Available Fields Before This Operator:
 $available_fields
 
 Your Task:
-Analyze the validation errors and suggest ONE repair action to fix the pipeline.
+Analyze the validation errors and suggest a NEW operator to replace the failed one.
 
-Available Repair Actions:
-1. DELETE - Remove the problematic operator entirely
-2. INSERT_BEFORE - Insert a new operator BEFORE the failed operator to prepare the data
-3. REPLACE - Replace the failed operator with a different operator type
-4. MODIFY - Regenerate the same operator type with different configuration
+The new operator can be:
+- Same type with corrected configuration (if the operator type is correct)
+- Preprocessing operator (e.g., Unnest to flatten arrays, Map to transform data)
+- Completely different operator type (if the approach was fundamentally wrong)
+
+Choose whatever operator type best solves the validation errors.
 
 Response Format (JSON):
 {
-  "analysis": "Brief analysis of what went wrong and why",
-  "action": "DELETE|INSERT_BEFORE|REPLACE|MODIFY",
-  "rationale": "Explanation of why this action will fix the error",
+  "analysis": "What went wrong and why",
+  "rationale": "How your suggestion fixes the specific errors",
   "new_operator": {
     "type": "operator_type",
     "purpose": "what this operator will do"
-  }  // Only needed for INSERT_BEFORE, REPLACE
+  }
 }
 
 Guidelines:
 - Choose the SIMPLEST fix that addresses the validation error
-- If a field is missing, consider INSERT_BEFORE to create it or MODIFY to use correct fields
-- If operator type is wrong, use REPLACE
-- If operator is unnecessary, use DELETE
-- Provide clear rationale for your choice
+- If a field is missing, suggest a preprocessing operator (e.g., Unnest, Map) to create it
+- If the operator logic is wrong, regenerate it with correct configuration
+- If the operator type is fundamentally wrong, suggest a different operator type
+- Provide clear rationale explaining how your suggestion fixes the specific validation errors
+
+Examples:
+- Missing nested field → Unnest to flatten the structure
+- Wrong field type → Map to transform the data
+- Wrong operator logic → Same operator type with corrected prompts/schema
+- Wrong approach → Different operator type entirely
 """)
 
 
@@ -676,3 +682,65 @@ def get_operator_repair_prompt(
         available_fields=available_fields,
         operator_index=operator_index
     )
+
+
+# =============================================================================
+# Formatting Utilities
+# =============================================================================
+
+def format_pipeline_state(operators: List) -> str:
+    """Format operators list into readable pipeline state.
+
+    Args:
+        operators: List of operators
+
+    Returns:
+        Formatted pipeline state string
+    """
+    if not operators:
+        return "No operators yet (this will be the first operator)"
+
+    from ..abstract.convert.docetl import operator_to_dict
+
+    pipeline_state_parts = []
+    for i, op in enumerate(operators):
+        op_dict = operator_to_dict(op)
+        pipeline_state_parts.append(f"{i+1}. {op.type} ({op.name}):\n{json.dumps(op_dict, indent=2)}")
+    return "\n\n".join(pipeline_state_parts)
+
+
+def format_repair_context(repair_context: Dict[str, Any]) -> str:
+    """Format repair context into a readable section for prompts.
+
+    Args:
+        repair_context: Dictionary with failed_config, validation_errors, repair_rationale
+
+    Returns:
+        Formatted repair context string
+    """
+    if not repair_context:
+        return ""
+
+    repair_section = "\n\n" + "="*20 + "\n"
+    repair_section += "⚠️  PREVIOUS ATTEMPT FAILED - READ THIS CAREFULLY\n"
+
+    if 'failed_config' in repair_context:
+        repair_section += "FAILED OPERATOR CONFIGURATION:\n"
+        repair_section += json.dumps(repair_context['failed_config'], indent=2)
+        repair_section += "\n\n"
+
+    if 'validation_errors' in repair_context:
+        repair_section += "VALIDATION ERRORS:\n"
+        for i, error in enumerate(repair_context['validation_errors'], 1):
+            repair_section += f"{i}. {error}\n"
+        repair_section += "\n"
+
+    if 'repair_rationale' in repair_context:
+        repair_section += "REPAIR GUIDANCE:\n"
+        repair_section += repair_context['repair_rationale']
+        repair_section += "\n\n"
+
+    repair_section += "Please regenerate the operator configuration addressing the above errors.\n"
+    repair_section += "="*20
+
+    return repair_section

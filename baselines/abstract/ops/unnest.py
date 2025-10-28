@@ -24,13 +24,9 @@ class Unnest(Operator):
                 },
                 "recursive": {
                     "type": "boolean",
-                    "description": "Whether to recursively unnest nested structures"
-                },
-                "depth": {
-                    "type": "integer",
-                    "description": "Maximum depth for recursive unnesting"
+                    "description": "Whether to recursively unnest nested structures. It's useful when the structure is nested multiple levels such as List[Dict{...}]."
                 },
             },
-            "required": ["unnest_key", "recursive", "depth"]
+            "required": ["unnest_key", "recursive"]
         }
 

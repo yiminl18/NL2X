@@ -664,6 +664,59 @@ class AbstractStepUserInterface:
             print(f"{RED}❌ Aborted{self.RESET}")
             return 'abort'
 
+    def confirm_repair_analysis_before_llm(
+        self,
+        filled_operators: List[Any],
+        operator_index: int,
+        prompt: str
+    ) -> str:
+        """
+        Ask for confirmation before calling LLM for repair analysis.
+
+        Args:
+            filled_operators: List of successfully added operators
+            operator_index: Current operator index (0-based)
+            prompt: Repair analysis prompt (press 'p' to view)
+
+        Returns:
+            'continue' if user wants to continue
+            'regenerate' if user wants to regenerate (bypass cache)
+            'abort' if user wants to abort
+        """
+        if not (self.config.confirm or self.config.debug):
+            return 'continue'
+
+        # Display pipeline progress with failed operator highlighted
+        self.display_pipeline_progress(
+            filled_operators=filled_operators,
+            current_position=operator_index,
+            status="repair",
+            failed_position=operator_index
+        )
+
+        print(f"{self.CYAN}{self.BOLD}➡️  Operator {operator_index + 1} - 🔍 Repair Analysis{self.RESET}")
+        print(f"{self.CYAN}Continue? (Y/r/n/p - p=view prompt):{self.RESET} ", end="")
+
+        user_input = input().strip().lower()
+
+        # Handle 'p' to view full prompt
+        if user_input == 'p':
+            print(f"\n{self.CYAN}📝 Prompt:{self.RESET}")
+            print(f"{self.CYAN}{'-'*40}{self.RESET}")
+            print(prompt)
+            print(f"{self.CYAN}{'-'*40}{self.RESET}")
+            print(f"\n{self.CYAN}Continue? (Y/r/n):{self.RESET} ", end="")
+            user_input = input().strip().lower()
+
+        if user_input == 'r':
+            print(f"{self.YELLOW}🔄 Regenerating (bypassing cache)...{self.RESET}")
+            return 'regenerate'
+        elif user_input == 'n':
+            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
+            return 'abort'
+        else:
+            return 'continue'
+
     def confirm_repair_suggestion(
         self,
         filled_operators: List[Any],
@@ -707,28 +760,16 @@ class AbstractStepUserInterface:
         print(repair_suggestion.get('analysis', 'N/A'))
         print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
-        # Display suggested action
-        action = repair_suggestion.get('action', 'UNKNOWN')
-        action_descriptions = {
-            'DELETE': '🗑️  Delete the current operator',
-            'INSERT_BEFORE': '➕ Insert a new operator before this one',
-            'INSERT_AFTER': '➕ Insert a new operator after this one',
-            'REPLACE': '🔄 Replace the current operator with a different type',
-            'MODIFY': '✏️  Modify the current operator (regenerate)',
-            'CONTINUE': '➡️  Continue despite errors (warnings only)'
-        }
+        # Display suggested operator repair
+        print(f"\n{self.GREEN}💡 Repair Suggestion:{self.RESET}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
-        action_desc = action_descriptions.get(action, f'Unknown action: {action}')
-        print(f"\n{self.GREEN}💡 Suggested Action: {self.BOLD}{action}{self.RESET}")
-        print(f"   {action_desc}")
-
-        # Display new operator info if applicable
-        if action in ['INSERT_BEFORE', 'INSERT_AFTER', 'REPLACE']:
-            new_operator = repair_suggestion.get('new_operator', {})
-            if new_operator:
-                print(f"\n{self.BLUE}🆕 New Operator:{self.RESET}")
-                print(f"   Type: {new_operator.get('type', 'N/A')}")
-                print(f"   Purpose: {new_operator.get('purpose', 'N/A')}")
+        new_operator = repair_suggestion.get('new_operator', {})
+        if new_operator:
+            print(f"{self.BLUE}New Operator:{self.RESET}")
+            print(f"  Type: {new_operator.get('type', 'N/A')}")
+            print(f"  Purpose: {new_operator.get('purpose', 'N/A')}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
 
         # Display rationale
         print(f"\n{self.BLUE}📝 Rationale:{self.RESET}")
