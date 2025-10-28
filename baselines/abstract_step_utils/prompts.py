@@ -277,12 +277,19 @@ COMPLETE EXAMPLES:
 Example - Resolve duplicate person names:
 {
   "comparison_prompt": "Are {{ input1.name }} and {{ input2.name }} the same person? Compare their emails: {{ input1.email }} vs {{ input2.email }}. Return True if they are the same person, False otherwise.",
-  "resolution_prompt": "Merge these person records: {% for item in inputs %}Name: {{ item.name }}, Email: {{ item.email }}. {% endfor %}Provide: canonical_name: the most complete/correct name; canonical_email: the primary email address.",
+  "resolution_prompt": "Merge these person records: {% for item in inputs %}Name: {{ item.name }}, Email: {{ item.email }}. {% endfor %} Provide: canonical_name: the most complete/correct name; canonical_email: the primary email address.",
   "output": {
-    "canonical_name": "String",
-    "canonical_email": "String"
-  },
+    "canonical_name": "String"
+   },
 }
+
+IMPORTANT:
+- The output schema adds new fields with standardized values to all records identified as the same entity, overriding original values. CRITICAL: Only include fields that require standardization (e.g., canonical entity names, IDs). DO NOT include fields with legitimate variations that should be preserved, such as:
+  * Multiple valid email addresses for the same person
+  * Different functions/features of the same tool
+  * Context-specific descriptions
+  * Any other fields that are unique to each record or might vary significantly between records
+  Including such fields will cause SEVERE data loss by replacing all variations with a single value.
 """)
 
 ABSTRACT_EXTRACT_PROMPT = Template("""

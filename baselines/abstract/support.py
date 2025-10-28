@@ -71,7 +71,7 @@ OPERATOR_DESCRIPTIONS = {
         },
         'output_schema': {
             'description': 'Deduplicated records with standardized/merged information',
-            'example': '{"canonical_name": "John Smith", "all_emails": ["jsmith@example.com", "john.smith@example.com"]}'
+            'example': '[{"canonical_name": "John Smith", "email": "jsmith@example.com"}, {"canonical_name": "John Smith", "email": "john.smith@example.com"}]'
         }
     },
     'Join': {
