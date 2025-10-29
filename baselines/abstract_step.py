@@ -23,6 +23,7 @@ from . import register_baseline
 from .abstract_step_utils.ui import AbstractStepUserInterface
 from .abstract_step_utils.validation import validate_pipeline_static
 from .abstract_step_utils.file_manager import PipelineFileManager
+from .abstract_step_utils.context import UserContext
 from model.litellm_client import llm_call
 
 # Schema tracking utilities using base system
@@ -337,7 +338,8 @@ class AbstractStepBaseline(BaselineInterface):
         schema_tracker: BaseSystemSchemaTracker,
         initial_schema: Dict[str, str],
         attempt: int = 0,
-        bypass_cache: bool = False
+        bypass_cache: bool = False,
+        user_context_obj: Optional[UserContext] = None
     ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """
         Select the next operator type using JIT approach (selection only, not configuration).
@@ -349,6 +351,8 @@ class AbstractStepBaseline(BaselineInterface):
             schema_tracker: Current schema tracker
             initial_schema: Initial dataset schema
             attempt: Attempt number
+            bypass_cache: Whether to bypass cache
+            user_context_obj: Optional UserContext object for managing user constraints
 
         Returns:
             Tuple of (is_end, op_type, op_purpose, end_reason)
@@ -402,12 +406,8 @@ class AbstractStepBaseline(BaselineInterface):
             "required": ["end"]
         }
 
-        system_prompt = f"You are an AI assistant that builds data processing pipelines one operator at a time for {self.base_system.value}. Always respond with valid JSON matching the required schema."
-
-        messages = [{"role": "user", "content": prompt}]
-
         # Confirm with user in debug/confirm mode
-        user_choice = self.ui.confirm_step_before_llm(
+        user_choice, user_constraints = self.ui.confirm_step_before_llm(
             filled_operators=current_operators,
             step_name=f"Operator {len(current_operators) + 1}",
             iteration=len(current_operators) + 1,
@@ -417,6 +417,42 @@ class AbstractStepBaseline(BaselineInterface):
 
         if user_choice == 'abort':
             raise ValueError(f"User aborted at operator {len(current_operators) + 1}")
+
+        # Add user constraints to context if provided
+        operator_position = len(current_operators)
+        if user_context_obj and user_constraints:
+            for constraint in user_constraints:
+                user_context_obj.add_for_operator(operator_position, constraint)
+
+        # Build system prompt with constraints (if any)
+        base_system_prompt = f"You are an AI assistant that builds data processing pipelines one operator at a time for {self.base_system.value}."
+
+        if user_context_obj and user_context_obj.has_constraints(operator_position):
+            # Get constraints for this operator selection
+            constraints = user_context_obj.get_for_operator(operator_position)
+            constraint_text = "\n".join(f"   - {c}" for c in constraints)
+
+            system_prompt = f"""{base_system_prompt}
+
+CRITICAL: The user has specified MANDATORY constraints for operator selection:
+
+{constraint_text}
+
+You MUST consider these constraints when selecting the operator type and purpose.
+These requirements override any default behavior or standard practices.
+
+Always respond with valid JSON matching the required schema."""
+        else:
+            system_prompt = f"{base_system_prompt} Always respond with valid JSON matching the required schema."
+
+        # Append user context to prompt as reminder
+        final_prompt = prompt
+        if user_context_obj:
+            context_section = user_context_obj.format_for_prompt(operator_position)
+            if context_section:
+                final_prompt = prompt + context_section
+
+        messages = [{"role": "user", "content": final_prompt}]
 
         # Call LLM (bypass cache if requested or after repair)
         should_bypass_cache = bypass_cache or (user_choice == 'regenerate')
@@ -543,7 +579,8 @@ class AbstractStepBaseline(BaselineInterface):
         operator_index: int,
         current_operators: List[Operator],
         op_purpose: str,
-        bypass_cache: bool = False
+        bypass_cache: bool = False,
+        user_context_obj: Optional['UserContext'] = None
     ) -> Dict[str, Any]:
         """Call LLM to get operator configuration.
 
@@ -554,18 +591,16 @@ class AbstractStepBaseline(BaselineInterface):
             current_operators: Current operators list
             op_purpose: Operator purpose
             bypass_cache: Whether to bypass cache
+            user_context_obj: Optional UserContext object for managing constraints
 
         Returns:
             LLM response as dictionary
         """
         # Get operator-specific schema
         parameters = self._get_abstract_operator_schema(op_type)
-        system_prompt = f"You are an AI assistant that generates abstract layer {op_type} operator configurations. Always respond with valid JSON matching the required schema."
-
-        messages = [{"role": "user", "content": prompt}]
 
         # Confirm with user in debug/confirm mode
-        user_choice = self.ui.confirm_operator_before_llm(
+        user_choice, user_constraints = self.ui.confirm_operator_before_llm(
             filled_operators=current_operators,
             operator_index=operator_index,
             total_operators=operator_index + 1,
@@ -574,6 +609,41 @@ class AbstractStepBaseline(BaselineInterface):
             prompt=prompt,
             is_cached=False
         )
+
+        # Add user constraints to context if provided
+        if user_context_obj and user_constraints:
+            for constraint in user_constraints:
+                user_context_obj.add_for_operator(operator_index, constraint)
+
+        # Build system prompt with constraints (if any)
+        base_system_prompt = f"You are an AI assistant that generates abstract layer {op_type} operator configurations."
+
+        if user_context_obj and user_context_obj.has_constraints(operator_index):
+            # Get constraints for this operator
+            constraints = user_context_obj.get_for_operator(operator_index)
+            constraint_text = "\n".join(f"   - {c}" for c in constraints)
+
+            system_prompt = f"""{base_system_prompt}
+
+CRITICAL: The user has specified MANDATORY constraints for this operator:
+
+{constraint_text}
+
+You MUST ensure the generated configuration strictly adheres to ALL these constraints.
+These requirements override any default behavior or standard practices.
+
+Always respond with valid JSON matching the required schema."""
+        else:
+            system_prompt = f"{base_system_prompt} Always respond with valid JSON matching the required schema."
+
+        # Append user context to prompt as reminder
+        final_prompt = prompt
+        if user_context_obj:
+            context_section = user_context_obj.format_for_prompt(operator_index)
+            if context_section:
+                final_prompt = prompt + context_section
+
+        messages = [{"role": "user", "content": final_prompt}]
 
         if user_choice == 'abort':
             raise ValueError(f"User aborted at operator {operator_index + 1}")
@@ -665,7 +735,8 @@ class AbstractStepBaseline(BaselineInterface):
         operator_index: int,
         attempt: int = 0,
         repair_context: Optional[Dict[str, Any]] = None,
-        bypass_cache: bool = False
+        bypass_cache: bool = False,
+        user_context_obj: Optional[UserContext] = None
     ) -> Operator:
         """
         Fill in complete configuration for a selected operator.
@@ -683,6 +754,7 @@ class AbstractStepBaseline(BaselineInterface):
             repair_context: Optional repair context from previous failed attempt
                            (contains failed_config, validation_errors, repair_rationale)
             bypass_cache: Whether to bypass cache
+            user_context_obj: Optional UserContext object for managing user constraints
 
         Returns:
             Fully configured Operator object
@@ -709,7 +781,8 @@ class AbstractStepBaseline(BaselineInterface):
             operator_index=operator_index,
             current_operators=current_operators,
             op_purpose=op_purpose,
-            bypass_cache=bypass_cache
+            bypass_cache=bypass_cache,
+            user_context_obj=user_context_obj
         )
 
         # Clean escaped characters from LLM response
@@ -747,8 +820,47 @@ class AbstractStepBaseline(BaselineInterface):
                 operator_index=operator_index,
                 attempt=attempt,
                 repair_context=None,
-                bypass_cache=True
+                bypass_cache=True,
+                user_context_obj=user_context_obj
             )
+        elif user_choice == 'edit':
+            # Allow user to edit configuration
+            edited_config = self.ui.edit_operator_config(
+                operator_config=llm_response,
+                operator_type=op_type,
+                operator_index=operator_index
+            )
+
+            # Recreate operator with edited config
+            abstract_operator = self._create_operator_instance(
+                llm_response=edited_config,
+                op_type=op_type,
+                operator_index=operator_index,
+                op_purpose=op_purpose
+            )
+
+            # Ask user if they want to continue or edit again
+            print(f"\n{self.ui.CYAN}Proceed with edited configuration? (Y/e/n):{self.ui.RESET} ", end="")
+            confirm = input().strip().lower()
+
+            if confirm == 'n':
+                raise ValueError(f"User aborted after editing operator {operator_index + 1}")
+            elif confirm == 'e':
+                # Edit again (recursive call with edited config as starting point)
+                return self._fill_operator_details(
+                    op_type=op_type,
+                    op_purpose=op_purpose,
+                    query=query,
+                    dataset_samples=dataset_samples,
+                    current_operators=current_operators,
+                    schema_tracker=schema_tracker,
+                    initial_schema=initial_schema,
+                    operator_index=operator_index,
+                    attempt=attempt,
+                    repair_context=None,
+                    bypass_cache=True,
+                    user_context_obj=user_context_obj
+                )
 
         return abstract_operator
 
@@ -860,7 +972,8 @@ class AbstractStepBaseline(BaselineInterface):
         filled_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
         initial_schema: Dict[str, str],
-        attempt: int = 0
+        attempt: int = 0,
+        user_context_obj: Optional[UserContext] = None
     ) -> Tuple[bool, Optional[Operator], Optional[str]]:
         """Generate the next operator, either from pending state or by selection.
 
@@ -872,6 +985,7 @@ class AbstractStepBaseline(BaselineInterface):
             schema_tracker: Schema tracker
             initial_schema: Initial dataset schema
             attempt: Attempt number
+            user_context_obj: Optional UserContext object for managing user constraints
 
         Returns:
             Tuple of (is_end, operator, end_reason)
@@ -909,7 +1023,8 @@ class AbstractStepBaseline(BaselineInterface):
                 operator_index=state.current_position,
                 attempt=attempt,
                 repair_context=repair_context_dict,
-                bypass_cache=state.bypass_cache_next
+                bypass_cache=state.bypass_cache_next,
+                user_context_obj=user_context_obj
             )
 
             return False, operator, None
@@ -922,7 +1037,8 @@ class AbstractStepBaseline(BaselineInterface):
             schema_tracker=schema_tracker,
             initial_schema=initial_schema,
             attempt=attempt,
-            bypass_cache=state.bypass_cache_next
+            bypass_cache=state.bypass_cache_next,
+            user_context_obj=user_context_obj
         )
 
         if is_end:
@@ -942,7 +1058,8 @@ class AbstractStepBaseline(BaselineInterface):
             operator_index=state.current_position,
             attempt=attempt,
             repair_context=None,
-            bypass_cache=state.bypass_cache_next
+            bypass_cache=state.bypass_cache_next,
+            user_context_obj=user_context_obj
         )
         return False, operator, None
 
@@ -1141,6 +1258,9 @@ class AbstractStepBaseline(BaselineInterface):
         max_operators = 20  # Safety limit
         max_repair_attempts = 3  # Max repair attempts per operator
 
+        # Initialize user context for interactive constraints
+        user_context = UserContext()
+
         while state.current_position < max_operators:
             if self.config.verbose:
                 self.logger.info(f"Position {state.current_position}: Generating operator {state.current_position + 1}...")
@@ -1153,7 +1273,8 @@ class AbstractStepBaseline(BaselineInterface):
                 filled_operators=filled_operators,
                 schema_tracker=schema_tracker,
                 initial_schema=dataset_schema,
-                attempt=attempt
+                attempt=attempt,
+                user_context_obj=user_context
             )
 
             # Check if pipeline is complete

@@ -95,7 +95,7 @@ class AbstractStepUserInterface:
         pipeline_str = "".join(slots)
         print(f"\n{self.CYAN}Pipeline:{self.RESET} {pipeline_str}\n")
 
-    def confirm_step_before_llm(self, filled_operators: List[Any], step_name: str, iteration: int, step_type: str, step_prompt: str = "") -> str:
+    def confirm_step_before_llm(self, filled_operators: List[Any], step_name: str, iteration: int, step_type: str, step_prompt: str = "") -> tuple[str, List[str]]:
         """
         Ask for confirmation before calling LLM for a step in JIT pipeline generation.
 
@@ -107,51 +107,25 @@ class AbstractStepUserInterface:
             step_prompt: Prompt content (press 'p' to view)
 
         Returns:
-            'continue' if user wants to continue
-            'regenerate' if user wants to regenerate (bypass cache)
-            'abort' if user wants to abort
+            Tuple of (action, context):
+            - action: 'continue', 'regenerate', or 'abort'
+            - context: List of user-provided context/constraints (empty if none)
         """
-        if not (self.config.confirm or self.config.debug):
-            return 'continue'
-
-        # Display pipeline progress
-        self.display_pipeline_progress(
-            filled_operators=filled_operators,
-            current_position=iteration - 1,  # Convert 1-based to 0-based
-            status="generating"
-        )
-
-        # Two-step JIT style prompt
         step_emoji = "🎯" if step_type == "selection" else "⚙️"
         step_label = "Select" if step_type == "selection" else "Configure"
+        title = f"Operator {iteration} - {step_emoji} {step_label}: {self.BLUE}{step_name}{self.RESET}"
 
-        print(f"{self.CYAN}{self.BOLD}➡️  Operator {iteration} - {step_emoji} {step_label}:{self.RESET} {self.BLUE}{step_name}{self.RESET}")
-
-        # Show 'p' option if prompt exists
-        if step_prompt:
-            print(f"{self.CYAN}Continue? (Y/r/n/p - p=view prompt):{self.RESET} ", end="")
-        else:
-            print(f"{self.CYAN}Continue? (Y/r/n):{self.RESET} ", end="")
-
-        user_input = input().strip().lower()
-
-        # Handle 'p' to view full prompt
-        if user_input == 'p' and step_prompt:
-            print(f"\n{self.CYAN}📝 Prompt:{self.RESET}")
-            print(f"{self.CYAN}{'-'*40}{self.RESET}")
-            print(step_prompt)
-            print(f"{self.CYAN}{'-'*40}{self.RESET}")
-            print(f"\n{self.CYAN}Continue? (Y/r/n):{self.RESET} ", end="")
-            user_input = input().strip().lower()
-
-        if user_input == 'r':
-            print(f"{self.YELLOW}🔄 Regenerating (bypassing cache)...{self.RESET}")
-            return 'regenerate'
-        elif user_input == 'n':
-            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
-            return 'abort'
-        else:
-            return 'continue'
+        return self._confirm_before_llm_base(
+            filled_operators=filled_operators,
+            operator_index=iteration - 1,  # Convert 1-based to 0-based
+            title=title,
+            details={},  # No details for step selection
+            prompt=step_prompt,
+            allow_context=True,
+            allow_regenerate=True,
+            operator_type="TBD" if step_type == "selection" else "Selected",
+            operator_purpose=f"{step_label} phase"
+        )
 
     def confirm_step_execution(self, step_name: str, result: Any, query: str, attempt: int) -> bool:
         """
@@ -321,6 +295,161 @@ class AbstractStepUserInterface:
 
         return "Next step"
 
+    def _display_prompt(self, prompt: str) -> None:
+        """Display formatted prompt to user."""
+        print(f"\n{self.CYAN}📝 Prompt:{self.RESET}")
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
+        print(prompt)
+        print(f"{self.CYAN}{'-'*40}{self.RESET}")
+
+    def _process_confirmation_choice(
+        self,
+        user_input: str,
+        prompt: str,
+        allow_context: bool,
+        allow_regenerate: bool,
+        operator_type: str,
+        operator_purpose: str,
+        current_position: int
+    ) -> tuple[str, List[str]]:
+        """
+        Process user's confirmation choice and return action + context.
+
+        Args:
+            user_input: Initial user input
+            prompt: Full prompt to display if requested
+            allow_context: Whether 'c' option is available
+            allow_regenerate: Whether 'r' option is available
+            operator_type: Type of operator (for context)
+            operator_purpose: Purpose of operator (for context)
+            current_position: Position in pipeline (for context)
+
+        Returns:
+            Tuple of (action, context_list)
+        """
+        user_context = []
+
+        # Handle 'c' to add context
+        if user_input == 'c' and allow_context:
+            user_context = self.prompt_for_context(
+                operator_type=operator_type,
+                operator_purpose=operator_purpose,
+                current_position=current_position
+            )
+            # After adding context, ask what to do next
+            print(f"\n{self.CYAN}Proceed? (Y/r/p/n):{self.RESET} ", end="")
+            user_input = input().strip().lower()
+
+        # Handle 'p' to view full prompt
+        if user_input == 'p' and prompt:
+            self._display_prompt(prompt)
+            # Re-prompt after showing full prompt
+            print(f"\n{self.CYAN}Proceed? (Y/r/n):{self.RESET} ", end="")
+            user_input = input().strip().lower()
+
+        # Handle final decision
+        if user_input == 'r':
+            if allow_regenerate:
+                print(f"{self.YELLOW}🔄 Regenerating (bypassing cache)...{self.RESET}")
+                return 'regenerate', user_context
+            else:
+                # If regenerate not allowed, default to continue
+                print(f"{self.GREEN}✅ Continuing...{self.RESET}")
+                return 'continue', user_context
+        elif user_input == 'n':
+            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
+            return 'abort', user_context
+        else:
+            return 'continue', user_context
+
+    def _confirm_before_llm_base(
+        self,
+        filled_operators: List[Any],
+        operator_index: int,
+        title: str,
+        details: Dict[str, str],
+        prompt: str,
+        allow_context: bool,
+        allow_regenerate: bool,
+        operator_type: str = "",
+        operator_purpose: str = "",
+        cache_status: str = ""
+    ) -> tuple[str, List[str]]:
+        """
+        Base confirmation method for LLM calls - extracts common confirmation flow.
+
+        Args:
+            filled_operators: List of successfully added operators
+            operator_index: Current operator index (0-based)
+            title: Title to display (e.g., "Operator 1 - 🎯 Select")
+            details: Dict of detail lines to display (e.g., {"Type": "Map", "Purpose": "..."})
+            prompt: Full prompt for LLM (shown with 'p')
+            allow_context: Whether to show 'C' option
+            allow_regenerate: Whether to show 'R' option
+            operator_type: Type for context collection
+            operator_purpose: Purpose for context collection
+            cache_status: Cache status message (e.g., "(CACHED)" or "")
+
+        Returns:
+            Tuple of (action, context):
+            - action: 'continue', 'regenerate', or 'abort'
+            - context: List of user-provided context/constraints
+        """
+        if not (self.config.confirm or self.config.debug):
+            return 'continue', []
+
+        # Display pipeline progress
+        self.display_pipeline_progress(
+            filled_operators=filled_operators,
+            current_position=operator_index,
+            status="generating"
+        )
+
+        # Display title
+        print(f"{self.CYAN}{self.BOLD}➡️  {title}{self.RESET}{cache_status}")
+
+        # Display details if provided
+        if details:
+            for label, value in details.items():
+                print(f"{self.BLUE}{label}:{self.RESET} {value}")
+            print(f"{self.CYAN}{'-'*40}{self.RESET}")
+
+        # Show options
+        print(f"\n{self.CYAN}Options:{self.RESET}")
+        print("  Y - Continue")
+        if allow_regenerate:
+            print("  R - Regenerate (bypass cache)")
+        if allow_context:
+            print("  C - Add context/constraints")
+        if prompt:
+            print("  P - View full prompt")
+        print("  N - Abort")
+
+        # Build choice prompt
+        choices = ['Y']
+        if allow_regenerate:
+            choices.append('r')
+        if allow_context:
+            choices.append('c')
+        if prompt:
+            choices.append('p')
+        choices.append('n')
+        choice_str = '/'.join(choices)
+        print(f"\n{self.CYAN}Choice ({choice_str}):{self.RESET} ", end="")
+
+        user_input = input().strip().lower()
+
+        # Process choice using helper
+        return self._process_confirmation_choice(
+            user_input=user_input,
+            prompt=prompt,
+            allow_context=allow_context,
+            allow_regenerate=allow_regenerate,
+            operator_type=operator_type or "TBD",
+            operator_purpose=operator_purpose or "TBD",
+            current_position=operator_index
+        )
+
     def confirm_operator_before_llm(
         self,
         filled_operators: List[Any],
@@ -330,7 +459,7 @@ class AbstractStepUserInterface:
         operator_purpose: str,
         prompt: str,
         is_cached: bool = False,
-    ) -> str:
+    ) -> tuple[str, List[str]]:
         """
         Ask for confirmation before generating a single operator.
 
@@ -344,71 +473,55 @@ class AbstractStepUserInterface:
             is_cached: Whether the prompt is already cached
 
         Returns:
-            'continue' if user wants to continue
-            'regenerate' if user wants to regenerate (bypass cache)
-            'abort' if user wants to abort
+            Tuple of (action, context):
+            - action: 'continue', 'regenerate', or 'abort'
+            - context: List of user-provided context/constraints (empty if none)
         """
         if not (self.config.confirm or self.config.debug):
-            return 'continue'
+            return 'continue', []
 
-        # Display pipeline progress
+        # Display header
         self.display_pipeline_progress(
             filled_operators=filled_operators,
             current_position=operator_index,
             status="generating"
         )
-
         print(f"{self.CYAN}{'='*80}{self.RESET}")
         mode_text = f"{self.BLUE}[DEBUG MODE]{self.RESET}" if self.config.debug else f"{self.BLUE}[CONFIRM MODE]{self.RESET}"
         cache_text = f" {self.YELLOW}(CACHED){self.RESET}" if is_cached else ""
         print(f"{mode_text} {self.BOLD}Operator {operator_index + 1} - Filling Details{self.RESET}{cache_text}")
         print(f"{self.CYAN}{'='*80}{self.RESET}")
 
-        print(f"\n{self.BLUE}📋 Type:{self.RESET} {operator_type}")
-        print(f"{self.BLUE}📋 Purpose:{self.RESET} {operator_purpose}")
-        print(f"{self.CYAN}{'-'*40}{self.RESET}")
-
-        # Show cache status
+        # Show cache status message
         if is_cached:
             print(f"\n{self.YELLOW}💾 This prompt is CACHED. Type 'r' to bypass cache.{self.RESET}")
-            print(f"{self.CYAN}Proceed? (Y/r/n/p - p=view prompt):{self.RESET} ", end="")
-        else:
-            print(f"\n{self.CYAN}Proceed? (Y/n/p - p=view prompt):{self.RESET} ", end="")
 
-        user_input = input().strip().lower()
+        # Use base method with details
+        action, context = self._confirm_before_llm_base(
+            filled_operators=filled_operators,
+            operator_index=operator_index,
+            title="",  # Already displayed above
+            details={"📋 Type": operator_type, "📋 Purpose": operator_purpose},
+            prompt=prompt,
+            allow_context=True,
+            allow_regenerate=is_cached,  # Only allow regenerate if cached
+            operator_type=operator_type,
+            operator_purpose=operator_purpose,
+            cache_status=""
+        )
 
-        # Handle 'p' to view full prompt
-        if user_input == 'p':
-            print(f"\n{self.CYAN}📝 Prompt:{self.RESET}")
-            print(f"{self.CYAN}{'-'*40}{self.RESET}")
-            print(prompt)
-            print(f"{self.CYAN}{'-'*40}{self.RESET}")
-
-            # Re-prompt after showing full prompt
-            if is_cached:
-                print(f"\n{self.CYAN}Proceed? (Y/r/n):{self.RESET} ", end="")
-            else:
-                print(f"\n{self.CYAN}Proceed? (Y/n):{self.RESET} ", end="")
-            user_input = input().strip().lower()
-
-        # Handle other inputs
-        if user_input == 'r':
-            if is_cached:
-                print(f"{self.YELLOW}🔄 Regenerating (bypassing cache)...{self.RESET}")
-                return 'regenerate'
-            else:
-                # If not cached and user types 'r', treat as invalid and default to continue
-                print(f"{self.GREEN}✅ Generating operator...{self.RESET}")
-                return 'continue'
-        elif user_input == 'n':
-            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
-            return 'abort'
-        else:  # Default to 'y' or empty input
+        # Custom message based on action and cache status
+        if action == 'continue':
             if is_cached:
                 print(f"{self.GREEN}✅ Using cached response...{self.RESET}")
             else:
                 print(f"{self.GREEN}✅ Generating operator...{self.RESET}")
-            return 'continue'
+        elif action == 'regenerate' and not is_cached:
+            # If user tried to regenerate but it's not cached, default to continue
+            print(f"{self.GREEN}✅ Generating operator...{self.RESET}")
+            action = 'continue'
+
+        return action, context
 
     def display_generated_operator(
         self,
@@ -431,6 +544,7 @@ class AbstractStepUserInterface:
         Returns:
             'continue' to proceed to next operator
             'regenerate' to regenerate this operator
+            'edit' to edit the operator configuration
             'abort' to stop generation
         """
         if not (self.config.confirm or self.config.debug):
@@ -469,13 +583,21 @@ class AbstractStepUserInterface:
             print(json.dumps(operator_config['output'], indent=2))
 
         # Ask for confirmation
-        print(f"\n{self.CYAN}Proceed? (Y/r/n):{self.RESET} ", end="")
+        print(f"\n{self.CYAN}Options:{self.RESET}")
+        print("  Y - Continue (accept this operator)")
+        print("  R - Regenerate (with higher temperature)")
+        print("  E - Edit configuration")
+        print("  N - Abort")
+        print(f"\n{self.CYAN}Choice (Y/r/e/n):{self.RESET} ", end="")
 
         user_input = input().strip().lower()
 
         if user_input == 'r':
             print(f"{self.YELLOW}🔄 Regenerating operator...{self.RESET}")
             return 'regenerate'
+        elif user_input == 'e':
+            print(f"{self.BLUE}📝 Opening editor...{self.RESET}")
+            return 'edit'
         elif user_input == 'n':
             print(f"{self.YELLOW}❌ Aborted{self.RESET}")
             return 'abort'
@@ -694,28 +816,21 @@ class AbstractStepUserInterface:
             failed_position=operator_index
         )
 
-        print(f"{self.CYAN}{self.BOLD}➡️  Operator {operator_index + 1} - 🔍 Repair Analysis{self.RESET}")
-        print(f"{self.CYAN}Continue? (Y/r/n/p - p=view prompt):{self.RESET} ", end="")
+        # Use base method for confirmation (without context support)
+        title = f"Operator {operator_index + 1} - 🔍 Repair Analysis"
+        action, _ = self._confirm_before_llm_base(
+            filled_operators=filled_operators,
+            operator_index=operator_index,
+            title=title,
+            details={},
+            prompt=prompt,
+            allow_context=False,  # No context for repair analysis
+            allow_regenerate=True,
+            operator_type="Repair",
+            operator_purpose="Analysis"
+        )
 
-        user_input = input().strip().lower()
-
-        # Handle 'p' to view full prompt
-        if user_input == 'p':
-            print(f"\n{self.CYAN}📝 Prompt:{self.RESET}")
-            print(f"{self.CYAN}{'-'*40}{self.RESET}")
-            print(prompt)
-            print(f"{self.CYAN}{'-'*40}{self.RESET}")
-            print(f"\n{self.CYAN}Continue? (Y/r/n):{self.RESET} ", end="")
-            user_input = input().strip().lower()
-
-        if user_input == 'r':
-            print(f"{self.YELLOW}🔄 Regenerating (bypassing cache)...{self.RESET}")
-            return 'regenerate'
-        elif user_input == 'n':
-            print(f"{self.YELLOW}❌ Aborted{self.RESET}")
-            return 'abort'
-        else:
-            return 'continue'
+        return action
 
     def confirm_repair_suggestion(
         self,
@@ -795,3 +910,159 @@ class AbstractStepUserInterface:
         else:
             print(f"{self.YELLOW}❌ Aborted{self.RESET}")
             return 'abort'
+
+    def edit_operator_config(
+        self,
+        operator_config: Dict[str, Any],
+        operator_type: str,
+        operator_index: int
+    ) -> Dict[str, Any]:
+        """
+        Open operator configuration in external editor for user modification.
+
+        Args:
+            operator_config: Current operator configuration
+            operator_type: Type of the operator (Map, Filter, etc.)
+            operator_index: Position in pipeline
+
+        Returns:
+            Modified operator configuration, or original if editing failed/cancelled
+        """
+        import os
+        import tempfile
+        import subprocess
+
+        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        print(f"{self.BLUE}📝 EDIT OPERATOR {operator_index + 1} - {operator_type}{self.RESET}")
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
+
+        # Create temporary file with current configuration
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix=f'_op{operator_index}_{operator_type}.json',
+            delete=False,
+            prefix='nl2x_edit_'
+        ) as f:
+            json.dump(operator_config, f, indent=2)
+            temp_file = f.name
+
+        print(f"\n{self.BLUE}Configuration saved to:{self.RESET} {temp_file}")
+
+        # Determine editor
+        editor = os.environ.get('EDITOR')
+        if not editor:
+            # Try common editors
+            for candidate in ['vim', 'nano', 'vi']:
+                if subprocess.run(['which', candidate], capture_output=True).returncode == 0:
+                    editor = candidate
+                    break
+
+        if not editor:
+            print(f"{self.RED}❌ No editor found. Set $EDITOR environment variable.{self.RESET}")
+            print(f"{self.YELLOW}Available editors: vim, nano, vi{self.RESET}")
+            os.unlink(temp_file)
+            return operator_config
+
+        print(f"{self.BLUE}Opening editor:{self.RESET} {editor}")
+        print(f"{self.YELLOW}💡 Tip: Edit the JSON configuration, then save and exit.{self.RESET}\n")
+
+        # Open editor
+        try:
+            subprocess.call([editor, temp_file])
+        except Exception as e:
+            print(f"{self.RED}❌ Editor failed: {e}{self.RESET}")
+            os.unlink(temp_file)
+            return operator_config
+
+        # Read modified configuration
+        try:
+            with open(temp_file, 'r') as f:
+                edited_config = json.load(f)
+            print(f"\n{self.GREEN}✅ Configuration loaded successfully{self.RESET}")
+        except json.JSONDecodeError as e:
+            print(f"\n{self.RED}❌ JSON parsing error:{self.RESET} {e}")
+            print(f"{self.YELLOW}Reverting to original configuration.{self.RESET}")
+            os.unlink(temp_file)
+            return operator_config
+        except Exception as e:
+            print(f"\n{self.RED}❌ Error reading file:{self.RESET} {e}")
+            os.unlink(temp_file)
+            return operator_config
+
+        # Clean up
+        os.unlink(temp_file)
+
+        # Show diff summary
+        changes = []
+        for key in set(list(operator_config.keys()) + list(edited_config.keys())):
+            if key not in operator_config:
+                changes.append(f"  + Added: {key}")
+            elif key not in edited_config:
+                changes.append(f"  - Removed: {key}")
+            elif operator_config[key] != edited_config[key]:
+                changes.append(f"  ~ Modified: {key}")
+
+        if changes:
+            print(f"\n{self.BLUE}📝 Changes detected:{self.RESET}")
+            for change in changes[:5]:  # Show first 5 changes
+                print(change)
+            if len(changes) > 5:
+                print(f"  ... and {len(changes) - 5} more changes")
+        else:
+            print(f"\n{self.YELLOW}No changes detected.{self.RESET}")
+
+        return edited_config
+
+    def prompt_for_context(
+        self,
+        operator_type: str,
+        operator_purpose: str,
+        current_position: int
+    ) -> List[str]:
+        """
+        Prompt user for additional context/constraints for operator generation.
+
+        Args:
+            operator_type: Type of operator to be generated
+            operator_purpose: Purpose of the operator
+            current_position: Position in pipeline
+
+        Returns:
+            List of user-provided constraints
+        """
+        print(f"\n{self.CYAN}{'='*80}{self.RESET}")
+        print(f"{self.BLUE}💬 ADD CONTEXT FOR OPERATOR {current_position + 1}{self.RESET}")
+        print(f"{self.CYAN}{'='*80}{self.RESET}")
+
+        print(f"\n{self.BLUE}Operator Details:{self.RESET}")
+        print(f"  Type: {operator_type}")
+        print(f"  Purpose: {operator_purpose}")
+
+        print(f"\n{self.YELLOW}You can provide additional constraints or guidance:{self.RESET}")
+        print(f"{self.CYAN}Examples:{self.RESET}")
+        print("  • Use only fields from section X")
+        print("  • Avoid using regex patterns")
+        print("  • Generate concise prompts")
+        print("  • Focus on extracting specific information")
+        print("  • Limit output to 3 fields maximum")
+
+        print(f"\n{self.BLUE}Enter constraints (one per line, empty line to finish):{self.RESET}")
+
+        constraints = []
+        while True:
+            try:
+                constraint = input(f"  {self.CYAN}>{self.RESET} ").strip()
+                if not constraint:
+                    break
+                constraints.append(constraint)
+                print(f"    {self.GREEN}✓ Added{self.RESET}")
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n{self.YELLOW}Input cancelled{self.RESET}")
+                break
+
+        if constraints:
+            print(f"\n{self.GREEN}✅ Added {len(constraints)} constraint(s){self.RESET}")
+        else:
+            print(f"\n{self.YELLOW}No constraints added{self.RESET}")
+
+        return constraints
