@@ -8,75 +8,9 @@ from .instructions import get_operator_selection_rules
 from typing import List, Dict, Any
 import json
 
-# =============================================================================
-# Step 1: Operator Selection
-# =============================================================================
-
-ABSTRACT_OPERATOR_SELECTION_PROMPT = Template("""
-You are an AI assistant that designs data processing pipelines using abstract operators.
-
-Task: Analyze the query and dataset, then select appropriate abstract operators to build a pipeline.
-
-Query: $query
-
-Dataset Structure and Samples:
-$dataset_samples
-
-Available Abstract Operators:
-$available_operators
-
-COMPLETE EXAMPLES FROM REAL PIPELINES:
-
-Example 1: Mining Product Reviews for Polarizing Themes
-Query: "Identify polarizing themes in video game reviews that divide player opinions, resolve similar themes across reviews, and aggregate them to find common polarizing themes across different games"
-Dataset: Video game reviews with fields: app_name, concatenated_reviews
-
-Selected operators and reasoning:
-- Map: identify polarizing themes from concatenated reviews (analyzes each game's reviews to find divisive topics)
-- Unnest: expand polarizing_themes array into individual theme records (needed to process each theme separately)
-- Resolve: deduplicate and consolidate similar themes (merges themes that are essentially the same but worded differently)
-- Reduce: aggregate common themes across different games by theme (groups resolved themes to find patterns across games)
-
-Based on the query and dataset, list the operators needed in the order they should be applied.
-For each operator, provide:
-- The operator type
-- A brief description of what this operator will do in the pipeline
-
-IMPORTANT:
-$important_rules
-
-Remember: Keep the pipeline simple and focused on answering the query.
-""")
-
-
-def get_operator_selection_prompt(
-    query: str,
-    dataset_samples: str,
-    base_system: BaseSystem
-) -> str:
-    """
-    Generate operator selection prompt based on base system support.
-
-    Args:
-        query: User query
-        dataset_samples: Dataset samples (JSON formatted string)
-        base_system: Base system type
-
-    Returns:
-        Complete prompt string
-    """
-    operators_info = format_operators_with_descriptions(base_system)
-    rules_text = get_operator_selection_rules()
-    return ABSTRACT_OPERATOR_SELECTION_PROMPT.substitute(
-        query=query,
-        dataset_samples=dataset_samples,
-        available_operators=operators_info,
-        important_rules=rules_text
-    )
-
 
 # =============================================================================
-# Step 2: Detailed Operator Configuration Prompts
+# Detailed Operator Configuration Prompts
 # =============================================================================
 
 ABSTRACT_MAP_PROMPT = Template("""
@@ -149,6 +83,7 @@ Generate a Filter operator with:
 
 1. **prompt**: A Jinja2 template that describes the filtering condition
    - MUST use {{ input.field_name }} to reference fields (Jinja2 template)
+   - CRITICAL: MUST use fields from the available fields list
    - The prompt should ask for "true" or "false" as the response
    - Clearly state what records should PASS the filter (return true to keep)
    - Example: "Is this relevant? {{ input.title }}. Return true to keep, false to discard."
@@ -235,6 +170,7 @@ Example - Aggregate reviews by product:
 
 IMPORTANT:
 - You MUST use {{ inputs }} (plural) to reference the group of records
+- Use ONLY available fields in input
 - Create aggregated output schema with new field names
 """)
 
@@ -261,35 +197,51 @@ Generate a Resolve operator with:
 1. **comparison_prompt**: Jinja2 template for comparing two records
    - Uses {{ input1.field }} and {{ input2.field }} to compare two items
    - Should return "True" or "False"
-   - Example: "Are {{ input1.name }} and {{ input2.name }} the same person? Return True or False."
+   - Example: "Are {{ input1.patient_name }} and {{ input2.patient_name }} the same patient? Return True or False."
 
 2. **resolution_prompt**: Jinja2 template for merging records
    - Uses {{ inputs }} to merge multiple similar items
    - Describe how to create one standardized/merged record
-   - Example: "Merge these person records: {% for item in inputs %}{{ item.name }}, {{ item.email }} {% endfor %}"
+   - Example: "Merge these patient records: {% for item in inputs %}{{ item.patient_name }} {% endfor %} Output a single, standardized patient name that represents all the matched entries. Use the format 'LastName, FirstName MiddleInitial' if available."
 
 3. **output**: Specify output schema (resolved/standardized entity schema)
    - Type specifications: String, Integer, Float, Boolean, List[Type], Dict{field: Type}
    - Create output schema for the resolved/standardized entity
+   - The output schema adds new fields with standardized values to all records identified as the same entity, overriding original values. CRITICAL: Only include fields that require standardization (e.g., canonical entity names, IDs). DO NOT include fields with legitimate variations that should be preserved, such as:
+     * Multiple valid email addresses for the same person
+     * Different functions/features of the same tool
+     * Time-varying attributes (timestamps)
+     * Context-specific descriptions
+     * Any other fields that are unique to each record or might vary significantly between records
+    Including such fields will cause SEVERE data loss by replacing all variations with a single value.
 
 COMPLETE EXAMPLES:
 
-Example - Resolve duplicate person names:
+Example - Resolve duplicate patient names:
 {
-  "comparison_prompt": "Are {{ input1.name }} and {{ input2.name }} the same person? Compare their emails: {{ input1.email }} vs {{ input2.email }}. Return True if they are the same person, False otherwise.",
-  "resolution_prompt": "Merge these person records: {% for item in inputs %}Name: {{ item.name }}, Email: {{ item.email }}. {% endfor %} Provide: canonical_name: the most complete/correct name; canonical_email: the primary email address.",
+  "comparison_prompt": "Compare the following two patient name entries:
+    Patient 1: {{ input1.patient_name }}
+    Date of Birth 1: {{ input1.date_of_birth }}
+
+    Patient 2: {{ input2.patient_name }}
+    Date of Birth 2: {{ input2.date_of_birth }}
+
+    Are these entries likely referring to the same patient? Consider name similarity and date of birth. Respond with "True" if they are likely the same patient, or "False" if they are likely different patients.",
+  "resolution_prompt": "Standardize the following patient name entries into a single, consistent format:
+
+    {% for entry in inputs %}
+    Patient Name {{ loop.index }}: {{ entry.patient_name }}
+    {% endfor %}
+
+    Provide a single, standardized patient name that represents all the matched entries. Use the format "LastName, FirstName MiddleInitial" if available.",
   "output": {
-    "canonical_name": "String"
+    "patient_name": "String"
    },
 }
+This example doesn't include `email` in the output schema because the person might have multiple email addresses, and we want to keep the original email addresses.
 
 IMPORTANT:
-- The output schema adds new fields with standardized values to all records identified as the same entity, overriding original values. CRITICAL: Only include fields that require standardization (e.g., canonical entity names, IDs). DO NOT include fields with legitimate variations that should be preserved, such as:
-  * Multiple valid email addresses for the same person
-  * Different functions/features of the same tool
-  * Context-specific descriptions
-  * Any other fields that are unique to each record or might vary significantly between records
-  Including such fields will cause SEVERE data loss by replacing all variations with a single value.
+- Use ONLY available fields in input
 """)
 
 ABSTRACT_EXTRACT_PROMPT = Template("""
@@ -317,7 +269,7 @@ $dataset_samples
 Generate an Extract operator with:
 
 1. **prompt**: Jinja2 template describing what text section to extract
-   - Use {{ input.field }} to reference the document field
+   - Use {{ input.field }} to reference the document field (Jinja2 template)
 2. **document_keys**: List of field names containing the documents to extract from.
 
 EXTRACT LOGIC (Pseudo-Python):
@@ -364,6 +316,8 @@ def extract(records, prompt, document_keys):
     return result
 ```
 
+IMPORTANT:
+- Use ONLY available fields in input
 """)
 
 ABSTRACT_UNNEST_PROMPT = Template("""

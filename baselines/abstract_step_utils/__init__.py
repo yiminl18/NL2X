@@ -7,8 +7,6 @@ baselines/abstract/convert/docetl/ for DocETL conversion.
 """
 
 from .prompts import (
-    ABSTRACT_OPERATOR_SELECTION_PROMPT,
-    get_operator_selection_prompt,
     get_abstract_operator_prompt,
     ABSTRACT_MAP_PROMPT,
     ABSTRACT_FILTER_PROMPT,
@@ -32,8 +30,6 @@ from .instructions import (
 
 __all__ = [
     # Prompts
-    'ABSTRACT_OPERATOR_SELECTION_PROMPT',
-    'get_operator_selection_prompt',
     'get_abstract_operator_prompt',
     'ABSTRACT_MAP_PROMPT',
     'ABSTRACT_FILTER_PROMPT',
