@@ -25,8 +25,8 @@ Context:
 Available Fields (with types):
 $available_fields
 
-Last Operator:
-$last_operator
+Current Pipeline:
+$current_pipeline
 
 Dataset Samples:
 $dataset_samples
@@ -73,8 +73,8 @@ Context:
 Available Fields (with types):
 $available_fields
 
-Last Operator:
-$last_operator
+Current Pipeline:
+$current_pipeline
 
 Dataset Samples:
 $dataset_samples
@@ -132,8 +132,8 @@ Context:
 Available Fields (with types):
 $available_fields
 
-Last Operator:
-$last_operator
+Current Pipeline:
+$current_pipeline
 
 Dataset Samples:
 $dataset_samples
@@ -186,8 +186,8 @@ Context:
 Available Fields (with types):
 $available_fields
 
-Last Operator:
-$last_operator
+Current Pipeline:
+$current_pipeline
 
 Dataset Samples:
 $dataset_samples
@@ -260,8 +260,8 @@ Context:
 Available Fields (with types):
 $available_fields
 
-Last Operator:
-$last_operator
+Current Pipeline:
+$current_pipeline
 
 Dataset Samples:
 $dataset_samples
@@ -332,8 +332,8 @@ Context:
 Available Fields (with types):
 $available_fields
 
-Last Operator:
-$last_operator
+Current Pipeline:
+$current_pipeline
 
 Dataset Samples:
 $dataset_samples
@@ -407,7 +407,7 @@ def get_abstract_operator_prompt(
     operator_purpose: str,
     query: str,
     dataset_samples: str,
-    last_operator: str,
+    current_pipeline: str,
     available_fields: str
 ) -> str:
     """
@@ -418,7 +418,7 @@ def get_abstract_operator_prompt(
         operator_purpose: Operator task description
         query: User query
         dataset_samples: Dataset samples
-        last_operator: Last operator details (JSON string) or "None"
+        current_pipeline: Current pipeline in compact format
         available_fields: Available fields (formatted string)
 
     Returns:
@@ -441,8 +441,8 @@ Context:
 Available Fields:
 {available_fields}
 
-Last Operator:
-{last_operator}
+Current Pipeline:
+{current_pipeline}
 
 Dataset Samples:
 {dataset_samples}
@@ -456,7 +456,7 @@ Return valid JSON.
         query=query,
         operator_purpose=operator_purpose,
         available_fields=available_fields,
-        last_operator=last_operator,
+        current_pipeline=current_pipeline,
         dataset_samples=dataset_samples
     )
 
@@ -468,15 +468,15 @@ Return valid JSON.
 NEXT_OPERATOR_PROMPT = Template("""
 You are an AI assistant that builds data processing pipelines one operator at a time.
 
-Task: Analyze the current pipeline state and determine the NEXT operator type needed, OR decide if the pipeline is complete.
+Task: Analyze the current pipeline and determine the NEXT operator type needed, OR decide if the pipeline is complete.
 
 Query: $query
 
 Dataset Structure and Samples:
 $dataset_samples
 
-Current Pipeline State:
-$current_pipeline_state
+Current Pipeline:
+$current_pipeline
 
 Available Fields (with types):
 $available_fields
@@ -488,7 +488,7 @@ IMPORTANT RULES:
 $important_rules
 
 Your Task:
-1. Analyze the query and current pipeline state
+1. Analyze the query and current pipeline
 2. Determine if the pipeline is COMPLETE (query can be fully answered with current operators)
 3. If COMPLETE: Return {"end": true, "reason": "explanation of why pipeline is complete"}
 4. If NOT COMPLETE: Select the TYPE and PURPOSE of the NEXT operator needed
@@ -525,7 +525,7 @@ Remember:
 def get_next_operator_prompt(
     query: str,
     dataset_samples: str,
-    current_pipeline_state: str,
+    current_pipeline: str,
     available_fields: str,
     base_system: BaseSystem
 ) -> str:
@@ -535,7 +535,7 @@ def get_next_operator_prompt(
     Args:
         query: User query
         dataset_samples: Dataset samples (JSON formatted string)
-        current_pipeline_state: Current operators in pipeline (formatted string)
+        current_pipeline: Current pipeline in compact format
         available_fields: Available fields (formatted string)
         base_system: Base system type
 
@@ -548,7 +548,7 @@ def get_next_operator_prompt(
     return NEXT_OPERATOR_PROMPT.substitute(
         query=query,
         dataset_samples=dataset_samples,
-        current_pipeline_state=current_pipeline_state,
+        current_pipeline=current_pipeline,
         available_fields=available_fields,
         available_operators=operators_info,
         important_rules=rules_text
@@ -649,8 +649,109 @@ def get_operator_repair_prompt(
 # Formatting Utilities
 # =============================================================================
 
+def _get_output_fields(before_schema: Dict[str, str], after_schema: Dict[str, str]) -> List[str]:
+    """
+    Get fields that were added or modified by an operator.
+
+    Args:
+        before_schema: Schema before the operator
+        after_schema: Schema after the operator
+
+    Returns:
+        List of field names that were added or modified
+    """
+    output_fields = []
+
+    for field, field_type in after_schema.items():
+        # Field is new (added)
+        if field not in before_schema:
+            output_fields.append(field)
+        # Field type was modified
+        elif before_schema[field] != field_type:
+            output_fields.append(field)
+
+    return sorted(output_fields)
+
+
+def format_pipeline_compact(
+    operators: List,
+    initial_schema: Dict[str, str],
+    schema_tracker: Any
+) -> str:
+    """
+    Format operators list in compact schema-flow format.
+
+    Args:
+        operators: List of Operator instances
+        initial_schema: Initial dataset schema
+        schema_tracker: Schema tracker to get input schemas and track schema evolution
+
+    Returns:
+        Formatted pipeline string in compact format:
+        field1, field2 = Dataset # Initial schema
+        out1, out2 = Map(in1, in2) # Purpose: ...
+        Filter(field1) # Purpose: ...
+    """
+    if not operators:
+        return "No operators yet (this will be the first operator)"
+
+    from ..abstract.convert.docetl import abstract_to_docetl
+    from ..docetl_support.schema_tracking import DocETLSchemaTracker
+
+    lines = []
+
+    # Line 1: Dataset with initial schema
+    dataset_fields = ", ".join(sorted(initial_schema.keys()))
+    lines.append(f"{dataset_fields} = Dataset # Initial schema")
+
+    # Create a temporary schema tracker to track schema evolution
+    temp_tracker = DocETLSchemaTracker(initial_schema=initial_schema, verbose=False)
+
+    # Process each operator
+    for op in operators:
+        # Convert abstract operator to base system format
+        base_op = abstract_to_docetl(op)
+
+        # Get schema before this operator
+        before_schema = temp_tracker.get_current_schema()
+
+        # Get input fields using tracker's get_input_schema
+        input_schema_info = temp_tracker.get_input_schema(base_op)
+        input_fields = []
+        if "fields" in input_schema_info:
+            input_fields = sorted(input_schema_info["fields"].keys())
+        input_str = ", ".join(input_fields) if input_fields else ""
+
+        # Update schema with this operator
+        temp_tracker.update_schema(base_op)
+
+        # Get schema after this operator
+        after_schema = temp_tracker.get_current_schema()
+
+        # Get output fields (added or modified)
+        output_fields = _get_output_fields(before_schema, after_schema)
+
+        # Get operator purpose from properties
+        purpose = op.properties.get('purpose', '')
+        purpose_str = f" # Purpose: {purpose}" if purpose else ""
+
+        # Format the line
+        if output_fields:
+            # Operator produces outputs: outputs = OperatorType(inputs)
+            output_str = ", ".join(output_fields)
+            lines.append(f"{output_str} = {op.type}({input_str}){purpose_str}")
+        else:
+            # Operator has no outputs: OperatorType(inputs)
+            lines.append(f"{op.type}({input_str}){purpose_str}")
+
+    return "\n".join(lines)
+
+
 def format_pipeline_state(operators: List) -> str:
-    """Format operators list into readable pipeline state.
+    """
+    DEPRECATED: Use format_pipeline_compact() instead.
+
+    Format operators list into readable pipeline state.
 
     Args:
         operators: List of operators

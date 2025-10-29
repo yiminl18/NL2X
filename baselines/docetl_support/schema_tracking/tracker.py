@@ -184,8 +184,7 @@ class DocETLSchemaTracker:
             return f'{{{fields_str}}}'
 
         else:
-            # Unknown type - fallback to string
-            return 'str'
+            raise ValueError(f"Unsupported type for schema inference: {type(value)}")
 
     def get_current_schema(self) -> Dict[str, str]:
         """
@@ -424,7 +423,7 @@ class DocETLSchemaTracker:
 
             # Update current schema
             self.current_schema = new_schema
-
+            
             if self.verbose:
                 # Format schema as readable string
                 old_schema_str = ', '.join(f"{k}: {v}" for k, v in sorted(old_schema.items()))

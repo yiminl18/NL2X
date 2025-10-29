@@ -306,8 +306,8 @@ def infer_schema_from_samples(samples: List[Dict[str, Any]]) -> Dict[str, str]:
             return f'Dict{{{fields_str}}}'
 
         else:
-            # Unknown type - fallback
-            return 'String'
+            # Unknown type - raise error
+            raise ValueError(f"Unsupported type for schema inference: {type(value)}")
 
     # Infer from first sample
     schema = {}

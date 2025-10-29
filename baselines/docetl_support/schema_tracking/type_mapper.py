@@ -160,7 +160,6 @@ class DocETLTypeMapper:
             'Float': 'float',
             'Boolean': 'bool',
             'Dict': 'dict',
-            'Unknown': 'str'  # Default unknown to string
         }
 
         # Handle basic types
@@ -271,4 +270,4 @@ class DocETLTypeMapper:
             return 'dict'
 
         # Unknown format, default to string
-        return 'str'
+        raise ValueError(f"Unsupported type for schema inference: {abstract_type}")

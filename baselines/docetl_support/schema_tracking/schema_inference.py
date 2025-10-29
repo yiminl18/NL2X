@@ -189,7 +189,6 @@ def compute_schema_transformation(
 
     # Get output schema
     output_schema = _infer_docetl_output_schema(operator_config, current_schema)
-
     # Apply transformation based on operator type
     if op_type in ['map', 'code_map', 'filter', 'code_filter']:
         # Map/Filter: preserve all input fields + add output fields

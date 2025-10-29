@@ -35,7 +35,7 @@ from .abstract_step_utils.prompts import (
     get_next_operator_prompt,
     get_operator_repair_prompt,
     get_abstract_operator_prompt,
-    format_pipeline_state,
+    format_pipeline_compact,
     format_repair_context,
 )
 from .abstract.support import (
@@ -335,6 +335,7 @@ class AbstractStepBaseline(BaselineInterface):
         dataset_samples: List[Dict],
         current_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
+        initial_schema: Dict[str, str],
         attempt: int = 0,
         bypass_cache: bool = False
     ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
@@ -346,6 +347,7 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_samples: Sample data
             current_operators: List of operators generated so far
             schema_tracker: Current schema tracker
+            initial_schema: Initial dataset schema
             attempt: Attempt number
 
         Returns:
@@ -358,8 +360,12 @@ class AbstractStepBaseline(BaselineInterface):
         if self.config.verbose:
             self.logger.info(f"Generating next operator (current: {len(current_operators)} operators)...")
 
-        # Format current pipeline state
-        current_pipeline_state = format_pipeline_state(current_operators)
+        # Format current pipeline in compact format
+        current_pipeline = format_pipeline_compact(
+            operators=current_operators,
+            initial_schema=initial_schema,
+            schema_tracker=schema_tracker
+        )
 
         # Get current schema
         current_schema = schema_tracker.get_current_schema()
@@ -372,7 +378,7 @@ class AbstractStepBaseline(BaselineInterface):
         prompt = get_next_operator_prompt(
             query=query,
             dataset_samples=dataset_samples_str,
-            current_pipeline_state=current_pipeline_state,
+            current_pipeline=current_pipeline,
             available_fields=available_fields_str,
             base_system=self.base_system
         )
@@ -482,6 +488,7 @@ class AbstractStepBaseline(BaselineInterface):
         dataset_samples: List[Dict],
         current_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
+        initial_schema: Dict[str, str],
         repair_context: Optional[Dict[str, Any]] = None
     ) -> str:
         """Prepare prompt for operator detail generation.
@@ -493,6 +500,7 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_samples: Sample data
             current_operators: List of current operators
             schema_tracker: Schema tracker
+            initial_schema: Initial dataset schema
             repair_context: Optional repair context
 
         Returns:
@@ -505,11 +513,12 @@ class AbstractStepBaseline(BaselineInterface):
         # Format dataset samples
         dataset_samples_str = json.dumps(dataset_samples, indent=2)
 
-        # Format last operator
-        last_operator_str = "None"
-        if current_operators:
-            last_op = current_operators[-1]
-            last_operator_str = json.dumps(operator_to_dict(last_op), indent=2)
+        # Format current pipeline in compact format
+        current_pipeline = format_pipeline_compact(
+            operators=current_operators,
+            initial_schema=initial_schema,
+            schema_tracker=schema_tracker
+        )
 
         # Get operator-specific prompt
         prompt = get_abstract_operator_prompt(
@@ -517,7 +526,7 @@ class AbstractStepBaseline(BaselineInterface):
             operator_purpose=op_purpose,
             query=query,
             dataset_samples=dataset_samples_str,
-            last_operator=last_operator_str,
+            current_pipeline=current_pipeline,
             available_fields=available_fields_str
         )
 
@@ -582,18 +591,39 @@ class AbstractStepBaseline(BaselineInterface):
 
         return llm_response
 
+    def _clean_escaped_chars(self, obj: Any) -> Any:
+        """Recursively clean escaped characters from strings in data structures.
+
+        Args:
+            obj: Object to clean (can be dict, list, str, or other types)
+
+        Returns:
+            Cleaned object with escaped characters removed from strings
+        """
+        if isinstance(obj, dict):
+            return {key: self._clean_escaped_chars(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._clean_escaped_chars(item) for item in obj]
+        elif isinstance(obj, str):
+            # Replace escaped characters with their actual equivalents
+            return obj.replace('\\"', '"').replace('\\n', '\n').replace('\\t', '\t')
+        else:
+            return obj
+
     def _create_operator_instance(
         self,
         llm_response: Dict[str, Any],
         op_type: str,
-        operator_index: int
+        operator_index: int,
+        op_purpose: str = ""
     ) -> Operator:
         """Create Operator object from LLM response.
 
         Args:
-            llm_response: LLM response dictionary
+            llm_response: LLM response dictionary (already cleaned)
             op_type: Operator type
             operator_index: Index of this operator
+            op_purpose: Operator purpose (stored in properties)
 
         Returns:
             Operator instance
@@ -614,6 +644,10 @@ class AbstractStepBaseline(BaselineInterface):
             if key not in ['input', 'output']:
                 abstract_operator.properties[key] = value
 
+        # Store operator purpose in properties
+        if op_purpose:
+            abstract_operator.properties['purpose'] = op_purpose
+
         if self.config.verbose:
             self.logger.info(f"Created operator {operator_index + 1}: {op_type} with complete configuration")
 
@@ -627,6 +661,7 @@ class AbstractStepBaseline(BaselineInterface):
         dataset_samples: List[Dict],
         current_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
+        initial_schema: Dict[str, str],
         operator_index: int,
         attempt: int = 0,
         repair_context: Optional[Dict[str, Any]] = None,
@@ -642,6 +677,7 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_samples: Sample data
             current_operators: List of operators generated so far
             schema_tracker: Current schema tracker
+            initial_schema: Initial dataset schema
             operator_index: Index of this operator in pipeline
             attempt: Attempt number
             repair_context: Optional repair context from previous failed attempt
@@ -662,6 +698,7 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_samples=dataset_samples,
             current_operators=current_operators,
             schema_tracker=schema_tracker,
+            initial_schema=initial_schema,
             repair_context=repair_context
         )
 
@@ -675,11 +712,15 @@ class AbstractStepBaseline(BaselineInterface):
             bypass_cache=bypass_cache
         )
 
+        # Clean escaped characters from LLM response
+        # llm_response = self._clean_escaped_chars(llm_response)
+
         # Step 3: Create Operator instance
         abstract_operator = self._create_operator_instance(
             llm_response=llm_response,
             op_type=op_type,
-            operator_index=operator_index
+            operator_index=operator_index,
+            op_purpose=op_purpose
         )
 
         # Step 4: Display generated operator and handle user choice
@@ -702,6 +743,7 @@ class AbstractStepBaseline(BaselineInterface):
                 dataset_samples=dataset_samples,
                 current_operators=current_operators,
                 schema_tracker=schema_tracker,
+                initial_schema=initial_schema,
                 operator_index=operator_index,
                 attempt=attempt,
                 repair_context=None,
@@ -717,6 +759,7 @@ class AbstractStepBaseline(BaselineInterface):
         failed_operator: Operator,
         validation_errors: List[str],
         schema_tracker: BaseSystemSchemaTracker,
+        initial_schema: Dict[str, str],
         operator_index: int
     ) -> Dict[str, Any]:
         """
@@ -728,6 +771,7 @@ class AbstractStepBaseline(BaselineInterface):
             failed_operator: Operator that failed validation
             validation_errors: List of validation error messages
             schema_tracker: Current schema tracker
+            initial_schema: Initial dataset schema
             operator_index: Index of failed operator
 
         Returns:
@@ -736,8 +780,12 @@ class AbstractStepBaseline(BaselineInterface):
         if self.config.verbose:
             self.logger.info(f"Analyzing validation errors for operator {operator_index + 1}...")
 
-        # Format current pipeline
-        current_pipeline = format_pipeline_state(current_operators) if current_operators else "Empty pipeline"
+        # Format current pipeline in compact format
+        current_pipeline = format_pipeline_compact(
+            operators=current_operators,
+            initial_schema=initial_schema,
+            schema_tracker=schema_tracker
+        ) if current_operators else "No operators yet (this will be the first operator)"
 
         # Format failed operator
         failed_op_dict = operator_to_dict(failed_operator)
@@ -811,6 +859,7 @@ class AbstractStepBaseline(BaselineInterface):
         dataset_samples: List[Dict],
         filled_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
+        initial_schema: Dict[str, str],
         attempt: int = 0
     ) -> Tuple[bool, Optional[Operator], Optional[str]]:
         """Generate the next operator, either from pending state or by selection.
@@ -821,6 +870,7 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_samples: Sample data
             filled_operators: Already filled operators
             schema_tracker: Schema tracker
+            initial_schema: Initial dataset schema
             attempt: Attempt number
 
         Returns:
@@ -855,6 +905,7 @@ class AbstractStepBaseline(BaselineInterface):
                 dataset_samples=dataset_samples,
                 current_operators=filled_operators,
                 schema_tracker=schema_tracker,
+                initial_schema=initial_schema,
                 operator_index=state.current_position,
                 attempt=attempt,
                 repair_context=repair_context_dict,
@@ -869,6 +920,7 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_samples=dataset_samples,
             current_operators=filled_operators,
             schema_tracker=schema_tracker,
+            initial_schema=initial_schema,
             attempt=attempt,
             bypass_cache=state.bypass_cache_next
         )
@@ -886,12 +938,12 @@ class AbstractStepBaseline(BaselineInterface):
             dataset_samples=dataset_samples,
             current_operators=filled_operators,
             schema_tracker=schema_tracker,
+            initial_schema=initial_schema,
             operator_index=state.current_position,
             attempt=attempt,
             repair_context=None,
             bypass_cache=state.bypass_cache_next
         )
-
         return False, operator, None
 
     def _validate_and_repair_operator(
@@ -901,6 +953,7 @@ class AbstractStepBaseline(BaselineInterface):
         query: str,
         filled_operators: List[Operator],
         schema_tracker: BaseSystemSchemaTracker,
+        initial_schema: Dict[str, str],
         max_repair_attempts: int = 3
     ) -> Tuple[bool, Optional[str]]:
         """Validate operator and handle repair if needed.
@@ -911,6 +964,7 @@ class AbstractStepBaseline(BaselineInterface):
             query: User query
             filled_operators: Current operators list
             schema_tracker: Schema tracker
+            initial_schema: Initial dataset schema
             max_repair_attempts: Max repair attempts
 
         Returns:
@@ -942,6 +996,7 @@ class AbstractStepBaseline(BaselineInterface):
                 failed_operator=operator,
                 validation_errors=validation_errors,
                 schema_tracker=schema_tracker,
+                initial_schema=initial_schema,
                 operator_index=state.current_position
             )
 
@@ -1097,6 +1152,7 @@ class AbstractStepBaseline(BaselineInterface):
                 dataset_samples=dataset_samples,
                 filled_operators=filled_operators,
                 schema_tracker=schema_tracker,
+                initial_schema=dataset_schema,
                 attempt=attempt
             )
 
@@ -1116,6 +1172,7 @@ class AbstractStepBaseline(BaselineInterface):
                 query=query,
                 filled_operators=filled_operators,
                 schema_tracker=schema_tracker,
+                initial_schema=dataset_schema,
                 max_repair_attempts=max_repair_attempts
             )
 
