@@ -420,7 +420,8 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Call LLM (bypass cache if requested or after repair)
         should_bypass_cache = bypass_cache or (user_choice == 'regenerate')
-        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=should_bypass_cache)
+        regenerate_temperature = 0.5 if (user_choice == 'regenerate') else 0.3
+        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=should_bypass_cache, temperature=regenerate_temperature)
 
         try:
             result = json.loads(response)
@@ -579,7 +580,8 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Call LLM (bypass cache if requested or user chose regenerate)
         should_bypass_cache = bypass_cache or (user_choice == 'regenerate')
-        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=should_bypass_cache)
+        regenerate_temperature = 0.5 if (user_choice == 'regenerate') else 0.3
+        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=should_bypass_cache, temperature=regenerate_temperature)
 
         try:
             llm_response = json.loads(response)
@@ -836,7 +838,8 @@ class AbstractStepBaseline(BaselineInterface):
 
         # Call LLM (bypass cache if user chose regenerate)
         should_bypass_cache = (user_choice == 'regenerate')
-        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=should_bypass_cache)
+        regenerate_temperature = 0.5 if (user_choice == 'regenerate') else 0.3
+        response = llm_call(messages, schema=parameters, system_prompt=system_prompt, bypass_cache=should_bypass_cache, temperature=regenerate_temperature)
 
         try:
             repair_suggestion = json.loads(response)
