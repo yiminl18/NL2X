@@ -676,7 +676,6 @@ def _get_output_fields(before_schema: Dict[str, str], after_schema: Dict[str, st
 def format_pipeline_compact(
     operators: List,
     initial_schema: Dict[str, str],
-    schema_tracker: Any
 ) -> str:
     """
     Format operators list in compact schema-flow format.
@@ -708,7 +707,7 @@ def format_pipeline_compact(
     temp_tracker = DocETLSchemaTracker(initial_schema=initial_schema, verbose=False)
 
     # Process each operator
-    for op in operators:
+    for idx, op in enumerate(operators):
         # Convert abstract operator to base system format
         base_op = abstract_to_docetl(op)
 
@@ -739,10 +738,10 @@ def format_pipeline_compact(
         if output_fields:
             # Operator produces outputs: outputs = OperatorType(inputs)
             output_str = ", ".join(output_fields)
-            lines.append(f"{output_str} = {op.type}({input_str}){purpose_str}")
+            lines.append(f"{idx+1}. {output_str} = {op.type}({input_str}){purpose_str}")
         else:
             # Operator has no outputs: OperatorType(inputs)
-            lines.append(f"{op.type}({input_str}){purpose_str}")
+            lines.append(f"{idx+1}. {op.type}({input_str}){purpose_str}")
 
     return "\n".join(lines)
 

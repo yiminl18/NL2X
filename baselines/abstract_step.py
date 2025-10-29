@@ -364,7 +364,6 @@ class AbstractStepBaseline(BaselineInterface):
         current_pipeline = format_pipeline_compact(
             operators=current_operators,
             initial_schema=initial_schema,
-            schema_tracker=schema_tracker
         )
 
         # Get current schema
@@ -517,7 +516,6 @@ class AbstractStepBaseline(BaselineInterface):
         current_pipeline = format_pipeline_compact(
             operators=current_operators,
             initial_schema=initial_schema,
-            schema_tracker=schema_tracker
         )
 
         # Get operator-specific prompt
@@ -784,7 +782,6 @@ class AbstractStepBaseline(BaselineInterface):
         current_pipeline = format_pipeline_compact(
             operators=current_operators,
             initial_schema=initial_schema,
-            schema_tracker=schema_tracker
         ) if current_operators else "No operators yet (this will be the first operator)"
 
         # Format failed operator
