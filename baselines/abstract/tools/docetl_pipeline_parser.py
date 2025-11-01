@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-DocETL Pipeline Parser
+DocETL Procedure Parser
 
-This tool parses DocETL YAML pipeline files and extracts operators in execution order.
+This tool parses DocETL YAML procedure files and extracts operators in execution order.
 The output can be directly used as the `operators` parameter for the `_connect_pipeline` function.
 
 Usage:
     python docetl_pipeline_parser.py <yaml_file_path>
 
 Or import and use:
-    from tools.docetl_pipeline_parser import parse_pipeline_operators
-    operators = parse_pipeline_operators("path/to/pipeline.yaml")
+    from tools.docetl_pipeline_parser import parse_procedure_operators
+    operators = parse_procedure_operators("path/to/pipeline.yaml")
 """
 
 import yaml
@@ -20,12 +20,12 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 
-def parse_pipeline_operators(yaml_path: Path) -> List[Dict[str, Any]]:
+def parse_procedure_operators(yaml_path: Path) -> List[Dict[str, Any]]:
     """
-    Parse a DocETL YAML pipeline file and extract operators in execution order.
+    Parse a DocETL YAML procedure file and extract operators in execution order.
 
     Args:
-        yaml_file_path: Path to the YAML pipeline file
+        yaml_file_path: Path to the YAML procedure file
 
     Returns:
         List of operator dictionaries in pipeline execution order, ready to be passed
@@ -98,7 +98,7 @@ def main():
     yaml_file_path = sys.argv[1]
 
     try:
-        operators = parse_pipeline_operators(yaml_file_path)
+        operators = parse_procedure_operators(yaml_file_path)
 
         print(f"Successfully parsed {len(operators)} operators in execution order:\n")
 

@@ -1,9 +1,9 @@
 """
-Abstract Pipeline Execution Engine
+Abstract Procedure Execution Engine
 
-Unified executor for abstract operators and pipelines. Routes operators to
+Unified executor for abstract operators and procedures. Routes operators to
 appropriate system executors (DocETL, Lotus) based on operator.source.system.
-Supports single operator execution, full pipelines, and pipeline ranges.
+Supports single operator execution, full procedures, and procedure ranges.
 """
 
 from typing import Any, Dict, List, Optional, Union
@@ -14,7 +14,7 @@ import traceback
 
 # Import abstract operator classes
 from .ops.base import Operator
-from .pipeline import Pipeline, PipelineNode
+from .procedure import Procedure, ProcedureNode
 
 # Import executors
 from .executor import DocETLExecutor, LotusExecutor, ExecutionResult
@@ -27,7 +27,7 @@ from .convert.docetl import dict_to_operator, operator_to_dict
 
 
 class AbstractExecutor:
-    """Main executor for abstract operators and pipelines with caching support."""
+    """Main executor for abstract operators and procedures with caching support."""
 
     def __init__(self,
                  verbose: bool = False,
@@ -134,30 +134,30 @@ class AbstractExecutor:
         # Execute using appropriate executor
         return self.executors[system].execute_operator(operator, data_source, config or {}, force_execute=force_execute)
 
-    def execute_pipeline(self,
-                        pipeline: Pipeline,
+    def execute_procedure(self,
+                        procedure: Procedure,
                         data_source: Optional[DataSource] = None,
                         config: Optional[Dict[str, Any]] = None,
                         save_intermediates: bool = False,
                         intermediate_dir: Optional[str] = None) -> ExecutionResult:
-        """Execute complete pipeline, routing operators to appropriate system executors."""
+        """Execute complete procedure, routing operators to appropriate system executors."""
         try:
-            # If data_source not provided, try to load from pipeline
+            # If data_source not provided, try to load from procedure
             if data_source is None:
-                if pipeline.input_path and self.data_manager:
+                if procedure.input_path and self.data_manager:
                     if self.verbose:
-                        print(f"Loading dataset from pipeline.input_path: {pipeline.input_path}")
-                    data_source = self.data_manager.load(pipeline.input_path)
+                        print(f"Loading dataset from procedure.input_path: {procedure.input_path}")
+                    data_source = self.data_manager.load(procedure.input_path)
                 else:
-                    # Neither data_source nor pipeline.input_path provided
+                    # Neither data_source nor procedure.input_path provided
                     raise ValueError(
-                        "data_source is required for pipeline execution. "
-                        "Either provide data_source parameter or set pipeline.input_path"
+                        "data_source is required for procedure execution. "
+                        "Either provide data_source parameter or set procedure.input_path"
                     )
 
             # Execute operator-by-operator
-            result = self.execute_pipeline_range(
-                pipeline=pipeline,
+            result = self.execute_procedure_range(
+                procedure=procedure,
                 data_source=data_source,
                 start_index=0,
                 end_index=None,
@@ -166,39 +166,39 @@ class AbstractExecutor:
                 intermediate_dir=intermediate_dir
             )
 
-            # Save final output if pipeline has output_path
-            if result.success and pipeline.output_path:
-                output_path_obj = Path(pipeline.output_path)
+            # Save final output if procedure has output_path
+            if result.success and procedure.output_path:
+                output_path_obj = Path(procedure.output_path)
                 output_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
                 with open(output_path_obj, 'w') as f:
                     json.dump(result.data, f, indent=2)
 
                 if self.verbose:
-                    print(f"Final output saved to: {pipeline.output_path}")
+                    print(f"Final output saved to: {procedure.output_path}")
 
-                result.metadata['output_path'] = pipeline.output_path
+                result.metadata['output_path'] = procedure.output_path
 
             return result
 
         except Exception as e:
             return ExecutionResult(
                 success=False,
-                error=f"Pipeline execution failed: {str(e)}\n{traceback.format_exc()}"
+                error=f"Procedure execution failed: {str(e)}\n{traceback.format_exc()}"
             )
 
-    def execute_pipeline_range(self,
-                              pipeline: Pipeline,
+    def execute_procedure_range(self,
+                              procedure: Procedure,
                               data_source: Optional[DataSource],
                               start_index: int = 0,
                               end_index: Optional[int] = None,
                               config: Optional[Dict[str, Any]] = None,
                               save_intermediates: bool = False,
                               intermediate_dir: Optional[str] = None) -> ExecutionResult:
-        """Execute pipeline subset from start_index to end_index (inclusive)."""
+        """Execute procedure subset from start_index to end_index (inclusive)."""
         try:
-            # Get operators from pipeline
-            operators = pipeline.to_operators()
+            # Get operators from procedure
+            operators = procedure.to_operators()
 
             # Validate indices
             if start_index < 0 or start_index >= len(operators):
@@ -343,5 +343,5 @@ class AbstractExecutor:
         except Exception as e:
             return ExecutionResult(
                 success=False,
-                error=f"Pipeline range execution failed: {str(e)}\n{traceback.format_exc()}"
+                error=f"Procedure range execution failed: {str(e)}\n{traceback.format_exc()}"
             )

@@ -1,9 +1,9 @@
 from collections import defaultdict, deque
-from typing import List, Dict, Set, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Optional, Any
 from .ops.base import Operator
 
-class PipelineNode:
-    """Represents a node in the pipeline DAG."""
+class ProcedureNode:
+    """Represents a node in the procedure DAG."""
 
     def __init__(self, operator: Operator, node_id: str):
         self.operator = operator
@@ -13,11 +13,11 @@ class PipelineNode:
         self.metadata: Dict[str, Any] = {}
 
     def __repr__(self):
-        return f"PipelineNode(id={self.node_id}, type={self.operator.type})"
+        return f"ProcedureNode(id={self.node_id}, type={self.operator.type})"
 
 
-class Pipeline:
-    """Pipeline class for building and managing a DAG of operators."""
+class Procedure:
+    """Procedure class for building and managing a DAG of operators."""
 
     def __init__(self, name: str = "", input_path: Optional[str] = None,
                  output_path: Optional[str] = None, properties: Optional[Dict[str, Any]] = None,
@@ -29,7 +29,7 @@ class Pipeline:
         self.properties = properties or {}  # Other metadata from pipeline config
         self.dataset_schema = dataset_schema  # Dataset schema in abstract layer format
         self.subtasks = subtasks  # Subtasks descriptions for each operator
-        self.nodes: Dict[str, PipelineNode] = {}
+        self.nodes: Dict[str, ProcedureNode] = {}
         self.edges: Dict[str, List[str]] = defaultdict(list)  # node_id -> [child_ids]
 
     @classmethod
@@ -37,26 +37,26 @@ class Pipeline:
                       input_path: Optional[str] = None,
                       output_path: Optional[str] = None,
                       properties: Optional[Dict[str, Any]] = None,
-                      dataset_schema: Optional[Dict[str, Any]] = None) -> 'Pipeline':
-        """Create linear pipeline from list of operators."""
-        pipeline = cls(name=name, input_path=input_path,
+                      dataset_schema: Optional[Dict[str, Any]] = None) -> 'Procedure':
+        """Create linear procedure from list of operators."""
+        procedure = cls(name=name, input_path=input_path,
                       output_path=output_path, properties=properties,
                       dataset_schema=dataset_schema)
 
         if not operators:
-            return pipeline
+            return procedure
 
         # Add all operators as nodes
         for i, op in enumerate(operators):
             node_id = f"op_{i}_{op.name}" if op.name else f"op_{i}"
-            pipeline.add_operator(op, node_id)
+            procedure.add_operator(op, node_id)
 
         # Connect them linearly
-        node_ids = list(pipeline.nodes.keys())
+        node_ids = list(procedure.nodes.keys())
         for i in range(len(node_ids) - 1):
-            pipeline.add_edge(node_ids[i], node_ids[i + 1])
+            procedure.add_edge(node_ids[i], node_ids[i + 1])
 
-        return pipeline
+        return procedure
 
     def to_operators(self) -> List[Operator]:
         """Extract operators in topological execution order."""
@@ -64,11 +64,11 @@ class Pipeline:
         return [self.nodes[node_id].operator for node_id in execution_order]
 
     def add_operator(self, operator: Operator, node_id: str, metadata: Optional[Dict[str, Any]] = None) -> str:
-        """Add operator to pipeline with unique node_id."""
+        """Add operator to procedure with unique node_id."""
         if node_id in self.nodes:
-            raise ValueError(f"Node with id '{node_id}' already exists in pipeline")
+            raise ValueError(f"Node with id '{node_id}' already exists in procedure")
 
-        node = PipelineNode(operator, node_id)
+        node = ProcedureNode(operator, node_id)
         if metadata:
             node.metadata = metadata
 
@@ -78,9 +78,9 @@ class Pipeline:
     def add_edge(self, from_node_id: str, to_node_id: str):
         """Add directed edge between nodes. Raises ValueError if creates cycle."""
         if from_node_id not in self.nodes:
-            raise ValueError(f"Source node '{from_node_id}' not found in pipeline")
+            raise ValueError(f"Source node '{from_node_id}' not found in procedure")
         if to_node_id not in self.nodes:
-            raise ValueError(f"Target node '{to_node_id}' not found in pipeline")
+            raise ValueError(f"Target node '{to_node_id}' not found in procedure")
 
         self.edges[from_node_id].append(to_node_id)
         self.nodes[from_node_id].children.append(to_node_id)
@@ -93,7 +93,7 @@ class Pipeline:
             raise ValueError(f"Adding edge from '{from_node_id}' to '{to_node_id}' would create a cycle")
 
     def has_cycle(self) -> bool:
-        """Check if pipeline contains cycle using DFS."""
+        """Check if procedure contains cycle using DFS."""
         visited = set()
         rec_stack = set()
 
@@ -121,7 +121,7 @@ class Pipeline:
     def get_execution_order(self) -> List[str]:
         """Get topological order of node IDs for execution."""
         if self.has_cycle():
-            raise ValueError("Cannot get execution order: pipeline contains a cycle")
+            raise ValueError("Cannot get execution order: procedure contains a cycle")
 
         in_degree = {node_id: len(node.parents) for node_id, node in self.nodes.items()}
 
@@ -139,11 +139,11 @@ class Pipeline:
                     queue.append(child_id)
 
         if len(execution_order) != len(self.nodes):
-            raise ValueError("Cannot get execution order: pipeline contains a cycle")
+            raise ValueError("Cannot get execution order: procedure contains a cycle")
 
         return execution_order
 
-    def get_node(self, node_id: str) -> Optional[PipelineNode]:
+    def get_node(self, node_id: str) -> Optional[ProcedureNode]:
         """Get a node by its ID."""
         return self.nodes.get(node_id)
 
@@ -200,8 +200,8 @@ class Pipeline:
             The node_id of the inserted operator
 
         Example:
-            >>> pipeline.insert_operator(filter_op, position=0)  # Insert at beginning
-            >>> pipeline.insert_operator(map_op, position=-1)   # Insert before last
+            >>> procedure.insert_operator(filter_op, position=0)  # Insert at beginning
+            >>> procedure.insert_operator(map_op, position=-1)   # Insert before last
         """
         execution_order = self.get_execution_order() if self.nodes else []
         n = len(execution_order)
@@ -245,7 +245,7 @@ class Pipeline:
 
     def remove_operator(self, node_id: str) -> Operator:
         """
-        Remove an operator from the pipeline by node_id.
+        Remove an operator from the procedure by node_id.
 
         Automatically reconnects edges: connects all parents to all children.
         Updates subtasks list if it exists.
@@ -260,10 +260,10 @@ class Pipeline:
             ValueError: If node_id not found
 
         Example:
-            >>> removed_op = pipeline.remove_operator("op_2_extract_age")
+            >>> removed_op = procedure.remove_operator("op_2_extract_age")
         """
         if node_id not in self.nodes:
-            raise ValueError(f"Node '{node_id}' not found in pipeline")
+            raise ValueError(f"Node '{node_id}' not found in procedure")
 
         node = self.nodes[node_id]
         operator = node.operator
@@ -294,24 +294,24 @@ class Pipeline:
             IndexError: If position is out of range
 
         Example:
-            >>> removed_op = pipeline.remove_operator_at(1)  # Remove second operator
-            >>> removed_op = pipeline.remove_operator_at(-1) # Remove last operator
+            >>> removed_op = procedure.remove_operator_at(1)  # Remove second operator
+            >>> removed_op = procedure.remove_operator_at(-1) # Remove last operator
         """
         execution_order = self.get_execution_order()
 
         if not execution_order:
-            raise IndexError("Cannot remove from empty pipeline")
+            raise IndexError("Cannot remove from empty procedure")
 
         try:
             node_id = execution_order[position]
         except IndexError:
-            raise IndexError(f"Position {position} out of range for pipeline with {len(execution_order)} operators")
+            raise IndexError(f"Position {position} out of range for procedure with {len(execution_order)} operators")
 
         return self.remove_operator(node_id)
 
     def visualize(self) -> str:
-        """Create text visualization of pipeline structure."""
-        lines = [f"Pipeline: {self.name or '(unnamed)'}"]
+        """Create text visualization of procedure structure."""
+        lines = [f"Procedure: {self.name or '(unnamed)'}"]
         lines.append(f"Nodes: {len(self.nodes)}")
         lines.append(f"Edges: {sum(len(children) for children in self.edges.values())}")
         lines.append("")
@@ -333,15 +333,15 @@ class Pipeline:
         return "\n".join(lines)
 
     def __repr__(self):
-        return f"Pipeline(name='{self.name}', nodes={len(self.nodes)}, edges={sum(len(c) for c in self.edges.values())})"
+        return f"Procedure(name='{self.name}', nodes={len(self.nodes)}, edges={sum(len(c) for c in self.edges.values())})"
 
 
-def optimize_pipeline(pipeline: Pipeline) -> List[Pipeline]:
-    """Optimize pipeline and return variants."""
-    from .optimizer import PipelineOptimizer
+def optimize_procedure(procedure: Procedure) -> List[Procedure]:
+    """Optimize procedure and return variants."""
+    from .optimizer import ProcedureOptimizer
 
-    optimizer = PipelineOptimizer(pipeline)
+    optimizer = ProcedureOptimizer(procedure)
     if optimizer.should_optimize():
         return optimizer.optimize()
     else:
-        return [pipeline]
+        return [procedure]

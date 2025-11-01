@@ -2,11 +2,11 @@ from typing import List, Optional, Dict, Any
 import json
 import sys
 from pathlib import Path
-from .pipeline import Pipeline
+from .procedure import Procedure
 from .db import DataSource, DatasetManager
 from model.litellm_client import llm_call
 
-from .tools.static_comparator import compare_pipelines
+from .tools.static_comparator import compare_procedures
 
 def _infer_field_type(value: Any, samples: List[Any] = None) -> str:
     """
@@ -222,22 +222,22 @@ def summarize_dataset(
 
 
 # ============================================================================
-# Pipeline Subtasks Summarization Functions
+# Procedure Subtasks Summarization Functions
 # ============================================================================
 
 def summarize_subtasks(
-    pipeline: Pipeline,
+    procedure: Procedure,
     data_samples: List[Dict] = None,
     query: Optional[str] = None
 ) -> List[str]:
     """
-    Infer operator subtasks for all operators in a pipeline using LLM.
+    Infer operator subtasks for all operators in a procedure using LLM.
 
-    This function analyzes the pipeline operators and generates subtask descriptions
+    This function analyzes the procedure operators and generates subtask descriptions
     for each operator in a single LLM call.
 
     Args:
-        pipeline: Pipeline object containing operators
+        procedure: Procedure object containing operators
         data_samples: Optional list of data samples for context
         query: Optional task description for context
 
@@ -248,9 +248,9 @@ def summarize_subtasks(
         data_samples = []
 
     operators_info = []
-    execution_order = pipeline.get_execution_order()
+    execution_order = procedure.get_execution_order()
     for node_id in execution_order:
-        node = pipeline.nodes[node_id]
+        node = procedure.nodes[node_id]
         op = node.operator
         operators_info.append({
             "type": op.type,
@@ -273,9 +273,9 @@ def summarize_subtasks(
 
     data_samples_section = f"\n\nData Samples ({len(data_samples)} examples):\n{json.dumps(data_samples, indent=2, ensure_ascii=False)}" if data_samples else ""
 
-    prompt = f"""{task_section}Pipeline Operators:{operators_desc}{data_samples_section}
+    prompt = f"""{task_section}Procedure Operators:{operators_desc}{data_samples_section}
 
-Based on the task description (if provided), pipeline operators, and data samples (if provided), infer the specific functionality/purpose of each operator in the pipeline. Provide a concise description for each operator that explains what it does in the context of solving the overall task."""
+Based on the task description (if provided), procedure operators, and data samples (if provided), infer the specific functionality/purpose of each operator in the procedure. Provide a concise description for each operator that explains what it does in the context of solving the overall task."""
 
     schema = {
         "type": "object",
@@ -291,7 +291,7 @@ Based on the task description (if provided), pipeline operators, and data sample
         "required": ["subtasks"]
     }
 
-    system_prompt = "You are an AI assistant that analyzes data processing pipelines and infers the purpose of each operator. Always respond with valid JSON matching the required schema."
+    system_prompt = "You are an AI assistant that analyzes data processing procedures and infers the purpose of each operator. Always respond with valid JSON matching the required schema."
 
     messages = [{"role": "user", "content": prompt}]
 
@@ -310,7 +310,7 @@ Based on the task description (if provided), pipeline operators, and data sample
 
 
 def summarize_subtasks_step(
-    pipeline: Pipeline,
+    procedure: Procedure,
     data_samples: List[Dict] = None,
     query: Optional[str] = None
 ) -> List[str]:
@@ -322,7 +322,7 @@ def summarize_subtasks_step(
     context, allowing for better understanding of the pipeline flow.
 
     Args:
-        pipeline: Pipeline object containing operators
+        procedure: Procedure object containing operators
         data_samples: Optional list of data samples for context
         query: Optional task description for context
 
@@ -333,9 +333,9 @@ def summarize_subtasks_step(
         data_samples = []
 
     operators_info = []
-    execution_order = pipeline.get_execution_order()
+    execution_order = procedure.get_execution_order()
     for node_id in execution_order:
-        node = pipeline.nodes[node_id]
+        node = procedure.nodes[node_id]
         op = node.operator
         operators_info.append({
             "type": op.type,
@@ -396,19 +396,19 @@ Based on the task description (if provided), previous operators' subtasks (if an
     return subtasks
 
 
-class PipelineOptimizer:
+class ProcedureOptimizer:
     """Optimizer for abstract pipelines with optional dataset support."""
 
     def __init__(
         self,
-        pipeline: Pipeline,
+        procedure: Procedure,
         data_source: Optional[DataSource] = None,
         data_manager: Optional[DatasetManager] = None,
         query: Optional[str] = None,
         num_samples: int = 5
     ):
         """Initialize optimizer with pipeline and optional data source."""
-        self.pipeline = pipeline
+        self.procedure = pipeline
         self.data_manager = data_manager
         self.query = query
         self.num_samples = num_samples
@@ -426,9 +426,9 @@ class PipelineOptimizer:
             sample_size = min(self.num_samples, len(self.data_source.data))
             data_samples = self.data_source.data[:sample_size]
 
-        if self.pipeline.subtasks is None:
-            self.pipeline.subtasks = summarize_subtasks(
-                self.pipeline,
+        if self.procedure.subtasks is None:
+            self.procedure.subtasks = summarize_subtasks(
+                self.procedure,
                 data_samples,
                 self.query
             )
@@ -438,10 +438,10 @@ class PipelineOptimizer:
         # TODO: Implement optimization decision logic
         return False
 
-    def optimize(self) -> List[Pipeline]:
+    def optimize(self) -> List[Procedure]:
         """Optimize pipeline and return optimized variants."""
         # TODO: Implement pipeline optimization logic
-        return [self.pipeline]
+        return [self.procedure]
 
 
 # ============================================================================
@@ -607,30 +607,30 @@ Provide your optimized prompt as a single string."""
 # Filter Pushdown Optimization Functions
 # ============================================================================
 
-def should_pushdown_filter(pipeline: Pipeline) -> bool:
+def should_pushdown_filter(procedure: Procedure) -> bool:
     """
     Check if any filter operator can be pushed down to an earlier position.
 
     Args:
-        pipeline: Pipeline object to analyze
+        procedure: Procedure object to analyze
 
     Returns:
         True if at least one filter can be pushed earlier, False otherwise
     """
     try:
-        execution_order = pipeline.get_execution_order()
+        execution_order = procedure.get_execution_order()
 
         if len(execution_order) < 2:
             return False
 
         available_fields = set()
-        if pipeline.dataset_schema and 'fields' in pipeline.dataset_schema:
-            available_fields = set(pipeline.dataset_schema['fields'].keys())
+        if procedure.dataset_schema and 'fields' in procedure.dataset_schema:
+            available_fields = set(procedure.dataset_schema['fields'].keys())
 
         fields_at_position = [available_fields.copy()]
 
         for node_id in execution_order:
-            operator = pipeline.nodes[node_id].operator
+            operator = procedure.nodes[node_id].operator
 
             if hasattr(operator, 'output') and isinstance(operator.output, dict):
                 for field_name in operator.output.keys():
@@ -640,7 +640,7 @@ def should_pushdown_filter(pipeline: Pipeline) -> bool:
             fields_at_position.append(available_fields.copy())
 
         for current_pos, node_id in enumerate(execution_order):
-            operator = pipeline.nodes[node_id].operator
+            operator = procedure.nodes[node_id].operator
 
             if operator.type == 'Filter':
                 required_fields = set()
@@ -668,27 +668,27 @@ def should_pushdown_filter(pipeline: Pipeline) -> bool:
         return False
 
 
-def _single_pushdown(pipeline: Pipeline) -> Pipeline:
+def _single_pushdown(procedure: Procedure) -> Procedure:
     """
     Perform a single filter pushdown optimization.
 
     Args:
-        pipeline: Pipeline object to optimize
+        procedure: Procedure object to optimize
 
     Returns:
         New Pipeline with one filter moved to an earlier position
     """
     import copy
 
-    execution_order = pipeline.get_execution_order()
+    execution_order = procedure.get_execution_order()
     available_fields = set()
-    if pipeline.dataset_schema and 'fields' in pipeline.dataset_schema:
-        available_fields = set(pipeline.dataset_schema['fields'].keys())
+    if procedure.dataset_schema and 'fields' in procedure.dataset_schema:
+        available_fields = set(procedure.dataset_schema['fields'].keys())
 
     fields_at_position = [available_fields.copy()]
 
     for node_id in execution_order:
-        operator = pipeline.nodes[node_id].operator
+        operator = procedure.nodes[node_id].operator
 
         if hasattr(operator, 'output') and isinstance(operator.output, dict):
             for field_name in operator.output.keys():
@@ -701,7 +701,7 @@ def _single_pushdown(pipeline: Pipeline) -> Pipeline:
     target_position = None
 
     for current_pos, node_id in enumerate(execution_order):
-        operator = pipeline.nodes[node_id].operator
+        operator = procedure.nodes[node_id].operator
 
         if operator.type == 'Filter':
             required_fields = set()
@@ -724,22 +724,22 @@ def _single_pushdown(pipeline: Pipeline) -> Pipeline:
                 target_position = earliest_pos
                 break
 
-    new_pipeline = copy.deepcopy(pipeline)
+    new_procedure = copy.deepcopy(pipeline)
 
-    removed_filter = new_pipeline.remove_operator_at(current_position)
-    new_pipeline.insert_operator(removed_filter, target_position)
+    removed_filter = new_procedure.remove_operator_at(current_position)
+    new_procedure.insert_operator(removed_filter, target_position)
 
     print(f"Filter '{removed_filter.name}' pushed down from position {current_position} to position {target_position}")
 
-    return new_pipeline
+    return new_procedure
 
 
-def pushdown_filter(pipeline: Pipeline) -> Optional[Pipeline]:
+def pushdown_filter(procedure: Procedure) -> Optional[Procedure]:
     """
     Recursively push down all filter operators to their earliest possible positions.
 
     Args:
-        pipeline: Pipeline object to optimize
+        procedure: Procedure object to optimize
 
     Returns:
         Optimized Pipeline if any filters were moved, None otherwise

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Static comparator for abstract pipeline operators.
+Static comparator for abstract procedure operators.
 
 Compares two pipelines to verify:
 1. Both pipelines are individually valid
@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
 # Import static checker
-from .static_checker import validate_pipeline
+from .static_checker import validate_procedure
 
 from ..type import check_type_compatibility
 
@@ -25,7 +25,7 @@ from ..type import check_type_compatibility
 
 def extract_input_schema(operators: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
-    Extract input schema from the first operator in the pipeline.
+    Extract input schema from the first operator in the procedure.
 
     Args:
         operators: List of operator dictionaries
@@ -42,7 +42,7 @@ def extract_input_schema(operators: List[Dict[str, Any]]) -> Optional[Dict[str, 
 
 def extract_output_schema(operators: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
-    Extract output schema from the last operator in the pipeline.
+    Extract output schema from the last operator in the procedure.
 
     Args:
         operators: List of operator dictionaries
@@ -79,11 +79,11 @@ def compare_schemas(
         return True, []
 
     if not schema1:
-        differences.append(f"{schema_name}: Pipeline 1 has no schema")
+        differences.append(f"{schema_name}: Procedure 1 has no schema")
         return False, differences
 
     if not schema2:
-        differences.append(f"{schema_name}: Pipeline 2 has no schema")
+        differences.append(f"{schema_name}: Procedure 2 has no schema")
         return False, differences
 
     if 'fields' in schema1 and 'fields' in schema2:
@@ -94,9 +94,9 @@ def compare_schemas(
 
         for field in all_fields:
             if field not in fields1:
-                differences.append(f"{schema_name}: Field '{field}' missing in Pipeline 1")
+                differences.append(f"{schema_name}: Field '{field}' missing in Procedure 1")
             elif field not in fields2:
-                differences.append(f"{schema_name}: Field '{field}' missing in Pipeline 2")
+                differences.append(f"{schema_name}: Field '{field}' missing in Procedure 2")
             else:
                 type1 = fields1[field]
                 type2 = fields2[field]
@@ -106,13 +106,13 @@ def compare_schemas(
                     if not compatible:
                         differences.append(
                             f"{schema_name}: Field '{field}' type mismatch - "
-                            f"Pipeline 1: {type1}, Pipeline 2: {type2}"
+                            f"Procedure 1: {type1}, Procedure 2: {type2}"
                         )
                 except Exception:
                     if str(type1) != str(type2):
                         differences.append(
                             f"{schema_name}: Field '{field}' type mismatch - "
-                            f"Pipeline 1: {type1}, Pipeline 2: {type2}"
+                            f"Procedure 1: {type1}, Procedure 2: {type2}"
                         )
 
     else:
@@ -122,7 +122,7 @@ def compare_schemas(
         if schema1_str != schema2_str:
             differences.append(
                 f"{schema_name}: Schema structure mismatch - "
-                f"Pipeline 1: {schema1}, Pipeline 2: {schema2}"
+                f"Procedure 1: {schema1}, Procedure 2: {schema2}"
             )
 
     is_compatible = len(differences) == 0
@@ -133,7 +133,7 @@ def compare_schemas(
 # Main Comparison Function
 # ============================================================================
 
-def compare_pipelines(
+def compare_procedures(
     operators1: List[Dict[str, Any]],
     operators2: List[Dict[str, Any]],
     dataset_schema: Optional[Dict[str, Any]] = None,
@@ -181,18 +181,18 @@ def compare_pipelines(
     errors = []
     warnings = []
 
-    validation1 = validate_pipeline(operators1, verbose=False, dataset_schema=dataset_schema)
-    validation2 = validate_pipeline(operators2, verbose=False, dataset_schema=dataset_schema)
+    validation1 = validate_procedure(operators1, verbose=False, dataset_schema=dataset_schema)
+    validation2 = validate_procedure(operators2, verbose=False, dataset_schema=dataset_schema)
 
     pipeline1_valid = validation1['is_valid']
     pipeline2_valid = validation2['is_valid']
 
     if not pipeline1_valid:
-        errors.append("Pipeline 1 validation failed:")
+        errors.append("Procedure 1 validation failed:")
         errors.extend([f"  - {e}" for e in validation1['errors']])
 
     if not pipeline2_valid:
-        errors.append("Pipeline 2 validation failed:")
+        errors.append("Procedure 2 validation failed:")
         errors.extend([f"  - {e}" for e in validation2['errors']])
 
     if not pipeline1_valid or not pipeline2_valid:
@@ -239,7 +239,7 @@ def compare_pipelines(
     if len(operators1) != len(operators2):
         warnings.append(
             f"Pipelines have different numbers of operators: "
-            f"Pipeline 1 has {len(operators1)}, Pipeline 2 has {len(operators2)}"
+            f"Procedure 1 has {len(operators1)}, Procedure 2 has {len(operators2)}"
         )
 
     is_compatible = pipeline1_valid and pipeline2_valid and input_compatible and output_compatible
@@ -307,15 +307,15 @@ def format_comparison_report(result: Dict[str, Any], format: str = 'text') -> st
     lines.append("Pipeline Validation:")
     p1_valid = result['pipelines_valid']['pipeline1']
     p2_valid = result['pipelines_valid']['pipeline2']
-    lines.append(f"  Pipeline 1: {'✓ Valid' if p1_valid else '✗ Invalid'}")
-    lines.append(f"  Pipeline 2: {'✓ Valid' if p2_valid else '✗ Invalid'}")
+    lines.append(f"  Procedure 1: {'✓ Valid' if p1_valid else '✗ Invalid'}")
+    lines.append(f"  Procedure 2: {'✓ Valid' if p2_valid else '✗ Invalid'}")
     lines.append("")
 
     # Pipeline info
     info = result['pipeline_info']
     lines.append("Pipeline Information:")
-    lines.append(f"  Pipeline 1: {info['pipeline1_operators']} operators")
-    lines.append(f"  Pipeline 2: {info['pipeline2_operators']} operators")
+    lines.append(f"  Procedure 1: {info['pipeline1_operators']} operators")
+    lines.append(f"  Procedure 2: {info['pipeline2_operators']} operators")
     lines.append("")
 
     # Schema comparison
@@ -403,36 +403,36 @@ Examples:
     # Load pipeline 1
     pipeline1_path = Path(args.pipeline1_file)
     if not pipeline1_path.exists():
-        print(f"Error: Pipeline 1 file not found: {args.pipeline1_file}", file=sys.stderr)
+        print(f"Error: Procedure 1 file not found: {args.pipeline1_file}", file=sys.stderr)
         sys.exit(1)
 
     try:
         with open(pipeline1_path, 'r') as f:
             pipeline1_data = json.load(f)
     except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON in Pipeline 1 file: {e}", file=sys.stderr)
+        print(f"Error: Invalid JSON in Procedure 1 file: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Load pipeline 2
     pipeline2_path = Path(args.pipeline2_file)
     if not pipeline2_path.exists():
-        print(f"Error: Pipeline 2 file not found: {args.pipeline2_file}", file=sys.stderr)
+        print(f"Error: Procedure 2 file not found: {args.pipeline2_file}", file=sys.stderr)
         sys.exit(1)
 
     try:
         with open(pipeline2_path, 'r') as f:
             pipeline2_data = json.load(f)
     except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON in Pipeline 2 file: {e}", file=sys.stderr)
+        print(f"Error: Invalid JSON in Procedure 2 file: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Extract operators
     if 'operators' not in pipeline1_data:
-        print("Error: Pipeline 1 file must contain 'operators' field", file=sys.stderr)
+        print("Error: Procedure 1 file must contain 'operators' field", file=sys.stderr)
         sys.exit(1)
 
     if 'operators' not in pipeline2_data:
-        print("Error: Pipeline 2 file must contain 'operators' field", file=sys.stderr)
+        print("Error: Procedure 2 file must contain 'operators' field", file=sys.stderr)
         sys.exit(1)
 
     operators1 = pipeline1_data['operators']
@@ -454,7 +454,7 @@ Examples:
             sys.exit(1)
 
     # Compare pipelines
-    result = compare_pipelines(
+    result = compare_procedures(
         operators1,
         operators2,
         dataset_schema=dataset_schema,

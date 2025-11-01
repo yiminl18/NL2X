@@ -45,7 +45,7 @@ from .abstract.support import (
     check_pipeline_compatibility,
 )
 from .abstract.ops.base import Operator
-from .abstract.pipeline import Pipeline
+from .abstract.procedure import Procedure
 from .abstract.convert.docetl import (
     abstract_to_docetl,
     operator_to_dict,
@@ -1226,9 +1226,9 @@ Always respond with valid JSON matching the required schema."""
         dataset_samples: List[Dict],
         dataset_path: str,  # Used for pipeline metadata
         attempt: int = 0
-    ) -> Pipeline:
+    ) -> Procedure:
         """
-        Build complete abstract pipeline using JIT (Just-in-Time) step-by-step generation.
+        Build complete abstract procedure using JIT (Just-in-Time) step-by-step generation.
 
         Args:
             query: User query
@@ -1237,7 +1237,7 @@ Always respond with valid JSON matching the required schema."""
             attempt: Attempt number
 
         Returns:
-            Abstract Pipeline object
+            Abstract Procedure object
         """
         if self.config.verbose:
             self.logger.info("Building pipeline using JIT step-by-step generation...")
@@ -1317,11 +1317,11 @@ Always respond with valid JSON matching the required schema."""
         # Display pipeline summary
         self.ui.display_pipeline_summary(filled_operators, query)
 
-        # Build Pipeline object
+        # Build Procedure object
         pipeline_name = f"abstract_pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         dataset_schema = {'fields': dataset_schema}
 
-        abstract_pipeline = Pipeline.from_operators(
+        abstract_pipeline = Procedure.from_operators(
             operators=filled_operators,
             name=pipeline_name,
             input_path=None,  # Set later when executing
@@ -1341,16 +1341,16 @@ Always respond with valid JSON matching the required schema."""
 
     def _convert_and_execute(
         self,
-        abstract_pipeline: Pipeline,
+        abstract_pipeline: Procedure,
         query: str,
         dataset_path: str,
         attempt: int = 0
     ) -> Tuple[bool, Optional[str], Optional[Dict]]:
         """
-        Convert abstract pipeline to base system format and execute.
+        Convert abstract procedure to base system format and execute.
 
         Args:
-            abstract_pipeline: Abstract Pipeline object
+            abstract_pipeline: Abstract Procedure object
             query: User query
             dataset_path: Path to dataset
             attempt: Current attempt number (for user confirmation)
@@ -1358,7 +1358,7 @@ Always respond with valid JSON matching the required schema."""
         Returns:
             (success, output, pipeline_dict)
         """
-        # Convert Pipeline to dict and save as JSON
+        # Convert Procedure to dict and save as JSON
         pipeline_dict = {
             "name": abstract_pipeline.name,
             "input_path": abstract_pipeline.input_path,

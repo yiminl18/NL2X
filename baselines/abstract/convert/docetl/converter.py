@@ -15,9 +15,9 @@ import argparse
 from pathlib import Path
 
 from ...ops.base import Operator
-from ...pipeline import Pipeline
-from ...tools.docetl_pipeline_parser import parse_pipeline_operators
-from ...tools.static_checker import validate_pipeline
+from ...procedure import Procedure
+from ...tools.docetl_pipeline_parser import parse_procedure_operators
+from ...tools.static_checker import validate_procedure
 
 # Import DocETL schema tracker for type inference and conversion (4 dots: go up to baselines/)
 from ....docetl_support.schema_tracking import DocETLSchemaTracker
@@ -94,11 +94,11 @@ def docetl_to_abstract(docetl_operator: Dict[str, Any], field_types: Optional[Di
     return abstract_op
 
 
-def docetl_pipeline_to_abstract(yaml_path: Union[str, Path], pipeline_config: Optional[Dict[str, Any]] = None, dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
-    """Convert DocETL YAML to abstract Pipeline, tracking field types through pipeline."""
+def docetl_pipeline_to_abstract(yaml_path: Union[str, Path], pipeline_config: Optional[Dict[str, Any]] = None, dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Procedure:
+    """Convert DocETL YAML to abstract Procedure, tracking field types through pipeline."""
     # Parse DocETL operators from YAML
     yaml_path = Path(yaml_path)
-    docetl_pipeline = parse_pipeline_operators(yaml_path)
+    docetl_pipeline = parse_procedure_operators(yaml_path)
 
     abstract_operators = []
     cumulative_field_types = {}
@@ -228,7 +228,7 @@ def docetl_pipeline_to_abstract(yaml_path: Union[str, Path], pipeline_config: Op
                 properties['pipeline'] = pipeline_props
 
 
-    return Pipeline.from_operators(
+    return Procedure.from_operators(
         abstract_operators,
         name=pipeline_name,
         input_path=input_path,
@@ -357,26 +357,26 @@ def _load_and_convert_yaml(yaml_path: Union[str, Path], dataset_schema: Optional
                                 print(f"  - {field}: {field_type}")
                             print("=" * 60 + "\n")
 
-    # Parse and convert operators (parse_pipeline_operators called inside)
+    # Parse and convert operators (parse_procedure_operators called inside)
     abstract_pipeline = docetl_pipeline_to_abstract(yaml_path, complete_yaml, converted_schema, verbose=verbose)
-    abstract_operators = abstract_pipeline.to_operators()
+    abstract_operators = abstract_procedure.to_operators()
 
     # Perform static validation (always)
     operators_list = [operator_to_dict(op) for op in abstract_operators]
-    validation_result = validate_pipeline(operators_list, dataset_schema=converted_schema)
+    validation_result = validate_procedure(operators_list, dataset_schema=converted_schema)
 
     return {
-        "input_path": abstract_pipeline.input_path,
-        "output_path": abstract_pipeline.output_path,
+        "input_path": abstract_procedure.input_path,
+        "output_path": abstract_procedure.output_path,
         "dataset_schema": converted_schema,
-        "properties": abstract_pipeline.properties,
+        "properties": abstract_procedure.properties,
         "operators": operators_list,
         "pipeline": abstract_pipeline,
         "validation": validation_result
     }
 
 
-def yaml_to_abstract_pipeline(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Pipeline:
+def yaml_to_abstract_pipeline(yaml_file_path: Union[str, Path], dataset_schema: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Procedure:
     """Convert DocETL YAML file to abstract Pipeline."""
     result = _load_and_convert_yaml(yaml_file_path, dataset_schema, verbose)
     if result["validation"]["errors"]:

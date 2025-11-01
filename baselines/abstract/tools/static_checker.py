@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Static validation tool for abstract pipeline operators.
+Static validation tool for abstract procedure operators.
 """
 
 import json
@@ -308,8 +308,8 @@ def extract_fields_from_operator(operator: Dict[str, Any]) -> Dict[str, Dict[str
 # Main Validation Function
 # ============================================================================
 
-def validate_pipeline(operators: List[Dict[str, Any]], verbose: bool = False, dataset_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Perform comprehensive validation of an abstract pipeline."""
+def validate_procedure(operators: List[Dict[str, Any]], verbose: bool = False, dataset_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Perform comprehensive validation of an abstract procedure."""
     all_errors = []
     all_warnings = []
     validation_results = {}
@@ -507,7 +507,7 @@ Examples:
     parser.add_argument(
         'pipeline_file',
         type=str,
-        help='Path to the abstract pipeline JSON file'
+        help='Path to the abstract procedure JSON file'
     )
 
     parser.add_argument(
@@ -552,7 +552,7 @@ Examples:
     operators = pipeline_data['operators']
 
     # Validate pipeline
-    report = validate_pipeline(operators, verbose=args.verbose)
+    report = validate_procedure(operators, verbose=args.verbose)
 
     # Filter report if quiet mode
     if args.quiet:
