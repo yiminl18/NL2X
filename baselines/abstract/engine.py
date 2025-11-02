@@ -14,7 +14,7 @@ import traceback
 
 # Import abstract operator classes
 from .ops.base import Operator
-from .procedure import Procedure, ProcedureNode
+from .procedure import Procedure
 
 # Import executors
 from .executor import DocETLExecutor, LotusExecutor, ExecutionResult

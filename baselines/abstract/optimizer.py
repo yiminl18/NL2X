@@ -248,10 +248,7 @@ def summarize_subtasks(
         data_samples = []
 
     operators_info = []
-    execution_order = procedure.get_execution_order()
-    for node_id in execution_order:
-        node = procedure.nodes[node_id]
-        op = node.operator
+    for op in procedure.operators:
         operators_info.append({
             "type": op.type,
             "name": op.name,
@@ -333,10 +330,7 @@ def summarize_subtasks_step(
         data_samples = []
 
     operators_info = []
-    execution_order = procedure.get_execution_order()
-    for node_id in execution_order:
-        node = procedure.nodes[node_id]
-        op = node.operator
+    for op in procedure.operators:
         operators_info.append({
             "type": op.type,
             "name": op.name,
@@ -407,15 +401,15 @@ class ProcedureOptimizer:
         query: Optional[str] = None,
         num_samples: int = 5
     ):
-        """Initialize optimizer with pipeline and optional data source."""
-        self.procedure = pipeline
+        """Initialize optimizer with procedure and optional data source."""
+        self.procedure = procedure
         self.data_manager = data_manager
         self.query = query
         self.num_samples = num_samples
 
-        if data_source is None and pipeline.input_path and data_manager:
+        if data_source is None and procedure.input_path and data_manager:
             try:
-                data_source = data_manager.load(pipeline.input_path)
+                data_source = data_manager.load(procedure.input_path)
             except Exception:
                 pass
 
@@ -618,9 +612,7 @@ def should_pushdown_filter(procedure: Procedure) -> bool:
         True if at least one filter can be pushed earlier, False otherwise
     """
     try:
-        execution_order = procedure.get_execution_order()
-
-        if len(execution_order) < 2:
+        if len(procedure.operators) < 2:
             return False
 
         available_fields = set()
@@ -629,9 +621,7 @@ def should_pushdown_filter(procedure: Procedure) -> bool:
 
         fields_at_position = [available_fields.copy()]
 
-        for node_id in execution_order:
-            operator = procedure.nodes[node_id].operator
-
+        for operator in procedure.operators:
             if hasattr(operator, 'output') and isinstance(operator.output, dict):
                 for field_name in operator.output.keys():
                     if field_name != 'type':
@@ -639,9 +629,7 @@ def should_pushdown_filter(procedure: Procedure) -> bool:
 
             fields_at_position.append(available_fields.copy())
 
-        for current_pos, node_id in enumerate(execution_order):
-            operator = procedure.nodes[node_id].operator
-
+        for current_pos, operator in enumerate(procedure.operators):
             if operator.type == 'Filter':
                 required_fields = set()
                 if hasattr(operator, 'input') and isinstance(operator.input, dict):
@@ -676,20 +664,17 @@ def _single_pushdown(procedure: Procedure) -> Procedure:
         procedure: Procedure object to optimize
 
     Returns:
-        New Pipeline with one filter moved to an earlier position
+        New Procedure with one filter moved to an earlier position
     """
     import copy
 
-    execution_order = procedure.get_execution_order()
     available_fields = set()
     if procedure.dataset_schema and 'fields' in procedure.dataset_schema:
         available_fields = set(procedure.dataset_schema['fields'].keys())
 
     fields_at_position = [available_fields.copy()]
 
-    for node_id in execution_order:
-        operator = procedure.nodes[node_id].operator
-
+    for operator in procedure.operators:
         if hasattr(operator, 'output') and isinstance(operator.output, dict):
             for field_name in operator.output.keys():
                 if field_name != 'type':
@@ -700,9 +685,7 @@ def _single_pushdown(procedure: Procedure) -> Procedure:
     current_position = None
     target_position = None
 
-    for current_pos, node_id in enumerate(execution_order):
-        operator = procedure.nodes[node_id].operator
-
+    for current_pos, operator in enumerate(procedure.operators):
         if operator.type == 'Filter':
             required_fields = set()
             if hasattr(operator, 'input') and isinstance(operator.input, dict):
@@ -724,7 +707,7 @@ def _single_pushdown(procedure: Procedure) -> Procedure:
                 target_position = earliest_pos
                 break
 
-    new_procedure = copy.deepcopy(pipeline)
+    new_procedure = copy.deepcopy(procedure)
 
     removed_filter = new_procedure.remove_operator_at(current_position)
     new_procedure.insert_operator(removed_filter, target_position)
@@ -742,18 +725,18 @@ def pushdown_filter(procedure: Procedure) -> Optional[Procedure]:
         procedure: Procedure object to optimize
 
     Returns:
-        Optimized Pipeline if any filters were moved, None otherwise
+        Optimized Procedure if any filters were moved, None otherwise
     """
-    if not should_pushdown_filter(pipeline):
+    if not should_pushdown_filter(procedure):
         return None
 
-    current_pipeline = pipeline
+    current_procedure = procedure
     optimization_count = 0
 
-    while should_pushdown_filter(current_pipeline):
-        current_pipeline = _single_pushdown(current_pipeline)
+    while should_pushdown_filter(current_procedure):
+        current_procedure = _single_pushdown(current_procedure)
         optimization_count += 1
 
     print(f"Filter pushdown completed: {optimization_count} filter(s) optimized")
 
-    return current_pipeline
+    return current_procedure

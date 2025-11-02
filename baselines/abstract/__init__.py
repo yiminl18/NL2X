@@ -22,7 +22,9 @@ from .ops import (
     Project,
 )
 
-from .procedure import Procedure, ProcedureNode, optimize_procedure
+from .procedure import Procedure, optimize_procedure
+
+from .pipeline import Pipeline
 
 from .optimizer import ProcedureOptimizer
 
@@ -47,8 +49,8 @@ __all__ = [
     "Search",
     "Project",
     "Procedure",
-    "ProcedureNode",
     "optimize_procedure",
+    "Pipeline",
     "ProcedureOptimizer",
     "DatasetManager",
     "SamplingConfig",
