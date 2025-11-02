@@ -292,15 +292,32 @@ except Exception as e:
                         input_data: Optional[Any] = None,
                         config: Optional[Dict[str, Any]] = None,
                         save_intermediates: bool = False,
-                        intermediate_dir: Optional[str] = None) -> ExecutionResult:
-        """Execute complete procedure, routing operators to appropriate system executors."""
+                        intermediate_dir: Optional[str] = None,
+                        override_data_sources: Optional[List[DataReference]] = None,
+                        override_outputs: Optional[List[DataReference]] = None) -> ExecutionResult:
+        """
+        Execute complete procedure, routing operators to appropriate system executors.
+
+        Args:
+            procedure: Procedure to execute
+            input_data: Input data (if None, loads from data_sources)
+            config: Optional configuration
+            save_intermediates: Whether to save intermediate results
+            intermediate_dir: Directory for intermediates
+            override_data_sources: Override procedure's data_sources (for pipeline use)
+            override_outputs: Override procedure's outputs (for pipeline use)
+        """
         try:
-            # If input_data not provided, try to load from procedure
+            # Use override_data_sources if provided, else procedure.data_sources
+            effective_data_sources = override_data_sources if override_data_sources is not None else procedure.data_sources
+            effective_outputs = override_outputs if override_outputs is not None else procedure.outputs
+
+            # If input_data not provided, try to load from effective data sources
             if input_data is None:
-                if procedure.data_sources:
+                if effective_data_sources:
                     if self.verbose:
-                        print(f"Loading dataset from procedure.data_sources: {procedure.data_sources[0].ref}")
-                    input_data = self._load_from_reference(procedure.data_sources[0])
+                        print(f"Loading dataset from data_sources: {effective_data_sources[0].ref}")
+                    input_data = self._load_from_reference(effective_data_sources[0])
                 else:
                     raise ValueError(
                         "input_data is required for procedure execution. "
@@ -318,13 +335,17 @@ except Exception as e:
                 intermediate_dir=intermediate_dir
             )
 
-            # Save final output if procedure has outputs
-            if result.success and procedure.outputs:
-                if self.verbose:
-                    print(f"Final output saved to: {procedure.outputs[0].ref}")
+            # Save final output if effective outputs exist and are file references
+            if result.success and effective_outputs:
+                # Only save to file if output is a file reference (not a node reference)
+                if effective_outputs[0].ref_type == "file":
+                    if self.verbose:
+                        print(f"Final output saved to: {effective_outputs[0].ref}")
 
-                self._save_to_reference(result.data, procedure.outputs[0])
-                result.metadata['output_path'] = procedure.outputs[0].ref
+                    self._save_to_reference(result.data, effective_outputs[0])
+                    result.metadata['output_path'] = effective_outputs[0].ref
+                elif self.verbose:
+                    print(f"Skipping save (output is node reference): {effective_outputs[0].ref}")
 
             return result
 
@@ -572,13 +593,15 @@ except Exception as e:
                     node_intermediate_dir = os.path.join(intermediate_dir, node_id)
                     os.makedirs(node_intermediate_dir, exist_ok=True)
 
-                # Execute procedure
+                # Execute procedure with node's data_sources and outputs as overrides
                 result = self.execute_procedure(
                     procedure=procedure,
                     input_data=input_data,
                     config=config,
                     save_intermediates=save_intermediates,
-                    intermediate_dir=node_intermediate_dir
+                    intermediate_dir=node_intermediate_dir,
+                    override_data_sources=node.data_sources,
+                    override_outputs=node.outputs
                 )
 
                 if not result.success:
@@ -592,27 +615,23 @@ except Exception as e:
                         }
                     )
 
-                # Save output to file if FINAL node, otherwise just register in memory
-                if len(node.outputs) == 1 and node.outputs[0].ref_type == "file":
-                    # FINAL node - save to file
-                    self._save_to_reference(result.data, node.outputs[0])
-                    output_path = node.outputs[0].ref
-                elif save_intermediates and intermediate_dir:
-                    # Intermediate node - save if requested
+                # Save intermediate output if requested (for debugging)
+                # Note: Final output to file is now handled by execute_procedure
+                output_path = None
+                if save_intermediates and intermediate_dir:
+                    # Save intermediate node output for debugging
                     output_path = os.path.join(intermediate_dir, f"{node_id}_output.json")
                     with open(output_path, 'w') as f:
                         json.dump(result.data, f, indent=2)
-                else:
-                    output_path = None
 
-                # Register output in memory
+                # Register output in memory for dependent nodes
                 outputs_registry[node_id] = result.data
 
                 if self.verbose:
                     data_info = f"{len(result.data)} records" if isinstance(result.data, list) else type(result.data).__name__
                     print(f"  ✓ Node '{node_id}' completed: {data_info}")
                     if output_path:
-                        print(f"  Output saved to: {output_path}")
+                        print(f"  Intermediate saved to: {output_path}")
 
             # Find FINAL node and return its output
             final_nodes = [n for n in pipeline.nodes.values() if n.node_type == NodeType.FINAL]

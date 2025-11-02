@@ -2,11 +2,11 @@ name: calculate_student_sum
 data_sources:
   - type: file
     name: grade.json
-    reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade.json
+    reference: grade.json
 outputs:
   - type: file
     name: grade_with_sum.json
-    reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade_with_sum.json
+    reference: grade_with_sum.json
 properties:
   description: Calculate total sum of scores for students
   created_by: manual creation

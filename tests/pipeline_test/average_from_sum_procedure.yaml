@@ -2,11 +2,11 @@ name: calculate_student_average_from_sum
 data_sources:
   - type: file
     name: grade_with_sum.json
-    reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade_with_sum.json
+    reference: grade_with_sum.json
 outputs:
   - type: file
     name: grade_with_average.json
-    reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade_with_average.json
+    reference: grade_with_average.json
 properties:
   description: Calculate average score from total sum (dividing by 3 subjects)
   created_by: manual creation
