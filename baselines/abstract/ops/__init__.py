@@ -15,6 +15,7 @@ from .sample import Sample
 from .index import Index
 from .search import Search
 from .project import Project
+from .python_code import PythonCodeOperator  # TEMPORARY
 
 __all__ = [
     "Operator",
@@ -34,4 +35,5 @@ __all__ = [
     "Index",
     "Search",
     "Project",
+    "PythonCodeOperator",  # TEMPORARY
 ]

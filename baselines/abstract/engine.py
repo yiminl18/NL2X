@@ -11,6 +11,8 @@ from pathlib import Path
 import json
 import os
 import traceback
+import subprocess  # For PythonCode operator execution
+import sys
 
 # Import abstract operator classes
 from .ops.base import Operator
@@ -83,6 +85,134 @@ class AbstractExecutor:
             if hasattr(executor, 'cache_enabled'):
                 executor.cache_enabled = True
 
+    def _execute_python_code(self,
+                            operator: Operator,
+                            input_data: Any,
+                            timeout: int = 300) -> ExecutionResult:
+        """
+        Execute Python function in subprocess sandbox.
+
+        The function must have signature: def process(sources)
+        - sources: Dict with 'input_data' key containing previous operator output
+        - Returns: Modified data with new fields
+
+        Args:
+            operator: PythonCode operator with 'function' in properties
+            input_data: Input data from previous operator
+            timeout: Subprocess timeout in seconds (default: 300)
+
+        Returns:
+            ExecutionResult with output data or error
+        """
+        try:
+            # Get function from operator properties
+            function_code = operator.properties.get('function')
+            if not function_code:
+                return ExecutionResult(
+                    success=False,
+                    error="PythonCode operator missing 'function' in properties"
+                )
+
+            # Get additional sources (beyond input_data)
+            additional_sources = operator.properties.get('sources', [])
+
+            # Build sources dict (currently only supports input_data)
+            # TODO: Support loading additional data sources
+            sources = {
+                'input_data': input_data
+            }
+
+            # Serialize sources to JSON
+            try:
+                sources_json = json.dumps(sources)
+            except (TypeError, ValueError) as e:
+                return ExecutionResult(
+                    success=False,
+                    error=f"Failed to serialize sources to JSON: {str(e)}"
+                )
+
+            # Create wrapper script
+            wrapper_script = f"""
+import json
+import sys
+
+# User-defined function
+{function_code}
+
+# Load sources from stdin
+sources = json.load(sys.stdin)
+
+# Execute function
+try:
+    result = process(sources)
+    # Output result as JSON
+    print(json.dumps(result))
+except Exception as e:
+    print(f"Function execution error: {{e}}", file=sys.stderr)
+    sys.exit(1)
+"""
+
+            if self.verbose:
+                print(f"  Executing Python function in subprocess (timeout: {timeout}s)")
+                print(f"  Sources: {list(sources.keys())}")
+                if isinstance(input_data, list):
+                    print(f"  Input data: {len(input_data)} records")
+
+            # Execute wrapper in subprocess
+            try:
+                result = subprocess.run(
+                    [sys.executable, '-c', wrapper_script],
+                    input=sources_json,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False
+                )
+            except subprocess.TimeoutExpired:
+                return ExecutionResult(
+                    success=False,
+                    error=f"Python function execution timed out after {timeout} seconds"
+                )
+
+            # Check for execution errors
+            if result.returncode != 0:
+                error_msg = result.stderr or "Unknown error (no stderr output)"
+                return ExecutionResult(
+                    success=False,
+                    error=f"Python function execution failed (exit code {result.returncode}):\n{error_msg}"
+                )
+
+            # Parse output JSON
+            try:
+                output_data = json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                return ExecutionResult(
+                    success=False,
+                    error=f"Failed to parse output JSON: {str(e)}\nStdout: {result.stdout[:500]}"
+                )
+
+            if self.verbose:
+                if isinstance(output_data, list):
+                    print(f"  Output: {len(output_data)} records")
+                else:
+                    print(f"  Output: {type(output_data).__name__}")
+
+            return ExecutionResult(
+                success=True,
+                data=output_data,
+                metadata={
+                    'operator_type': 'PythonCode',
+                    'operator_name': operator.name,
+                    'execution_time': None
+                }
+            )
+
+        except Exception as e:
+            return ExecutionResult(
+                success=False,
+                error=f"PythonCode execution failed: {str(e)}\n{traceback.format_exc()}"
+            )
+
     def _load_from_reference(self, ref: DataReference) -> List[Dict[str, Any]]:
         """
         Load data from a DataReference.
@@ -140,6 +270,10 @@ class AbstractExecutor:
         # Convert dict to Operator if needed
         if isinstance(operator, dict):
             operator = dict_to_operator(operator)
+
+        # Route PythonCode operators to subprocess executor
+        if operator.type == "PythonCode":
+            return self._execute_python_code(operator, input_data)
 
         # Determine which system to use
         system = operator.source.get('system', 'docetl')

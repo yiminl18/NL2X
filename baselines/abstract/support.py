@@ -14,7 +14,8 @@ ALL_ABSTRACT_OPERATORS = {
     'Map', 'Filter', 'Reduce', 'Resolve', 'Join',
     'Rank', 'TopK', 'Extract', 'Cluster',
     'Split', 'Gather', 'Unnest', 'Sample',
-    'Index', 'Project', 'Search'
+    'Index', 'Project', 'Search',
+    'PythonCode'  # TEMPORARY: Abstract-only, not convertible to any base system
 }
 
 BASE_SYSTEM_SUPPORT: Dict[BaseSystem, List[str]] = {
@@ -216,6 +217,19 @@ OPERATOR_DESCRIPTIONS = {
         'output_schema': {
             'description': 'Matching records from the index',
             'example': '[{"id": "5", "content": "ML in healthcare...", "relevance_score": 0.95}]'
+        }
+    },
+    # TEMPORARY: PythonCode operator (abstract-only, experimental)
+    'PythonCode': {
+        'description': 'Execute arbitrary Python code (TEMPORARY, abstract-only)',
+        'core_function': 'Executes custom Python code in a subprocess sandbox. Code must read JSON from stdin and write JSON to stdout. This is a "dummy" operator that bypasses normal operator decomposition and schema validation. Note: TEMPORARY feature, not convertible to any base system (DocETL, Lotus, etc.).',
+        'input_schema': {
+            'description': 'JSON data passed via stdin to Python process',
+            'example': '[{"field1": "value1", "field2": "value2"}]'
+        },
+        'output_schema': {
+            'description': 'JSON data returned via stdout from Python process',
+            'example': '[{"field1": "processed_value", "new_field": "computed_value"}]'
         }
     }
 }

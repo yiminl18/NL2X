@@ -3,18 +3,14 @@ import json
 import sys
 from pathlib import Path
 from .procedure import Procedure
-from .db import DataSource, DatasetManager
 from model.litellm_client import llm_call
 
-from .tools.static_comparator import compare_procedures
-
-def _infer_field_type(value: Any, samples: List[Any] = None) -> str:
+def _infer_field_type(value: Any) -> str:
     """
     Infer abstraction layer type from sample value(s).
 
     Args:
         value: A sample value to infer type from
-        samples: Optional list of additional samples for better inference
 
     Returns:
         Type string in abstraction layer format (e.g., "String", "List[Integer]", "Dict[{...}]")
@@ -55,7 +51,7 @@ def _infer_field_type(value: Any, samples: List[Any] = None) -> str:
         fields_str = ", ".join([f"{k}: {v}" for k, v in field_types.items()])
         return f"Dict[{{{fields_str}}}]"
     else:
-        return "Unknown"
+        raise ValueError(f"Unsupported value type for inference: {type(value)}")
 
 
 def _extract_fields_with_types(data_samples: List[Dict], add_sample: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -396,29 +392,32 @@ class ProcedureOptimizer:
     def __init__(
         self,
         procedure: Procedure,
-        data_source: Optional[DataSource] = None,
-        data_manager: Optional[DatasetManager] = None,
+        input_data: Optional[Any] = None,
         query: Optional[str] = None,
         num_samples: int = 5
     ):
-        """Initialize optimizer with procedure and optional data source."""
+        """Initialize optimizer with procedure and optional input data."""
         self.procedure = procedure
-        self.data_manager = data_manager
         self.query = query
         self.num_samples = num_samples
 
-        if data_source is None and procedure.input_path and data_manager:
+        # Load data from procedure if not provided
+        if input_data is None and procedure.data_sources:
             try:
-                data_source = data_manager.load(procedure.input_path)
+                from .pipeline import DataReference
+                if procedure.data_sources[0].ref_type == "file":
+                    file_path = Path(procedure.data_sources[0].ref)
+                    with open(file_path, 'r') as f:
+                        input_data = json.load(f)
             except Exception:
                 pass
 
-        self.data_source = data_source
+        self.input_data = input_data
 
         data_samples = []
-        if self.data_source and self.data_source.data:
-            sample_size = min(self.num_samples, len(self.data_source.data))
-            data_samples = self.data_source.data[:sample_size]
+        if self.input_data and isinstance(self.input_data, list):
+            sample_size = min(self.num_samples, len(self.input_data))
+            data_samples = self.input_data[:sample_size]
 
         if self.procedure.subtasks is None:
             self.procedure.subtasks = summarize_subtasks(

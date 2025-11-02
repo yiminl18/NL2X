@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional, Any, Union
 from pathlib import Path
-import json
+import yaml
 
 from .ops.base import Operator
 from .pipeline import DataReference
@@ -148,23 +148,23 @@ class Procedure:
         return procedure
 
     def save(self, filepath: Union[str, Path]) -> None:
-        """Save Procedure to JSON file."""
+        """Save Procedure to YAML file."""
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
         with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+            yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     @classmethod
     def load(cls, filepath: Union[str, Path]) -> 'Procedure':
-        """Load Procedure from JSON file."""
+        """Load Procedure from YAML file."""
         filepath = Path(filepath)
 
         if not filepath.exists():
             raise FileNotFoundError(f"Procedure file not found: {filepath}")
 
         with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+            data = yaml.safe_load(f)
 
         return cls.from_dict(data)
 

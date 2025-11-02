@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Alice Johnson",
+    "calculus": 92,
+    "physics": 88,
+    "biology": 95
+  },
+  {
+    "name": "Bob Smith",
+    "calculus": 78,
+    "physics": 82,
+    "biology": 76
+  },
+  {
+    "name": "Carol Lee",
+    "calculus": 85,
+    "physics": 91,
+    "biology": 87
+  },
+  {
+    "name": "David Chen",
+    "calculus": 95,
+    "physics": 89,
+    "biology": 92
+  },
+  {
+    "name": "Emma Davis",
+    "calculus": 73,
+    "physics": 79,
+    "biology": 84
+  }
+]

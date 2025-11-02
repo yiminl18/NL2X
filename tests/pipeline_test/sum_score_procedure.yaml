@@ -1,0 +1,56 @@
+name: calculate_student_sum
+data_sources:
+  - type: file
+    name: grade.json
+    reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade.json
+outputs:
+  - type: file
+    name: grade_with_sum.json
+    reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade_with_sum.json
+properties:
+  description: Calculate total sum of scores for students
+  created_by: manual creation
+dataset_schema:
+  fields:
+    name: String
+    calculus: Integer
+    physics: Integer
+    biology: Integer
+subtasks:
+  - Calculate total sum from calculus, physics, and biology grades
+operators:
+  - name: calculate_sum
+    type: PythonCode
+    source:
+      system: abstract
+      name: calculate_sum
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Calculate total sum for each student
+            for record in data:
+                calculus = record.get('calculus', 0)
+                physics = record.get('physics', 0)
+                biology = record.get('biology', 0)
+
+                # Calculate sum
+                total = calculus + physics + biology
+                record['total_score'] = total
+
+            # Return modified data
+            return data
+    input:
+      fields:
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer
+      total_score: Integer

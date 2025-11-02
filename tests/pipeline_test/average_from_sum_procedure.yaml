@@ -1,0 +1,57 @@
+name: calculate_student_average_from_sum
+data_sources:
+  - type: file
+    name: grade_with_sum.json
+    reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade_with_sum.json
+outputs:
+  - type: file
+    name: grade_with_average.json
+    reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade_with_average.json
+properties:
+  description: Calculate average score from total sum (dividing by 3 subjects)
+  created_by: manual creation
+dataset_schema:
+  fields:
+    name: String
+    calculus: Integer
+    physics: Integer
+    biology: Integer
+    total_score: Integer
+subtasks:
+  - Calculate average score by dividing total_score by 3
+operators:
+  - name: calculate_average
+    type: PythonCode
+    source:
+      system: abstract
+      name: calculate_average
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Calculate average from total_score for each student
+            for record in data:
+                total_score = record.get('total_score', 0)
+
+                # Calculate average by dividing total by 3 subjects
+                average = total_score / 3
+                record['average_score'] = round(average, 2)
+
+            # Return modified data
+            return data
+    input:
+      fields:
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        total_score: Integer
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer
+      total_score: Integer
+      average_score: Float
