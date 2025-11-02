@@ -1,4 +1,7 @@
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
+from pathlib import Path
+import json
+
 from .ops.base import Operator
 
 
@@ -74,6 +77,61 @@ class Procedure:
         for i, op in enumerate(self.operators, 1):
             lines.append(f"  {i}. {op.name or f'op_{i}'} ({op.type})")
         return "\n".join(lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize Procedure to dictionary."""
+        from .convert.docetl.converter import operator_to_dict
+
+        return {
+            "name": self.name,
+            "input_path": self.input_path,
+            "output_path": self.output_path,
+            "properties": self.properties,
+            "dataset_schema": self.dataset_schema,
+            "subtasks": self.subtasks,
+            "operators": [operator_to_dict(op) for op in self.operators]
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Procedure':
+        """Deserialize Procedure from dictionary."""
+        from .convert.docetl.converter import dict_to_operator
+
+        procedure = cls(
+            name=data.get("name", ""),
+            input_path=data.get("input_path"),
+            output_path=data.get("output_path"),
+            properties=data.get("properties", {}),
+            dataset_schema=data.get("dataset_schema"),
+            subtasks=data.get("subtasks")
+        )
+
+        # Reconstruct operators
+        operators_data = data.get("operators", [])
+        procedure.operators = [dict_to_operator(op_dict) for op_dict in operators_data]
+
+        return procedure
+
+    def save(self, filepath: Union[str, Path]) -> None:
+        """Save Procedure to JSON file."""
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+
+    @classmethod
+    def load(cls, filepath: Union[str, Path]) -> 'Procedure':
+        """Load Procedure from JSON file."""
+        filepath = Path(filepath)
+
+        if not filepath.exists():
+            raise FileNotFoundError(f"Procedure file not found: {filepath}")
+
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        return cls.from_dict(data)
 
     def __repr__(self):
         return f"Procedure(name='{self.name}', operators={len(self.operators)})"
