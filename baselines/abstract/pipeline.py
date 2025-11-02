@@ -10,6 +10,15 @@ import os
 from collections import defaultdict
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
+from enum import Enum
+
+
+class NodeType(Enum):
+    """Node types in the pipeline DAG."""
+    NORMAL = "normal"
+    FANOUT = "fanout"
+    AGGREGATE = "aggregate"
+    FINAL = "final"
 
 
 class DataReference:
@@ -57,17 +66,18 @@ class DataReference:
 class PipelineNode:
     """Represents a node in the pipeline DAG."""
 
-    def __init__(self, procedure_path: str, node_id: str, data_source: DataReference, outputs: List[DataReference]):
+    def __init__(self, procedure_path: str, node_id: str, node_type: NodeType, data_sources: List[DataReference], outputs: List[DataReference]):
         self.procedure_path = procedure_path
         self.node_id = node_id
-        self.data_source = data_source
+        self.node_type = node_type
+        self.data_sources = data_sources
         self.outputs = outputs
         self.parents: List[str] = []
         self.children: List[str] = []
         self.metadata: Dict[str, Any] = {}
 
     def __repr__(self):
-        return f"PipelineNode(id={self.node_id}, path={self.procedure_path}, source={self.data_source.name}, outputs={len(self.outputs)})"
+        return f"PipelineNode(id={self.node_id}, type={self.node_type.value}, sources={len(self.data_sources)}, outputs={len(self.outputs)})"
 
 
 class Pipeline:
@@ -109,7 +119,8 @@ class Pipeline:
         self,
         procedure_path: str,
         node_id: str,
-        data_source: DataReference,
+        node_type: NodeType,
+        data_sources: List[DataReference],
         outputs: List[DataReference],
         metadata: Optional[Dict[str, Any]] = None
     ) -> str:
@@ -119,26 +130,24 @@ class Pipeline:
         Args:
             procedure_path: Path to procedure file (will be converted to absolute path)
             node_id: Unique node identifier
-            data_source: DataReference specifying where this node gets its input data
-            outputs: List of DataReferences specifying where this node's output goes (required, must have at least one)
+            node_type: Type of node (normal, fanout, aggregate, final)
+            data_sources: List of DataReferences specifying where this node gets its input data
+            outputs: List of DataReferences specifying where this node's output goes
             metadata: Optional node metadata
 
         Returns:
             The node_id of the added node
 
         Raises:
-            ValueError: If node_id already exists or outputs is empty
+            ValueError: If node_id already exists
         """
         if node_id in self.nodes:
             raise ValueError(f"Node with id '{node_id}' already exists")
 
-        if not outputs:
-            raise ValueError(f"Node '{node_id}' must have at least one output")
-
         # Convert to absolute path if not already
         abs_procedure_path = os.path.abspath(procedure_path)
 
-        node = PipelineNode(abs_procedure_path, node_id, data_source, outputs)
+        node = PipelineNode(abs_procedure_path, node_id, node_type, data_sources, outputs)
         if metadata:
             node.metadata = metadata
         self.nodes[node_id] = node
@@ -166,39 +175,76 @@ class Pipeline:
 
     def validate(self) -> None:
         """
-        Validate pipeline structure and data flow consistency.
+        Validate pipeline structure and data flow consistency with type-specific rules.
 
         Checks:
-        1. All nodes have at least one output
-        2. For data_source with type='node': referenced node exists and edge exists
-        3. For outputs with type='node': referenced node exists and edge exists
+        1. Pipeline must have exactly 1 final node
+        2. Type-specific validation (fanout, aggregate, final, normal)
+        3. For data_sources with type='node': referenced node exists and edge exists
+        4. For outputs with type='node': referenced node exists and edge exists
 
         Raises:
             ValueError: If validation fails with descriptive error message
         """
         errors = []
 
+        # Check 1: Count final nodes
+        final_nodes = [node_id for node_id, node in self.nodes.items() if node.node_type == NodeType.FINAL]
+        if len(final_nodes) != 1:
+            errors.append(f"Pipeline must have exactly 1 final node, found: {len(final_nodes)}")
+
         for node_id, node in self.nodes.items():
-            # Check 1: All nodes must have at least one output
-            if not node.outputs:
-                errors.append(f"Node '{node_id}' has no outputs (at least one required)")
+            # Type-specific validation
+            if node.node_type == NodeType.FANOUT:
+                # FANOUT: Must have at least 2 outputs, all must be nodes
+                if len(node.outputs) < 2:
+                    errors.append(f"Fanout node '{node_id}' must have at least 2 outputs, has {len(node.outputs)}")
+                for output in node.outputs:
+                    if output.ref_type == "file":
+                        errors.append(f"Fanout node '{node_id}' has file output '{output.name}' (only node outputs allowed for non-final nodes)")
 
-            # Check 2: Validate data_source with type='node'
-            if node.data_source.ref_type == "node":
-                source_node_id = node.data_source.ref
+            elif node.node_type == NodeType.AGGREGATE:
+                # AGGREGATE: Must have at least 2 data_sources, all must be nodes
+                if len(node.data_sources) < 2:
+                    errors.append(f"Aggregate node '{node_id}' must have at least 2 data sources, has {len(node.data_sources)}")
+                for data_source in node.data_sources:
+                    if data_source.ref_type == "file":
+                        errors.append(f"Aggregate node '{node_id}' has file data_source '{data_source.name}' (aggregates must use node sources)")
+                # Aggregate outputs must be nodes
+                for output in node.outputs:
+                    if output.ref_type == "file":
+                        errors.append(f"Aggregate node '{node_id}' has file output '{output.name}' (only node outputs allowed for non-final nodes)")
 
-                # Check referenced node exists
-                if source_node_id not in self.nodes:
-                    errors.append(
-                        f"Node '{node_id}' has data_source referencing non-existent node '{source_node_id}'"
-                    )
-                # Check edge exists from source_node to current node
-                elif node_id not in self.edges.get(source_node_id, []):
-                    errors.append(
-                        f"Node '{node_id}' has data_source from '{source_node_id}' but no edge exists: {source_node_id} -> {node_id}"
-                    )
+            elif node.node_type == NodeType.FINAL:
+                # FINAL: Must have exactly 1 output, must be file
+                if len(node.outputs) != 1:
+                    errors.append(f"Final node '{node_id}' must have exactly 1 output, has {len(node.outputs)}")
+                elif node.outputs[0].ref_type != "file":
+                    errors.append(f"Final node '{node_id}' output must be a file, got node reference '{node.outputs[0].ref}'")
 
-            # Check 3: Validate outputs with type='node'
+            elif node.node_type == NodeType.NORMAL:
+                # NORMAL: All outputs must be nodes (not files)
+                for output in node.outputs:
+                    if output.ref_type == "file":
+                        errors.append(f"Normal node '{node_id}' has file output '{output.name}' (only final nodes can output to files)")
+
+            # Validate data_sources with type='node'
+            for data_source in node.data_sources:
+                if data_source.ref_type == "node":
+                    source_node_id = data_source.ref
+
+                    # Check referenced node exists
+                    if source_node_id not in self.nodes:
+                        errors.append(
+                            f"Node '{node_id}' has data_source referencing non-existent node '{source_node_id}'"
+                        )
+                    # Check edge exists from source_node to current node
+                    elif node_id not in self.edges.get(source_node_id, []):
+                        errors.append(
+                            f"Node '{node_id}' has data_source from '{source_node_id}' but no edge exists: {source_node_id} -> {node_id}"
+                        )
+
+            # Validate outputs with type='node'
             for output in node.outputs:
                 if output.ref_type == "node":
                     target_node_id = output.ref
@@ -223,7 +269,7 @@ class Pipeline:
         Serialize Pipeline DAG to dictionary for YAML export.
 
         Returns:
-            Dictionary with nodes, edges, data sources, and outputs
+            Dictionary with nodes, edges, node types, data sources, and outputs
         """
         return {
             "name": self.name,
@@ -232,8 +278,9 @@ class Pipeline:
             "properties": self.properties,
             "nodes": {
                 node_id: {
+                    "node_type": node.node_type.value,
                     "procedure_path": node.procedure_path,
-                    "data_source": node.data_source.to_dict(),
+                    "data_sources": [ds.to_dict() for ds in node.data_sources],
                     "outputs": [output.to_dict() for output in node.outputs],
                     "metadata": node.metadata
                 }
@@ -268,11 +315,20 @@ class Pipeline:
             procedure_path = node_data.get("procedure_path", "")
             metadata = node_data.get("metadata", {})
 
-            # Load data source
-            data_source_dict = node_data.get("data_source")
-            if not data_source_dict:
-                raise ValueError(f"Node '{node_id}' missing required 'data_source' field")
-            data_source = DataReference.from_dict(data_source_dict)
+            # Load node_type
+            node_type_str = node_data.get("node_type")
+            if not node_type_str:
+                raise ValueError(f"Node '{node_id}' missing required 'node_type' field")
+            try:
+                node_type = NodeType(node_type_str)
+            except ValueError:
+                raise ValueError(f"Node '{node_id}' has invalid node_type: '{node_type_str}' (must be: normal, fanout, aggregate, or final)")
+
+            # Load data_sources
+            data_sources_list = node_data.get("data_sources")
+            if not data_sources_list:
+                raise ValueError(f"Node '{node_id}' missing required 'data_sources' field")
+            data_sources = [DataReference.from_dict(ds_dict) for ds_dict in data_sources_list]
 
             # Load outputs
             outputs_list = node_data.get("outputs")
@@ -280,7 +336,7 @@ class Pipeline:
                 raise ValueError(f"Node '{node_id}' missing required 'outputs' field")
             outputs = [DataReference.from_dict(out_dict) for out_dict in outputs_list]
 
-            pipeline.add_procedure(procedure_path, node_id, data_source, outputs, metadata)
+            pipeline.add_procedure(procedure_path, node_id, node_type, data_sources, outputs, metadata)
 
         # Load edges
         for from_node_id, to_node_ids in data.get("edges", {}).items():

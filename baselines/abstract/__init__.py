@@ -24,11 +24,9 @@ from .ops import (
 
 from .procedure import Procedure, optimize_procedure
 
-from .pipeline import Pipeline
+from .pipeline import Pipeline, DataReference
 
 from .optimizer import ProcedureOptimizer
-
-from .db import DatasetManager, SamplingConfig, DataSource
 
 __all__ = [
     "Operator",
@@ -51,8 +49,6 @@ __all__ = [
     "Procedure",
     "optimize_procedure",
     "Pipeline",
+    "DataReference",
     "ProcedureOptimizer",
-    "DatasetManager",
-    "SamplingConfig",
-    "DataSource",
 ]

@@ -3,18 +3,21 @@ from pathlib import Path
 import json
 
 from .ops.base import Operator
+from .pipeline import DataReference
 
 
 class Procedure:
     """Linear sequence of operators for data transformation."""
 
-    def __init__(self, name: str = "", input_path: Optional[str] = None,
-                 output_path: Optional[str] = None, properties: Optional[Dict[str, Any]] = None,
+    def __init__(self, name: str = "",
+                 data_sources: Optional[List[DataReference]] = None,
+                 outputs: Optional[List[DataReference]] = None,
+                 properties: Optional[Dict[str, Any]] = None,
                  dataset_schema: Optional[Dict[str, Any]] = None,
                  subtasks: Optional[List[str]] = None):
         self.name = name
-        self.input_path = input_path
-        self.output_path = output_path
+        self.data_sources = data_sources or []
+        self.outputs = outputs or []
         self.properties = properties or {}
         self.dataset_schema = dataset_schema
         self.subtasks = subtasks
@@ -22,13 +25,13 @@ class Procedure:
 
     @classmethod
     def from_operators(cls, operators: List[Operator], name: str = "",
-                      input_path: Optional[str] = None,
-                      output_path: Optional[str] = None,
+                      data_sources: Optional[List[DataReference]] = None,
+                      outputs: Optional[List[DataReference]] = None,
                       properties: Optional[Dict[str, Any]] = None,
                       dataset_schema: Optional[Dict[str, Any]] = None) -> 'Procedure':
         """Create procedure from list of operators."""
-        procedure = cls(name=name, input_path=input_path,
-                      output_path=output_path, properties=properties,
+        procedure = cls(name=name, data_sources=data_sources,
+                      outputs=outputs, properties=properties,
                       dataset_schema=dataset_schema)
         procedure.operators = list(operators)
         return procedure
@@ -78,14 +81,36 @@ class Procedure:
             lines.append(f"  {i}. {op.name or f'op_{i}'} ({op.type})")
         return "\n".join(lines)
 
+    def validate(self) -> None:
+        """
+        Validate procedure structure.
+
+        Raises:
+            ValueError: If validation fails
+        """
+        if not self.data_sources:
+            raise ValueError("Procedure must have at least one data source")
+        if not self.outputs:
+            raise ValueError("Procedure must have at least one output")
+
+        # Validate all data sources are file references
+        for ds in self.data_sources:
+            if ds.ref_type != "file":
+                raise ValueError(f"Procedure data sources must be files, got: {ds.ref_type}")
+
+        # Validate all outputs are file references
+        for out in self.outputs:
+            if out.ref_type != "file":
+                raise ValueError(f"Procedure outputs must be files, got: {out.ref_type}")
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Procedure to dictionary."""
         from .convert.docetl.converter import operator_to_dict
 
         return {
             "name": self.name,
-            "input_path": self.input_path,
-            "output_path": self.output_path,
+            "data_sources": [ds.to_dict() for ds in self.data_sources],
+            "outputs": [out.to_dict() for out in self.outputs],
             "properties": self.properties,
             "dataset_schema": self.dataset_schema,
             "subtasks": self.subtasks,
@@ -97,10 +122,20 @@ class Procedure:
         """Deserialize Procedure from dictionary."""
         from .convert.docetl.converter import dict_to_operator
 
+        # Load data_sources
+        data_sources = None
+        if "data_sources" in data:
+            data_sources = [DataReference.from_dict(ds) for ds in data["data_sources"]]
+
+        # Load outputs
+        outputs = None
+        if "outputs" in data:
+            outputs = [DataReference.from_dict(out) for out in data["outputs"]]
+
         procedure = cls(
             name=data.get("name", ""),
-            input_path=data.get("input_path"),
-            output_path=data.get("output_path"),
+            data_sources=data_sources,
+            outputs=outputs,
             properties=data.get("properties", {}),
             dataset_schema=data.get("dataset_schema"),
             subtasks=data.get("subtasks")

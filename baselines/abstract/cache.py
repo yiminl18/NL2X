@@ -4,7 +4,7 @@ Pipeline Cache Manager for Abstract Operators
 This module provides caching functionality for abstract operator executions to avoid redundant computations.
 """
 
-from typing import Any, Dict, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, Optional, Union
 from pathlib import Path
 import json
 import hashlib
@@ -14,9 +14,6 @@ import copy
 
 # Import abstract operator classes
 from .ops.base import Operator
-
-if TYPE_CHECKING:
-    from .db import DataSource
 
  
 class OperatorCacheManager:
@@ -57,31 +54,15 @@ class OperatorCacheManager:
         hash_obj = hashlib.sha512(config_json.encode('utf-8'))
         return hash_obj.hexdigest()
 
-    def _compute_input_hash(self, data_source: 'DataSource') -> str:
+    def _compute_input_hash(self, input_data: Any) -> str:
         """
-        Compute SHA-512 hash of input data from DataSource using data fingerprint.
+        Compute SHA-512 hash of input data using data fingerprint.
 
         For large datasets, hashing the entire content is expensive. Instead, we use
         a fingerprint: total count + sample of first 100 records. This provides
         good uniqueness while being much faster for large datasets.
         """
-        # Use data from DataSource directly if available
-        if data_source.data is not None:
-            data_to_hash = data_source.data
-        else:
-            # Fallback: read from file if data not loaded
-            file_path = Path(data_source.path)
-            if file_path.exists():
-                with open(file_path, 'r') as f:
-                    try:
-                        data_to_hash = json.load(f)
-                    except json.JSONDecodeError:
-                        # If not JSON, hash the raw content (small text files)
-                        f.seek(0)
-                        data_to_hash = f.read()
-            else:
-                # File doesn't exist, hash the path itself
-                data_to_hash = data_source.path
+        data_to_hash = input_data
 
         # Create fingerprint for efficient hashing
         if isinstance(data_to_hash, list):
@@ -103,10 +84,10 @@ class OperatorCacheManager:
         hash_obj = hashlib.sha512(input_json.encode('utf-8'))
         return hash_obj.hexdigest()
 
-    def _get_cache_key(self, operator: Operator, data_source: 'DataSource') -> str:
-        """Generate cache key from operator and data source."""
+    def _get_cache_key(self, operator: Operator, input_data: Any) -> str:
+        """Generate cache key from operator and input data."""
         operator_hash = self._compute_operator_hash(operator)[:32]
-        input_hash = self._compute_input_hash(data_source)[:32]
+        input_hash = self._compute_input_hash(input_data)[:32]
         return f"{operator_hash}_{input_hash}"
 
     def _get_cache_path(self, cache_key: str) -> Path:
@@ -126,7 +107,7 @@ class OperatorCacheManager:
 
     def get_cached_result(self,
                          operator: Operator,
-                         data_source: 'DataSource',
+                         input_data: Any,
                          force_execute: bool = False) -> Optional[Dict[str, Any]]:
         """Retrieve cached result if available."""
         # Force execution bypasses cache
@@ -137,7 +118,7 @@ class OperatorCacheManager:
             return None
 
         try:
-            cache_key = self._get_cache_key(operator, data_source)
+            cache_key = self._get_cache_key(operator, input_data)
             cache_path = self._get_cache_path(cache_key)
 
             if not cache_path.exists():
@@ -150,7 +131,7 @@ class OperatorCacheManager:
 
             # Verify full hashes match (prevent collisions on truncated filenames)
             current_operator_hash = self._compute_operator_hash(operator)
-            current_input_hash = self._compute_input_hash(data_source)
+            current_input_hash = self._compute_input_hash(input_data)
 
             if (cached_entry.get('operator_hash') != current_operator_hash or
                 cached_entry.get('input_hash') != current_input_hash):
@@ -174,7 +155,7 @@ class OperatorCacheManager:
 
     def set_cached_result(self,
                          operator: Operator,
-                         data_source: 'DataSource',
+                         input_data: Any,
                          output_data: Any,
                          metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Store execution result in cache."""
@@ -182,12 +163,12 @@ class OperatorCacheManager:
             return False
 
         try:
-            cache_key = self._get_cache_key(operator, data_source)
+            cache_key = self._get_cache_key(operator, input_data)
             cache_path = self._get_cache_path(cache_key)
 
             # Compute hashes
             operator_hash = self._compute_operator_hash(operator)
-            input_hash = self._compute_input_hash(data_source)
+            input_hash = self._compute_input_hash(input_data)
 
             # Prepare cache entry
             cache_entry = {
@@ -200,7 +181,7 @@ class OperatorCacheManager:
                     'input': copy.deepcopy(operator.input),
                     'output': copy.deepcopy(operator.output)
                 },
-                'input_data': self._serialize_input_data(data_source),
+                'input_data': self._serialize_input_data(input_data),
                 'output_data': output_data,
                 'metadata': {
                     **(metadata or {}),
@@ -222,86 +203,35 @@ class OperatorCacheManager:
 
     def inject_cached_result(self,
                              operator: Operator,
-                             data_source: 'DataSource',
+                             input_data: Any,
                              output_data: Any,
                              metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Manually inject result into cache without execution."""
-        # Use the same logic as set_cached_result
-        # This ensures consistency in cache format
         custom_metadata = metadata or {}
         custom_metadata['injected'] = True
         custom_metadata['injection_time'] = datetime.now().isoformat()
 
-        return self.set_cached_result(operator, data_source, output_data, custom_metadata)
+        return self.set_cached_result(operator, input_data, output_data, custom_metadata)
 
-    def _serialize_input_data(self, data_source: 'DataSource') -> Any:
+    def _serialize_input_data(self, input_data: Any) -> Any:
         """
-        Serialize input data from DataSource for storage in cache.
+        Serialize input data for storage in cache.
 
-        Uses fingerprint approach: stores sample + metadata instead of full data
+        Uses fingerprint approach: stores sample instead of full data
         to reduce cache file size for large datasets.
         """
-        # Use data from DataSource if available
-        if data_source.data is not None:
-            data = data_source.data
-            # Store sample for list data (consistent with hash fingerprint)
-            if isinstance(data, list):
-                return {
-                    '_type': 'data_source',
-                    'path': data_source.path,
-                    'source_id': data_source.id,
-                    'data_type': data_source.data_type,
-                    'sample': data[:100] if len(data) > 100 else data,
-                    'total_items': len(data)
-                }
-            else:
-                return {
-                    '_type': 'data_source',
-                    'path': data_source.path,
-                    'source_id': data_source.id,
-                    'data_type': data_source.data_type,
-                    'data': data
-                }
+        # Store sample for list data (consistent with hash fingerprint)
+        if isinstance(input_data, list):
+            return {
+                '_type': 'raw_data',
+                'sample': input_data[:100] if len(input_data) > 100 else input_data,
+                'total_items': len(input_data)
+            }
         else:
-            # Fallback: try to read from file
-            file_path = Path(data_source.path)
-            if file_path.exists():
-                try:
-                    with open(file_path, 'r') as f:
-                        data = json.load(f)
-                    # Store sample (consistent with hash fingerprint)
-                    if isinstance(data, list):
-                        return {
-                            '_type': 'data_source',
-                            'path': data_source.path,
-                            'source_id': data_source.id,
-                            'data_type': data_source.data_type,
-                            'sample': data[:100] if len(data) > 100 else data,
-                            'total_items': len(data)
-                        }
-                    else:
-                        return {
-                            '_type': 'data_source',
-                            'path': data_source.path,
-                            'source_id': data_source.id,
-                            'data_type': data_source.data_type,
-                            'data': data
-                        }
-                except:
-                    return {
-                        '_type': 'data_source',
-                        'path': data_source.path,
-                        'source_id': data_source.id,
-                        'data_type': data_source.data_type
-                    }
-            else:
-                return {
-                    '_type': 'data_source',
-                    'path': data_source.path,
-                    'source_id': data_source.id,
-                    'data_type': data_source.data_type,
-                    'exists': False
-                }
+            return {
+                '_type': 'raw_data',
+                'data': input_data
+            }
 
     def clear_cache(self, operator_hash: Optional[str] = None) -> int:
         """Clear cache entries (all if operator_hash=None, else specific operator)."""
