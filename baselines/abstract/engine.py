@@ -27,6 +27,9 @@ from .convert.docetl import dict_to_operator, operator_to_dict
 # Import Pipeline and related classes
 from .pipeline import Pipeline, DataReference, NodeType
 
+# Import cache manager
+from .cache import OperatorCacheManager
+
 
 class AbstractExecutor:
     """Main executor for abstract operators and procedures with caching support."""
@@ -35,62 +38,54 @@ class AbstractExecutor:
                  verbose: bool = False,
                  cache_enabled: bool = True,
                  cache_dir: Optional[Union[str, Path]] = None):
-        """Initialize the AbstractExecutor with system executors and caching."""
+        """Initialize the AbstractExecutor with unified cache manager and system executors."""
         self.verbose = verbose
         self.cache_enabled = cache_enabled
         self.cache_dir = cache_dir
 
-        # Initialize executors for different systems
+        # Create unified cache manager shared by all executors
+        self.cache_manager = OperatorCacheManager(
+            cache_dir=cache_dir,
+            enabled=cache_enabled
+        )
+
+        # Initialize executors for different systems with shared cache
         self.executors = {
             'docetl': DocETLExecutor(
                 verbose=verbose,
-                cache_enabled=cache_enabled,
-                cache_dir=cache_dir
+                cache_manager=self.cache_manager
             ),
             'lotus': LotusExecutor(
                 verbose=verbose,
-                cache_enabled=cache_enabled,
-                cache_dir=cache_dir
+                cache_manager=self.cache_manager
             )
         }
 
     def clear_cache(self, operator_hash: Optional[str] = None) -> int:
         """Clear cache entries. If operator_hash is None, clears all cache."""
-        total_deleted = 0
-        for executor in self.executors.values():
-            if hasattr(executor, 'cache_manager'):
-                deleted = executor.cache_manager.clear_cache(operator_hash)
-                total_deleted += deleted
-        return total_deleted
+        return self.cache_manager.clear_cache(operator_hash)
 
     def get_cache_stats(self) -> Dict[str, Any]:
-        """Get cache statistics from all executors."""
-        stats = {}
-        for name, executor in self.executors.items():
-            if hasattr(executor, 'cache_manager'):
-                stats[name] = executor.cache_manager.get_cache_stats()
-        return stats
+        """Get cache statistics from unified cache manager."""
+        return self.cache_manager.get_cache_stats()
 
     def disable_cache(self):
-        """Temporarily disable caching for all executors."""
+        """Temporarily disable caching."""
         self.cache_enabled = False
-        for executor in self.executors.values():
-            if hasattr(executor, 'cache_enabled'):
-                executor.cache_enabled = False
+        self.cache_manager.enabled = False
 
     def enable_cache(self):
-        """Re-enable caching for all executors."""
+        """Re-enable caching."""
         self.cache_enabled = True
-        for executor in self.executors.values():
-            if hasattr(executor, 'cache_enabled'):
-                executor.cache_enabled = True
+        self.cache_manager.enabled = True
 
     def _execute_python_code(self,
                             operator: Operator,
                             input_data: Any,
-                            timeout: int = 300) -> ExecutionResult:
+                            timeout: int = 300,
+                            force_execute: bool = False) -> ExecutionResult:
         """
-        Execute Python function in subprocess sandbox.
+        Execute Python function in subprocess sandbox with caching support.
 
         The function must have signature: def process(sources)
         - sources: Dict with 'input_data' key containing previous operator output
@@ -100,10 +95,23 @@ class AbstractExecutor:
             operator: PythonCode operator with 'function' in properties
             input_data: Input data from previous operator
             timeout: Subprocess timeout in seconds (default: 300)
+            force_execute: If True, bypass cache and force execution
 
         Returns:
             ExecutionResult with output data or error
         """
+        # Check cache first if enabled
+        if self.cache_enabled and not force_execute:
+            cached_result = self.cache_manager.get_cached_result(operator, input_data)
+            if cached_result is not None:
+                if self.verbose:
+                    print(f"  ✓ Cache hit for PythonCode operator: {operator.name}")
+                return ExecutionResult(
+                    success=True,
+                    data=cached_result['output_data'],
+                    metadata={**cached_result['metadata'], 'cache_hit': True}
+                )
+
         try:
             # Get function from operator properties
             function_code = operator.properties.get('function')
@@ -197,14 +205,29 @@ except Exception as e:
                 else:
                     print(f"  Output: {type(output_data).__name__}")
 
+            # Create result metadata
+            result_metadata = {
+                'operator_type': 'PythonCode',
+                'operator_name': operator.name,
+                'execution_time': None,
+                'cache_hit': False
+            }
+
+            # Store in cache if enabled
+            if self.cache_enabled:
+                self.cache_manager.set_cached_result(
+                    operator=operator,
+                    input_data=input_data,
+                    output_data=output_data,
+                    metadata=result_metadata
+                )
+                if self.verbose:
+                    print(f"  ✓ Result cached for PythonCode operator: {operator.name}")
+
             return ExecutionResult(
                 success=True,
                 data=output_data,
-                metadata={
-                    'operator_type': 'PythonCode',
-                    'operator_name': operator.name,
-                    'execution_time': None
-                }
+                metadata=result_metadata
             )
 
         except Exception as e:
@@ -271,9 +294,9 @@ except Exception as e:
         if isinstance(operator, dict):
             operator = dict_to_operator(operator)
 
-        # Route PythonCode operators to subprocess executor
+        # Route PythonCode operators to subprocess executor with cache support
         if operator.type == "PythonCode":
-            return self._execute_python_code(operator, input_data)
+            return self._execute_python_code(operator, input_data, force_execute=force_execute)
 
         # Determine which system to use
         system = operator.source.get('system', 'docetl')

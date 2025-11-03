@@ -44,25 +44,23 @@ class DocETLExecutor(BaseSystemExecutor):
 
     def __init__(self,
                  verbose: bool = False,
-                 cache_enabled: bool = True,
-                 cache_dir: Optional[Union[str, Path]] = None,
+                 cache_manager: Optional[OperatorCacheManager] = None,
                  data_manager: Optional['DatasetManager'] = None):
         """
-        Initialize DocETL executor.
+        Initialize DocETL executor with shared cache manager.
 
         Args:
             verbose: Enable verbose logging
-            cache_enabled: Enable result caching
-            cache_dir: Directory for cache storage (default: abstract/_cache)
+            cache_manager: Shared OperatorCacheManager instance (if None, caching disabled)
             data_manager: Optional DatasetManager for dataset transformations and path management
         """
-        # Initialize base class
+        # Initialize base class with cache settings from cache_manager
+        cache_enabled = cache_manager.enabled if cache_manager else False
+        cache_dir = cache_manager.cache_dir if cache_manager else None
         super().__init__(verbose, cache_enabled, cache_dir, data_manager)
 
-        self.cache_manager = OperatorCacheManager(
-            cache_dir=cache_dir,
-            enabled=cache_enabled
-        )
+        # Use shared cache manager
+        self.cache_manager = cache_manager
 
     def get_system_name(self) -> str:
         return 'docetl'
