@@ -115,6 +115,26 @@ class Pipeline:
         self.nodes: Dict[str, PipelineNode] = {}
         self.edges: Dict[str, List[str]] = defaultdict(list)
 
+    @staticmethod
+    def _resolve_path(path: str, base_dir: Path) -> str:
+        """
+        Resolve path relative to base_dir if relative, otherwise return as-is.
+
+        Args:
+            path: Path to resolve (can be absolute or relative)
+            base_dir: Base directory for relative paths
+
+        Returns:
+            Absolute path as string
+        """
+        if not path:
+            return path
+        path_obj = Path(path)
+        if path_obj.is_absolute():
+            return str(path_obj)
+        else:
+            return str((base_dir / path_obj).resolve())
+
     def add_procedure(
         self,
         procedure_path: str,
@@ -290,12 +310,13 @@ class Pipeline:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Pipeline':
+    def from_dict(cls, data: Dict[str, Any], config_dir: Optional[Path] = None) -> 'Pipeline':
         """
         Deserialize Pipeline DAG from dictionary and validate.
 
         Args:
             data: Dictionary with pipeline data
+            config_dir: Directory containing the pipeline config file (for resolving relative paths)
 
         Returns:
             Pipeline instance with DAG structure
@@ -303,16 +324,25 @@ class Pipeline:
         Raises:
             ValueError: If validation fails (missing fields, invalid references, etc.)
         """
+        # Resolve output_path if provided
+        output_path = data.get("output_path")
+        if output_path and config_dir:
+            output_path = cls._resolve_path(output_path, config_dir)
+
         pipeline = cls(
             name=data.get("name", ""),
             input_path=data.get("input_path"),
-            output_path=data.get("output_path"),
+            output_path=output_path,
             properties=data.get("properties", {}),
         )
 
         # Load nodes
         for node_id, node_data in data.get("nodes", {}).items():
             procedure_path = node_data.get("procedure_path", "")
+            # Resolve procedure_path relative to pipeline directory
+            if procedure_path and config_dir:
+                procedure_path = cls._resolve_path(procedure_path, config_dir)
+
             metadata = node_data.get("metadata", {})
 
             # Load node_type
@@ -328,13 +358,25 @@ class Pipeline:
             data_sources_list = node_data.get("data_sources")
             if not data_sources_list:
                 raise ValueError(f"Node '{node_id}' missing required 'data_sources' field")
-            data_sources = [DataReference.from_dict(ds_dict) for ds_dict in data_sources_list]
+            data_sources = []
+            for ds_dict in data_sources_list:
+                # Resolve file paths relative to pipeline directory
+                if ds_dict["type"] == "file" and config_dir:
+                    ds_dict = ds_dict.copy()  # Don't modify original
+                    ds_dict["reference"] = cls._resolve_path(ds_dict["reference"], config_dir)
+                data_sources.append(DataReference.from_dict(ds_dict))
 
             # Load outputs
             outputs_list = node_data.get("outputs")
             if not outputs_list:
                 raise ValueError(f"Node '{node_id}' missing required 'outputs' field")
-            outputs = [DataReference.from_dict(out_dict) for out_dict in outputs_list]
+            outputs = []
+            for out_dict in outputs_list:
+                # Resolve file paths relative to pipeline directory
+                if out_dict["type"] == "file" and config_dir:
+                    out_dict = out_dict.copy()  # Don't modify original
+                    out_dict["reference"] = cls._resolve_path(out_dict["reference"], config_dir)
+                outputs.append(DataReference.from_dict(out_dict))
 
             pipeline.add_procedure(procedure_path, node_id, node_type, data_sources, outputs, metadata)
 
@@ -376,7 +418,8 @@ class Pipeline:
             FileNotFoundError: If file doesn't exist
             yaml.YAMLError: If file is not valid YAML
         """
-        filepath = Path(filepath)
+        filepath = Path(filepath).resolve()
+        config_dir = filepath.parent
 
         if not filepath.exists():
             raise FileNotFoundError(f"Pipeline file not found: {filepath}")
@@ -384,7 +427,7 @@ class Pipeline:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
 
-        return cls.from_dict(data)
+        return cls.from_dict(data, config_dir=config_dir)
 
     def load_procedures(self) -> Dict[str, 'Procedure']:
         """

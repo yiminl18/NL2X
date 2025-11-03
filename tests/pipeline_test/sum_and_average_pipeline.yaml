@@ -1,5 +1,5 @@
 name: student_grade_analysis_pipeline
-output_path: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade_with_average.json
+output_path: grade_with_average.json
 properties:
   description: Calculate sum and average of student grades using two-step pipeline
   base_system: abstract
@@ -9,11 +9,11 @@ properties:
 nodes:
   sum_node:
     node_type: normal
-    procedure_path: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/sum_score_procedure.yaml
+    procedure_path: sum_score_procedure.yaml
     data_sources:
       - type: file
         name: grade.json
-        reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade.json
+        reference: grade.json
     outputs:
       - type: node
         name: average_node_input
@@ -23,7 +23,7 @@ nodes:
 
   average_node:
     node_type: final
-    procedure_path: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/average_from_sum_procedure.yaml
+    procedure_path: average_from_sum_procedure.yaml
     data_sources:
       - type: node
         name: sum_node_output
@@ -31,7 +31,7 @@ nodes:
     outputs:
       - type: file
         name: grade_with_average.json
-        reference: /Users/chiyuh/Workspace/NL2X/tests/pipeline_test/grade_with_average.json
+        reference: grade_with_average.json
     metadata:
       description: Second step - calculate average from sum
 
