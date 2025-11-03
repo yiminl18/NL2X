@@ -1,0 +1,14 @@
+[
+  {
+    "text": "hello world",
+    "quality": 0.8999999999999999
+  },
+  {
+    "text": "data science",
+    "quality": 1.0
+  },
+  {
+    "text": "python",
+    "quality": 1.0
+  }
+]

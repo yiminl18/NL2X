@@ -1,0 +1,40 @@
+name: multiply_values
+data_sources:
+  - type: file
+    name: loop_input.json
+    reference: loop_input.json
+outputs:
+  - type: file
+    name: loop_output.json
+    reference: loop_output.json
+properties:
+  description: Multiply each value by 2
+  created_by: test creation
+dataset_schema:
+  fields:
+    value: Integer
+subtasks:
+  - Multiply value by 2
+operators:
+  - name: multiply_by_two
+    type: PythonCode
+    source:
+      system: abstract
+      name: multiply_by_two
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Multiply each value by 2
+            for record in data:
+                record['value'] = record.get('value', 0) * 2
+
+            # Return modified data
+            return data
+    input:
+      fields:
+        value: Integer
+    output:
+      value: Integer

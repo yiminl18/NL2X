@@ -9,8 +9,8 @@ Usage:
     python baselines/abstract/tools/visualize_pipeline.py <pipeline_yaml> [--output <html_file>]
 
 Example:
-    python baselines/abstract/tools/visualize_pipeline.py tests/pipeline_test/sum_and_average_pipeline.yaml
-    # Output: tests/pipeline_test/sum_and_average_pipeline.html
+    python baselines/abstract/tools/visualize_pipeline.py tests/pipeline_test/sum_and_average/sum_and_average_pipeline.yaml
+    # Output: tests/pipeline_test/sum_and_average/sum_and_average_pipeline.html
 """
 
 import argparse
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Set
 import json
 import importlib.util
+import yaml
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent.parent
@@ -39,7 +40,9 @@ NODE_COLORS = {
     'normal': '#4A90E2',              # Blue - standard processing
     'aggregate': '#9B59B6',           # Purple - merges inputs
     'final': '#27AE60',               # Green - outputs to file
-    'conditional_routing': '#E74C3C'  # Red - routes by condition
+    'conditional_routing': '#E74C3C', # Red - routes by condition
+    'fixed_loop': '#FF6B6B',          # Coral red - iterates N times
+    'conditional_loop': '#FF8C42'     # Orange-red - loops until condition met
 }
 
 NODE_TYPE_DESCRIPTIONS = {
@@ -47,7 +50,9 @@ NODE_TYPE_DESCRIPTIONS = {
     'normal': 'Standard processing',
     'aggregate': 'Merges multiple inputs',
     'final': 'Outputs to file',
-    'conditional_routing': 'Routes records by condition'
+    'conditional_routing': 'Routes records by condition',
+    'fixed_loop': 'Iterates N times with feedback',
+    'conditional_loop': 'Loops until condition met'
 }
 
 
@@ -121,6 +126,10 @@ def load_and_analyze_pipeline(pipeline_path: str, verbose: bool = False) -> Dict
     if verbose:
         print(f"Loading pipeline from: {pipeline_path}")
 
+    # Load raw YAML to preserve original config
+    with open(pipeline_path, 'r', encoding='utf-8') as f:
+        raw_yaml_data = yaml.safe_load(f)
+
     pipeline = Pipeline.load(str(pipeline_path))
 
     # Compute execution levels
@@ -157,6 +166,9 @@ def load_and_analyze_pipeline(pipeline_path: str, verbose: bool = False) -> Dict
             if output.ref_type == 'file':
                 file_outputs.add(output.ref)
 
+        # Get raw config from YAML
+        raw_node_config = raw_yaml_data.get('nodes', {}).get(node_id, {})
+
         # Build node data
         nodes_data[node_id] = {
             'type': node.node_type.value,
@@ -172,7 +184,13 @@ def load_and_analyze_pipeline(pipeline_path: str, verbose: bool = False) -> Dict
                 {'ref': out.ref, 'output_name': out.output_name}
                 for out in node.outputs if out.ref_type == 'node'
             ],
-            'routing_field': node.metadata.get('routing_field')  # For conditional routing
+            'routing_field': node.metadata.get('routing_field'),  # For conditional routing
+            'iterations': node.metadata.get('iterations'),  # For fixed loop
+            'condition_procedure_path': node.metadata.get('condition_procedure_path'),  # For conditional loop
+            'max_iterations': node.metadata.get('max_iterations'),  # For conditional loop
+            'condition_field': node.metadata.get('condition_field'),  # For conditional loop
+            'condition_aggregation': node.metadata.get('condition_aggregation'),  # For conditional loop
+            'raw_config': raw_node_config  # Original YAML config
         }
 
     return {
@@ -206,13 +224,34 @@ def build_vis_data(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # Build tooltip HTML
         tooltip_parts = [
-            f"<div style='max-width: 300px;'>",
+            f"<div style='max-width: 400px;'>",
             f"<strong>{node_id}</strong> [{node_type.upper()}]<br/>",
             f"<hr style='margin: 5px 0;'/>",
             f"<b>Description:</b> {node_info['description']}<br/>",
             f"<b>Procedure:</b> {node_info['procedure']}<br/>",
             f"<b>Level:</b> {level}<br/>"
         ]
+
+        # Special handling for fixed loop nodes
+        if node_info.get('iterations'):
+            iterations = node_info['iterations']
+            tooltip_parts.append(f"<hr style='margin: 5px 0;'/>")
+            tooltip_parts.append(f"<b>↻ Iterations:</b> <span style='color: #FF6B6B; font-weight: bold; font-size: 16px;'>{iterations}</span><br/>")
+            tooltip_parts.append(f"<i style='color: #7f8c8d; font-size: 12px;'>Feeds output → input for each iteration</i><br/>")
+
+        # Special handling for conditional loop nodes
+        if node_info.get('condition_procedure_path'):
+            max_iterations = node_info.get('max_iterations', 'N/A')
+            condition_field = node_info.get('condition_field', '_should_continue')
+            condition_aggregation = node_info.get('condition_aggregation', 'all')
+            condition_procedure = Path(node_info['condition_procedure_path']).stem
+            tooltip_parts.append(f"<hr style='margin: 5px 0;'/>")
+            tooltip_parts.append(f"<b>↻? Conditional Loop:</b><br/>")
+            tooltip_parts.append(f"<b>Max Iterations:</b> <span style='color: #FF8C42; font-weight: bold;'>{max_iterations}</span><br/>")
+            tooltip_parts.append(f"<b>Condition Procedure:</b> {condition_procedure}<br/>")
+            tooltip_parts.append(f"<b>Condition Field:</b> <code>{condition_field}</code><br/>")
+            tooltip_parts.append(f"<b>Aggregation:</b> {condition_aggregation}<br/>")
+            tooltip_parts.append(f"<i style='color: #7f8c8d; font-size: 12px;'>Loops while condition is True</i><br/>")
 
         if node_info['file_inputs'] or node_info['node_inputs']:
             tooltip_parts.append(f"<hr style='margin: 5px 0;'/><b>Inputs:</b><br/>")
@@ -237,31 +276,56 @@ def build_vis_data(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
             for node_output in node_info['node_outputs']:
                 tooltip_parts.append(f"• node: {node_output['ref']}<br/>")
 
+        # Add original YAML configuration
+        raw_config = node_info.get('raw_config', {})
+        if raw_config:
+            tooltip_parts.append(f"<hr style='margin: 5px 0;'/>")
+            tooltip_parts.append(f"<b>Pipeline Config:</b><br/>")
+            tooltip_parts.append(f"<pre style='background: #f8f9fa; padding: 8px; border-radius: 4px; font-size: 11px; max-height: 200px; overflow-y: auto; margin: 5px 0;'>")
+            config_yaml = yaml.dump(raw_config, default_flow_style=False, sort_keys=False, width=60)
+            tooltip_parts.append(config_yaml.replace('<', '&lt;').replace('>', '&gt;'))
+            tooltip_parts.append(f"</pre>")
+
         tooltip_parts.append("</div>")
         tooltip_html = "".join(tooltip_parts)
+
+        # Build label (add iteration count for loop nodes)
+        label = node_id
+        if node_info.get('iterations'):
+            iterations = node_info['iterations']
+            label = f"{node_id}\n×{iterations}"
+        elif node_info.get('condition_procedure_path'):
+            max_iters = node_info.get('max_iterations', '?')
+            label = f"{node_id}\n↻?{max_iters}"
 
         # Create vis.js node
         vis_node = {
             'id': node_id,
-            'label': node_id,
+            'label': label,
             'title': tooltip_html,
             'level': level,
             'color': {
-                'background': NODE_COLORS[node_type],
+                'background': NODE_COLORS.get(node_type, NODE_COLORS['normal']),
                 'border': '#2c3e50',
                 'highlight': {
-                    'background': NODE_COLORS[node_type],
+                    'background': NODE_COLORS.get(node_type, NODE_COLORS['normal']),
                     'border': '#000000'
                 }
             },
             'font': {
                 'size': 14,
-                'color': '#ffffff' if node_type in ['aggregate', 'final', 'conditional_routing'] else '#000000'
+                'color': '#ffffff' if node_type in ['aggregate', 'final', 'conditional_routing', 'fixed_loop', 'conditional_loop'] else '#000000'
             },
             'shape': 'diamond' if node_type == 'conditional_routing' else 'box',
             'margin': 10,
-            'borderWidth': 3 if node_type == 'conditional_routing' else 2
+            'borderWidth': 3 if node_type in ['conditional_routing', 'fixed_loop', 'conditional_loop'] or node_info.get('iterations') or node_info.get('condition_procedure_path') else 2
         }
+
+        # Add rounded corners for loop nodes
+        if node_info.get('iterations') or node_info.get('condition_procedure_path'):
+            vis_node['shapeProperties'] = {
+                'borderRadius': 8
+            }
 
         vis_nodes.append(vis_node)
 
@@ -777,7 +841,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  python baselines/abstract/tools/visualize_pipeline.py tests/pipeline_test/sum_and_average_pipeline.yaml
+  python baselines/abstract/tools/visualize_pipeline.py tests/pipeline_test/sum_and_average/sum_and_average_pipeline.yaml
   python baselines/abstract/tools/visualize_pipeline.py pipeline.yaml --output viz/my_pipeline.html
   python baselines/abstract/tools/visualize_pipeline.py pipeline.yaml --verbose
         '''

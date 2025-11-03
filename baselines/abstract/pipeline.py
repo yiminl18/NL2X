@@ -20,6 +20,8 @@ class NodeType(Enum):
     AGGREGATE = "aggregate"
     FINAL = "final"
     CONDITIONAL_ROUTING = "conditional_routing"
+    FIXED_LOOP = "fixed_loop"
+    CONDITIONAL_LOOP = "conditional_loop"
 
 
 class DataReference:
@@ -227,6 +229,109 @@ class Pipeline:
 
         return node_id
 
+    def add_fixed_loop(
+        self,
+        procedure_path: str,
+        node_id: str,
+        data_sources: List[DataReference],
+        outputs: List[DataReference],
+        iterations: int,
+        node_type: NodeType = NodeType.FIXED_LOOP
+    ) -> str:
+        """
+        Add a fixed loop node to the pipeline. Executes the procedure N times,
+        feeding the output of iteration i as input to iteration i+1.
+
+        Args:
+            procedure_path: Path to procedure file to loop
+            node_id: Unique node identifier
+            data_sources: List of DataReferences specifying input data
+            outputs: List of DataReferences specifying where this node's output goes
+            iterations: Number of times to execute the procedure (must be >= 1)
+            node_type: Node type - can be FIXED_LOOP or combined with FANOUT/AGGREGATE
+
+        Returns:
+            The node_id of the added node
+
+        Raises:
+            ValueError: If node_id already exists or iterations < 1
+        """
+        if iterations < 1:
+            raise ValueError(f"Fixed loop must have at least 1 iteration, got {iterations}")
+
+        # Set metadata with iterations
+        metadata = {'iterations': iterations}
+
+        # Add node (allows combining FIXED_LOOP with FANOUT/AGGREGATE)
+        self.add_procedure(procedure_path, node_id, node_type, data_sources, outputs, metadata)
+
+        # Add edges to target nodes
+        for output in outputs:
+            if output.ref_type == "node" and output.ref in self.nodes:
+                self.add_edge(node_id, output.ref)
+
+        return node_id
+
+    def add_conditional_loop(
+        self,
+        procedure_path: str,
+        condition_procedure_path: str,
+        node_id: str,
+        data_sources: List[DataReference],
+        outputs: List[DataReference],
+        max_iterations: int,
+        condition_field: str = '_should_continue',
+        condition_aggregation: str = 'all',
+        node_type: NodeType = NodeType.CONDITIONAL_LOOP
+    ) -> str:
+        """
+        Add a conditional loop node to the pipeline. Executes the procedure repeatedly
+        until a condition is met, with a maximum iteration limit.
+
+        Args:
+            procedure_path: Path to data processing procedure file
+            condition_procedure_path: Path to condition evaluation procedure file
+            node_id: Unique node identifier
+            data_sources: List of DataReferences specifying input data
+            outputs: List of DataReferences specifying where this node's output goes
+            max_iterations: Maximum number of iterations (must be >= 1)
+            condition_field: Field name to read from condition procedure output (default: '_should_continue')
+            condition_aggregation: How to aggregate multiple records ('all', 'any', 'first')
+            node_type: Node type - can be CONDITIONAL_LOOP or combined with FANOUT/AGGREGATE
+
+        Returns:
+            The node_id of the added node
+
+        Raises:
+            ValueError: If node_id already exists, max_iterations < 1, or invalid aggregation
+        """
+        if max_iterations < 1:
+            raise ValueError(f"Conditional loop must have at least 1 max_iteration, got {max_iterations}")
+
+        if condition_aggregation not in ('all', 'any', 'first'):
+            raise ValueError(f"Invalid condition_aggregation: {condition_aggregation} (must be 'all', 'any', or 'first')")
+
+        # Convert to absolute path if not already
+        abs_condition_procedure_path = os.path.abspath(condition_procedure_path)
+
+        # Set metadata with condition configuration
+        metadata = {
+            'condition_procedure_path': abs_condition_procedure_path,
+            'max_iterations': max_iterations,
+            'condition_field': condition_field,
+            'condition_aggregation': condition_aggregation
+        }
+
+        # Add node
+        self.add_procedure(procedure_path, node_id, node_type, data_sources, outputs, metadata)
+
+        # Add edges to target nodes
+        for output in outputs:
+            if output.ref_type == "node" and output.ref in self.nodes:
+                self.add_edge(node_id, output.ref)
+
+        return node_id
+
     def add_edge(self, from_node_id: str, to_node_id: str):
         """
         Add directed edge between nodes.
@@ -305,6 +410,51 @@ class Pipeline:
                         errors.append(f"ConditionalRouting node '{node_id}' has file output '{output.name}' (only node outputs allowed for routing nodes)")
                 if 'routing_field' not in node.metadata:
                     errors.append(f"ConditionalRouting node '{node_id}' must have 'routing_field' in metadata")
+
+            elif node.node_type == NodeType.FIXED_LOOP:
+                # FIXED_LOOP: Must have 'iterations' in metadata
+                if 'iterations' not in node.metadata:
+                    errors.append(f"FixedLoop node '{node_id}' must have 'iterations' in metadata")
+                else:
+                    iterations = node.metadata['iterations']
+                    if not isinstance(iterations, int) or iterations < 1:
+                        errors.append(f"FixedLoop node '{node_id}' iterations must be integer >= 1, got {iterations}")
+                # Prohibit mixing with conditional loop
+                if 'condition_procedure_path' in node.metadata:
+                    errors.append(f"FixedLoop node '{node_id}' cannot have 'condition_procedure_path' (use CONDITIONAL_LOOP instead)")
+                # Output validation: if not FINAL, outputs must be nodes
+                for output in node.outputs:
+                    if output.ref_type == "file":
+                        # Check if this is also a FINAL node
+                        is_final = any(f_id == node_id for f_id in final_nodes)
+                        if not is_final:
+                            errors.append(f"FixedLoop node '{node_id}' has file output '{output.name}' (only final loop nodes can output to files)")
+
+            elif node.node_type == NodeType.CONDITIONAL_LOOP:
+                # CONDITIONAL_LOOP: Must have condition configuration in metadata
+                if 'condition_procedure_path' not in node.metadata:
+                    errors.append(f"ConditionalLoop node '{node_id}' must have 'condition_procedure_path' in metadata")
+                if 'max_iterations' not in node.metadata:
+                    errors.append(f"ConditionalLoop node '{node_id}' must have 'max_iterations' in metadata")
+                else:
+                    max_iterations = node.metadata['max_iterations']
+                    if not isinstance(max_iterations, int) or max_iterations < 1:
+                        errors.append(f"ConditionalLoop node '{node_id}' max_iterations must be integer >= 1, got {max_iterations}")
+                if 'condition_field' not in node.metadata:
+                    errors.append(f"ConditionalLoop node '{node_id}' must have 'condition_field' in metadata")
+                if 'condition_aggregation' in node.metadata:
+                    aggregation = node.metadata['condition_aggregation']
+                    if aggregation not in ('all', 'any', 'first'):
+                        errors.append(f"ConditionalLoop node '{node_id}' condition_aggregation must be 'all', 'any', or 'first', got '{aggregation}'")
+                # Prohibit mixing with fixed loop
+                if 'iterations' in node.metadata:
+                    errors.append(f"ConditionalLoop node '{node_id}' cannot have 'iterations' (use FIXED_LOOP instead)")
+                # Output validation: if not FINAL, outputs must be nodes
+                for output in node.outputs:
+                    if output.ref_type == "file":
+                        is_final = any(f_id == node_id for f_id in final_nodes)
+                        if not is_final:
+                            errors.append(f"ConditionalLoop node '{node_id}' has file output '{output.name}' (only final loop nodes can output to files)")
 
             elif node.node_type == NodeType.NORMAL:
                 # NORMAL: All outputs must be nodes (not files)
@@ -408,6 +558,14 @@ class Pipeline:
                 procedure_path = cls._resolve_path(procedure_path, config_dir)
 
             metadata = node_data.get("metadata", {})
+
+            # Resolve condition_procedure_path if present (for conditional loops)
+            if 'condition_procedure_path' in metadata and config_dir:
+                metadata = metadata.copy()  # Don't modify original
+                metadata['condition_procedure_path'] = cls._resolve_path(
+                    metadata['condition_procedure_path'],
+                    config_dir
+                )
 
             # Load node_type
             node_type_str = node_data.get("node_type")

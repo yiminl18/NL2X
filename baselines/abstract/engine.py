@@ -697,17 +697,107 @@ except Exception as e:
                     node_intermediate_dir = os.path.join(intermediate_dir, node_id)
                     os.makedirs(node_intermediate_dir, exist_ok=True)
 
-                # Execute procedure with node's data_sources and outputs as overrides
-                result = self.execute_procedure(
-                    procedure=procedure,
-                    input_data=input_data,
-                    config=config,
-                    save_intermediates=save_intermediates,
-                    intermediate_dir=node_intermediate_dir,
-                    override_data_sources=node.data_sources,
-                    override_outputs=node.outputs,
-                    source_node_mapping=source_node_mapping
-                )
+                # Check if this is a conditional loop
+                condition_procedure_path = node.metadata.get('condition_procedure_path')
+
+                if condition_procedure_path:
+                    # Conditional loop execution
+                    max_iterations = node.metadata.get('max_iterations', 10)
+                    condition_field = node.metadata.get('condition_field', '_should_continue')
+                    condition_aggregation = node.metadata.get('condition_aggregation', 'all')
+
+                    # Load condition procedure
+                    condition_procedure = Procedure.load(condition_procedure_path)
+
+                    if self.verbose:
+                        print(f"  Conditional loop: max_iterations={max_iterations}, condition_field='{condition_field}'")
+
+                    iteration = 0
+                    current_input_data = input_data
+
+                    while iteration < max_iterations:
+                        iteration += 1
+                        if self.verbose:
+                            print(f"  Loop iteration {iteration}/{max_iterations}")
+
+                        # Execute data processing procedure
+                        result = self.execute_procedure(
+                            procedure=procedure,
+                            input_data=current_input_data,
+                            config=config,
+                            save_intermediates=save_intermediates,
+                            intermediate_dir=node_intermediate_dir,
+                            override_data_sources=node.data_sources,
+                            override_outputs=node.outputs,
+                            source_node_mapping=source_node_mapping
+                        )
+
+                        if not result.success:
+                            break
+
+                        # Execute condition procedure to check if should continue
+                        condition_result = self.execute_procedure(
+                            procedure=condition_procedure,
+                            input_data=result.data,
+                            config=config,
+                            save_intermediates=False,
+                            intermediate_dir=None,
+                            override_data_sources=None,
+                            override_outputs=None,
+                            source_node_mapping=None
+                        )
+
+                        if not condition_result.success:
+                            if self.verbose:
+                                print(f"  Condition procedure failed, stopping loop: {condition_result.error}")
+                            break
+
+                        # Evaluate condition
+                        should_continue = self._evaluate_condition(
+                            condition_result.data,
+                            condition_field,
+                            condition_aggregation
+                        )
+
+                        if not should_continue:
+                            if self.verbose:
+                                print(f"  Condition not met, stopping loop after {iteration} iterations")
+                            break
+
+                        # Continue loop: output becomes input for next iteration
+                        current_input_data = result.data
+
+                        if self.verbose:
+                            print(f"  Condition met, continuing to next iteration")
+
+                else:
+                    # Check for fixed loop (any node type can loop)
+                    iterations = node.metadata.get('iterations', 1)
+                    is_fixed_loop = iterations > 1
+
+                    # Execute procedure (with loop if needed)
+                    current_input_data = input_data
+                    for iteration in range(iterations):
+                        if self.verbose and is_fixed_loop:
+                            print(f"  Loop iteration {iteration + 1}/{iterations}")
+
+                        result = self.execute_procedure(
+                            procedure=procedure,
+                            input_data=current_input_data,
+                            config=config,
+                            save_intermediates=save_intermediates,
+                            intermediate_dir=node_intermediate_dir,
+                            override_data_sources=node.data_sources,
+                            override_outputs=node.outputs,
+                            source_node_mapping=source_node_mapping
+                        )
+
+                        if not result.success:
+                            break
+
+                        # For loop nodes, output becomes input for next iteration
+                        if is_fixed_loop and iteration < iterations - 1:
+                            current_input_data = result.data
 
                 if not result.success:
                     return ExecutionResult(
@@ -790,6 +880,57 @@ except Exception as e:
                 success=False,
                 error=f"Pipeline execution failed: {str(e)}\n{traceback.format_exc()}"
             )
+
+    def _evaluate_condition(
+        self,
+        condition_data: List[Dict[str, Any]],
+        condition_field: str,
+        aggregation: str = 'all'
+    ) -> bool:
+        """
+        Evaluate condition from condition procedure output.
+
+        Args:
+            condition_data: Output from condition procedure
+            condition_field: Field name to read boolean value from (e.g., '_should_continue')
+            aggregation: How to aggregate multiple records ('all', 'any', 'first')
+
+        Returns:
+            True to continue loop, False to stop loop
+        """
+        if not condition_data:
+            if self.verbose:
+                print("  Condition evaluation: No data returned from condition procedure, stopping loop")
+            return False  # No data = stop
+
+        # Extract condition field values from all records
+        values = []
+        for record in condition_data:
+            value = record.get(condition_field)
+            if value is None:
+                if self.verbose:
+                    print(f"  Warning: Record missing condition field '{condition_field}', treating as False")
+                values.append(False)
+            else:
+                values.append(bool(value))
+
+        # Apply aggregation logic
+        if aggregation == 'all':
+            result = all(values)
+            if self.verbose:
+                print(f"  Condition evaluation (all): {values} → {result}")
+        elif aggregation == 'any':
+            result = any(values)
+            if self.verbose:
+                print(f"  Condition evaluation (any): {values} → {result}")
+        elif aggregation == 'first':
+            result = values[0] if values else False
+            if self.verbose:
+                print(f"  Condition evaluation (first): {values[0] if values else 'N/A'} → {result}")
+        else:
+            raise ValueError(f"Unknown aggregation method: {aggregation}")
+
+        return result
 
     def _topological_sort(self, pipeline: Pipeline) -> List[str]:
         """
@@ -945,17 +1086,107 @@ except Exception as e:
                 node_intermediate_dir = os.path.join(intermediate_dir, node_id)
                 os.makedirs(node_intermediate_dir, exist_ok=True)
 
-            # Execute procedure
-            result = self.execute_procedure(
-                procedure=procedure,
-                input_data=input_data,
-                config=config,
-                save_intermediates=save_intermediates,
-                intermediate_dir=node_intermediate_dir,
-                override_data_sources=node.data_sources,
-                override_outputs=node.outputs,
-                source_node_mapping=source_node_mapping
-            )
+            # Check if this is a conditional loop
+            condition_procedure_path = node.metadata.get('condition_procedure_path')
+
+            if condition_procedure_path:
+                # Conditional loop execution
+                max_iterations = node.metadata.get('max_iterations', 10)
+                condition_field = node.metadata.get('condition_field', '_should_continue')
+                condition_aggregation = node.metadata.get('condition_aggregation', 'all')
+
+                # Load condition procedure
+                condition_procedure = Procedure.load(condition_procedure_path)
+
+                if self.verbose:
+                    print(f"  [Thread] Conditional loop: max_iterations={max_iterations}, condition_field='{condition_field}'")
+
+                iteration = 0
+                current_input_data = input_data
+
+                while iteration < max_iterations:
+                    iteration += 1
+                    if self.verbose:
+                        print(f"  [Thread] Loop iteration {iteration}/{max_iterations}")
+
+                    # Execute data processing procedure
+                    result = self.execute_procedure(
+                        procedure=procedure,
+                        input_data=current_input_data,
+                        config=config,
+                        save_intermediates=save_intermediates,
+                        intermediate_dir=node_intermediate_dir,
+                        override_data_sources=node.data_sources,
+                        override_outputs=node.outputs,
+                        source_node_mapping=source_node_mapping
+                    )
+
+                    if not result.success:
+                        break
+
+                    # Execute condition procedure to check if should continue
+                    condition_result = self.execute_procedure(
+                        procedure=condition_procedure,
+                        input_data=result.data,
+                        config=config,
+                        save_intermediates=False,
+                        intermediate_dir=None,
+                        override_data_sources=None,
+                        override_outputs=None,
+                        source_node_mapping=None
+                    )
+
+                    if not condition_result.success:
+                        if self.verbose:
+                            print(f"  [Thread] Condition procedure failed, stopping loop: {condition_result.error}")
+                        break
+
+                    # Evaluate condition
+                    should_continue = self._evaluate_condition(
+                        condition_result.data,
+                        condition_field,
+                        condition_aggregation
+                    )
+
+                    if not should_continue:
+                        if self.verbose:
+                            print(f"  [Thread] Condition not met, stopping loop after {iteration} iterations")
+                        break
+
+                    # Continue loop: output becomes input for next iteration
+                    current_input_data = result.data
+
+                    if self.verbose:
+                        print(f"  [Thread] Condition met, continuing to next iteration")
+
+            else:
+                # Check for fixed loop (any node type can loop)
+                iterations = node.metadata.get('iterations', 1)
+                is_fixed_loop = iterations > 1
+
+                # Execute procedure (with loop if needed)
+                current_input_data = input_data
+                for iteration in range(iterations):
+                    if self.verbose and is_fixed_loop:
+                        print(f"  [Thread] Loop iteration {iteration + 1}/{iterations}")
+
+                    result = self.execute_procedure(
+                        procedure=procedure,
+                        input_data=current_input_data,
+                        config=config,
+                        save_intermediates=save_intermediates,
+                        intermediate_dir=node_intermediate_dir,
+                        override_data_sources=node.data_sources,
+                        override_outputs=node.outputs,
+                        source_node_mapping=source_node_mapping
+                    )
+
+                    if not result.success:
+                        break
+
+                    # For loop nodes, output becomes input for next iteration
+                    if is_fixed_loop and iteration < iterations - 1:
+                        current_input_data = result.data
 
             if not result.success:
                 return (node_id, result)

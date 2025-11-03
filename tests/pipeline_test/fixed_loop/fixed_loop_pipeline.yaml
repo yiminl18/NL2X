@@ -1,0 +1,21 @@
+name: fixed_loop_test_pipeline
+output_path: loop_output.json
+properties:
+  base_system: abstract
+  parallel_execution: false
+nodes:
+  loop_node:
+    node_type: final
+    procedure_path: multiply_procedure.yaml
+    data_sources:
+      - type: file
+        name: loop_input.json
+        reference: loop_input.json
+    outputs:
+      - type: file
+        name: loop_output.json
+        reference: loop_output.json
+    metadata:
+      description: Loop that multiplies values by 2 for 3 iterations
+      iterations: 3
+edges: {}

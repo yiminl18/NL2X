@@ -1,0 +1,24 @@
+name: conditional_loop_test_pipeline
+output_path: improved_data.json
+properties:
+  base_system: abstract
+  parallel_execution: false
+nodes:
+  loop_node:
+    node_type: final
+    procedure_path: improve_data_procedure.yaml
+    data_sources:
+      - type: file
+        name: noisy_data.json
+        reference: noisy_data.json
+    outputs:
+      - type: file
+        name: improved_data.json
+        reference: improved_data.json
+    metadata:
+      description: Loop that improves data quality until threshold is reached
+      condition_procedure_path: quality_check_procedure.yaml
+      max_iterations: 10
+      condition_field: "_should_continue"
+      condition_aggregation: "all"
+edges: {}

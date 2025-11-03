@@ -1,0 +1,47 @@
+name: check_quality_threshold
+data_sources:
+  - type: file
+    name: improved_data.json
+    reference: improved_data.json
+outputs:
+  - type: file
+    name: condition_result.json
+    reference: condition_result.json
+properties:
+  description: Check if data quality is below threshold (should continue improving)
+  created_by: test creation
+dataset_schema:
+  fields:
+    text: String
+    quality: Float
+subtasks:
+  - Check if quality is below 0.9 threshold
+operators:
+  - name: check_threshold
+    type: PythonCode
+    source:
+      system: abstract
+      name: check_threshold
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Check each record's quality
+            for record in data:
+                quality = record.get('quality', 0.0)
+                # Set _should_continue to True if quality < 0.9 (need more iterations)
+                # Set to False if quality >= 0.9 (reached target)
+                record['_should_continue'] = quality < 0.9
+
+            # Return data with condition field
+            return data
+    input:
+      fields:
+        text: String
+        quality: Float
+    output:
+      text: String
+      quality: Float
+      _should_continue: Boolean

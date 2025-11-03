@@ -1,0 +1,52 @@
+name: improve_data_quality
+data_sources:
+  - type: file
+    name: noisy_data.json
+    reference: noisy_data.json
+outputs:
+  - type: file
+    name: improved_data.json
+    reference: improved_data.json
+properties:
+  description: Improve data quality by cleaning text and incrementing quality score
+  created_by: test creation
+dataset_schema:
+  fields:
+    text: String
+    quality: Float
+subtasks:
+  - Clean text and improve quality score
+operators:
+  - name: improve_quality
+    type: PythonCode
+    source:
+      system: abstract
+      name: improve_quality
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Improve each record
+            for record in data:
+                # Clean text: trim whitespace, normalize case, remove extra spaces
+                text = record.get('text', '')
+                text = text.strip()  # Remove leading/trailing whitespace
+                text = ' '.join(text.split())  # Remove extra spaces
+                text = text.lower()  # Normalize to lowercase
+                record['text'] = text
+
+                # Improve quality score by 0.2 each iteration
+                current_quality = record.get('quality', 0.0)
+                record['quality'] = min(current_quality + 0.2, 1.0)
+
+            # Return modified data
+            return data
+    input:
+      fields:
+        text: String
+        quality: Float
+    output:
+      text: String
+      quality: Float
