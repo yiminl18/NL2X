@@ -198,7 +198,7 @@ class Pipeline:
         Validate pipeline structure and data flow consistency with type-specific rules.
 
         Checks:
-        1. Pipeline must have exactly 1 final node
+        1. Pipeline must have at least 1 final node
         2. Type-specific validation (fanout, aggregate, final, normal)
         3. For data_sources with type='node': referenced node exists and edge exists
         4. For outputs with type='node': referenced node exists and edge exists
@@ -210,8 +210,8 @@ class Pipeline:
 
         # Check 1: Count final nodes
         final_nodes = [node_id for node_id, node in self.nodes.items() if node.node_type == NodeType.FINAL]
-        if len(final_nodes) != 1:
-            errors.append(f"Pipeline must have exactly 1 final node, found: {len(final_nodes)}")
+        if len(final_nodes) < 1:
+            errors.append(f"Pipeline must have at least 1 final node, found: {len(final_nodes)}")
 
         for node_id, node in self.nodes.items():
             # Type-specific validation

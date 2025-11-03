@@ -1,0 +1,85 @@
+name: calculate_deviation_ratio
+data_sources:
+  - type: node
+    name: sum_node_output
+    reference: sum_node
+  - type: node
+    name: median_node_output
+    reference: median_node
+outputs:
+  - type: file
+    name: grade_with_deviation.json
+    reference: grade_with_deviation.json
+properties:
+  description: Calculate deviation ratio from median for each student
+  created_by: manual creation
+dataset_schema:
+  fields:
+    # From sum_node
+    name: String
+    calculus: Integer
+    physics: Integer
+    biology: Integer
+    total_score: Integer
+    # From median_node
+    median_score: Integer
+subtasks:
+  - Aggregate data from sum_node and median_node
+  - Calculate per-student deviation from median
+  - Compute deviation_ratio = total_deviation / total_score
+operators:
+  - name: calculate_deviation
+    type: PythonCode
+    source:
+      system: abstract
+      name: calculate_deviation
+    properties:
+      function: |
+        def process(sources):
+            # Access sources by node_id (node-based naming)
+            sum_data = sources['sum_node']      # Has: name, calculus, physics, biology, total_score
+            median_data = sources['median_node'] # Has: name, calculus, physics, biology, median_score
+
+            # Build name->median lookup
+            median_lookup = {record['name']: record['median_score'] for record in median_data}
+
+            result = []
+            for record in sum_data:
+                name = record['name']
+                median = median_lookup.get(name, 0)
+
+                # Calculate per-student deviation from median
+                dev_calculus = abs(record['calculus'] - median)
+                dev_physics = abs(record['physics'] - median)
+                dev_biology = abs(record['biology'] - median)
+                total_deviation = dev_calculus + dev_physics + dev_biology
+
+                # Calculate metric: total_deviation / total_score
+                deviation_ratio = total_deviation / record['total_score'] if record['total_score'] > 0 else 0
+
+                # Create output record with all fields from sum_node plus deviation metrics
+                result.append({
+                    **record,
+                    'median_score': median,
+                    'total_deviation': total_deviation,
+                    'deviation_ratio': round(deviation_ratio, 4)
+                })
+
+            return result
+    input:
+      fields:
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        total_score: Integer
+        median_score: Integer
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer
+      total_score: Integer
+      median_score: Integer
+      total_deviation: Integer
+      deviation_ratio: Float

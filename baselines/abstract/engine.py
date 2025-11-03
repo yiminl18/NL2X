@@ -6,13 +6,15 @@ appropriate system executors (DocETL, Lotus) based on operator.source.system.
 Supports single operator execution, full procedures, and procedure ranges.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Set
 from pathlib import Path
 import json
 import os
 import traceback
 import subprocess  # For PythonCode operator execution
 import sys
+from threading import Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import abstract operator classes
 from .ops.base import Operator
@@ -83,12 +85,14 @@ class AbstractExecutor:
                             operator: Operator,
                             input_data: Any,
                             timeout: int = 300,
-                            force_execute: bool = False) -> ExecutionResult:
+                            force_execute: bool = False,
+                            source_node_mapping: Optional[Dict[str, Any]] = None) -> ExecutionResult:
         """
         Execute Python function in subprocess sandbox with caching support.
 
         The function must have signature: def process(sources)
         - sources: Dict with 'input_data' key containing previous operator output
+        - For aggregate nodes: sources also contains keys by source node_id (e.g., 'sum_node', 'median_node')
         - Returns: Modified data with new fields
 
         Args:
@@ -96,6 +100,7 @@ class AbstractExecutor:
             input_data: Input data from previous operator
             timeout: Subprocess timeout in seconds (default: 300)
             force_execute: If True, bypass cache and force execution
+            source_node_mapping: Optional dict mapping source node_ids to their data (for aggregate nodes)
 
         Returns:
             ExecutionResult with output data or error
@@ -121,14 +126,16 @@ class AbstractExecutor:
                     error="PythonCode operator missing 'function' in properties"
                 )
 
-            # Get additional sources (beyond input_data)
-            additional_sources = operator.properties.get('sources', [])
-
-            # Build sources dict (currently only supports input_data)
-            # TODO: Support loading additional data sources
+            # Build sources dict with input_data as default
             sources = {
                 'input_data': input_data
             }
+
+            # Add source node mappings for aggregate nodes (keyed by node_id)
+            if source_node_mapping:
+                sources.update(source_node_mapping)
+                if self.verbose:
+                    print(f"  Multi-source execution: {list(source_node_mapping.keys())}")
 
             # Serialize sources to JSON
             try:
@@ -288,7 +295,8 @@ except Exception as e:
                         operator: Union[Operator, Dict[str, Any]],
                         input_data: Any,
                         config: Optional[Dict[str, Any]] = None,
-                        force_execute: bool = False) -> ExecutionResult:
+                        force_execute: bool = False,
+                        source_node_mapping: Optional[Dict[str, Any]] = None) -> ExecutionResult:
         """Execute single operator using appropriate system executor."""
         # Convert dict to Operator if needed
         if isinstance(operator, dict):
@@ -296,7 +304,7 @@ except Exception as e:
 
         # Route PythonCode operators to subprocess executor with cache support
         if operator.type == "PythonCode":
-            return self._execute_python_code(operator, input_data, force_execute=force_execute)
+            return self._execute_python_code(operator, input_data, force_execute=force_execute, source_node_mapping=source_node_mapping)
 
         # Determine which system to use
         system = operator.source.get('system', 'docetl')
@@ -317,7 +325,8 @@ except Exception as e:
                         save_intermediates: bool = False,
                         intermediate_dir: Optional[str] = None,
                         override_data_sources: Optional[List[DataReference]] = None,
-                        override_outputs: Optional[List[DataReference]] = None) -> ExecutionResult:
+                        override_outputs: Optional[List[DataReference]] = None,
+                        source_node_mapping: Optional[Dict[str, Any]] = None) -> ExecutionResult:
         """
         Execute complete procedure, routing operators to appropriate system executors.
 
@@ -329,6 +338,7 @@ except Exception as e:
             intermediate_dir: Directory for intermediates
             override_data_sources: Override procedure's data_sources (for pipeline use)
             override_outputs: Override procedure's outputs (for pipeline use)
+            source_node_mapping: Optional dict mapping source node_ids to their data (for aggregate nodes)
         """
         try:
             # Use override_data_sources if provided, else procedure.data_sources
@@ -355,7 +365,8 @@ except Exception as e:
                 end_index=None,
                 config=config,
                 save_intermediates=save_intermediates,
-                intermediate_dir=intermediate_dir
+                intermediate_dir=intermediate_dir,
+                source_node_mapping=source_node_mapping
             )
 
             # Save final output if effective outputs exist and are file references
@@ -385,7 +396,8 @@ except Exception as e:
                               end_index: Optional[int] = None,
                               config: Optional[Dict[str, Any]] = None,
                               save_intermediates: bool = False,
-                              intermediate_dir: Optional[str] = None) -> ExecutionResult:
+                              intermediate_dir: Optional[str] = None,
+                              source_node_mapping: Optional[Dict[str, Any]] = None) -> ExecutionResult:
         """Execute procedure subset from start_index to end_index (inclusive)."""
         try:
             # Get operators from procedure
@@ -424,10 +436,15 @@ except Exception as e:
                 if self.verbose:
                     print(f"Executing operator {i}: {operator.name} ({operator.type})")
 
+                # Pass source_node_mapping only for the first operator (if available)
+                # This supports aggregate nodes where first operator needs multiple sources
+                operator_source_mapping = source_node_mapping if i == start_index else None
+
                 result = self.execute_operator(
                     operator=operator,
                     input_data=current_data,
-                    config=config
+                    config=config,
+                    source_node_mapping=operator_source_mapping
                 )
 
                 if not result.success:
@@ -489,14 +506,16 @@ except Exception as e:
     def _resolve_data_reference(self,
                                ref: DataReference,
                                outputs_registry: Dict[str, Any],
-                               file_cache: Optional[Dict[str, Any]] = None) -> Any:
+                               file_cache: Optional[Dict[str, Any]] = None,
+                               file_cache_lock: Optional[Lock] = None) -> Any:
         """
-        Resolve a DataReference to raw data.
+        Resolve a DataReference to raw data (thread-safe when lock is provided).
 
         Args:
             ref: DataReference to resolve
             outputs_registry: Registry of node outputs (node_id -> raw data)
             file_cache: Optional cache of loaded file data
+            file_cache_lock: Optional lock for thread-safe file cache access
 
         Returns:
             Resolved raw data (List[Dict])
@@ -505,7 +524,7 @@ except Exception as e:
             ValueError: If reference cannot be resolved
         """
         if ref.ref_type == "node":
-            # Resolve node reference
+            # Resolve node reference (read-only, safe in parallel)
             if ref.ref not in outputs_registry:
                 raise ValueError(
                     f"Cannot resolve node reference '{ref.ref}': node has not been executed yet"
@@ -513,16 +532,23 @@ except Exception as e:
             return outputs_registry[ref.ref]
 
         elif ref.ref_type == "file":
-            # Resolve file reference
+            # Check cache first (read-only)
             if file_cache and ref.ref in file_cache:
                 return file_cache[ref.ref]
 
             # Load from file
             data = self._load_from_reference(ref)
 
-            # Cache for future use
+            # Cache with lock if provided (thread-safe write)
             if file_cache is not None:
-                file_cache[ref.ref] = data
+                if file_cache_lock:
+                    with file_cache_lock:
+                        # Double-check after acquiring lock (another thread may have loaded it)
+                        if ref.ref not in file_cache:
+                            file_cache[ref.ref] = data
+                else:
+                    # No lock provided (sequential execution)
+                    file_cache[ref.ref] = data
 
             return data
 
@@ -562,6 +588,37 @@ except Exception as e:
                 print(f"Loading procedures from pipeline nodes...")
             procedures = pipeline.load_procedures()
 
+            # Check if parallel execution is enabled
+            parallel_enabled = pipeline.properties.get('parallel_execution', False)
+            max_workers = pipeline.properties.get('max_parallel_workers', 4)
+
+            if parallel_enabled and max_workers > 1:
+                # Use parallel execution
+                if self.verbose:
+                    print("Using parallel execution mode")
+
+                # Group nodes into execution levels
+                levels = self._group_nodes_into_levels(pipeline)
+
+                # Setup intermediate directory
+                if save_intermediates and not intermediate_dir:
+                    intermediate_dir = os.path.join(os.getcwd(), 'pipeline_intermediates', pipeline.name)
+                    os.makedirs(intermediate_dir, exist_ok=True)
+
+                return self._execute_pipeline_parallel(
+                    pipeline=pipeline,
+                    procedures=procedures,
+                    levels=levels,
+                    max_workers=max_workers,
+                    config=config,
+                    save_intermediates=save_intermediates,
+                    intermediate_dir=intermediate_dir
+                )
+
+            # Otherwise, use sequential execution (existing code)
+            if self.verbose:
+                print("Using sequential execution mode")
+
             # Perform topological sort
             execution_order = self._topological_sort(pipeline)
             if self.verbose:
@@ -591,6 +648,9 @@ except Exception as e:
                 if len(node.data_sources) == 0:
                     raise ValueError(f"Node '{node_id}' has no data sources")
 
+                # Initialize source_node_mapping for aggregate nodes
+                source_node_mapping = None
+
                 if len(node.data_sources) == 1:
                     # Single input
                     input_data = self._resolve_data_reference(
@@ -600,15 +660,23 @@ except Exception as e:
                     )
                 else:
                     # Multiple inputs (AGGREGATE node)
-                    # For now, use the first data source as primary input
-                    # TODO: Support proper aggregation of multiple inputs
+                    # Resolve all data sources and build node-based mapping
+                    source_node_mapping = {}
+                    all_resolved_data = []
+
+                    for ds in node.data_sources:
+                        resolved_data = self._resolve_data_reference(ds, outputs_registry, file_cache)
+                        all_resolved_data.append(resolved_data)
+
+                        # If data source is a node, key by node_id
+                        if ds.ref_type == "node":
+                            source_node_mapping[ds.ref] = resolved_data
+
+                    # Use first data source as primary input_data (backwards compatible)
+                    input_data = all_resolved_data[0]
+
                     if self.verbose:
-                        print(f"  Note: Node has {len(node.data_sources)} inputs, using first as primary")
-                    input_data = self._resolve_data_reference(
-                        node.data_sources[0],
-                        outputs_registry,
-                        file_cache
-                    )
+                        print(f"  Multi-source node: {len(node.data_sources)} inputs from {list(source_node_mapping.keys())}")
 
                 # Setup intermediate directory for this node
                 node_intermediate_dir = None
@@ -624,7 +692,8 @@ except Exception as e:
                     save_intermediates=save_intermediates,
                     intermediate_dir=node_intermediate_dir,
                     override_data_sources=node.data_sources,
-                    override_outputs=node.outputs
+                    override_outputs=node.outputs,
+                    source_node_mapping=source_node_mapping
                 )
 
                 if not result.success:
@@ -656,41 +725,50 @@ except Exception as e:
                     if output_path:
                         print(f"  Intermediate saved to: {output_path}")
 
-            # Find FINAL node and return its output
+            # Find FINAL nodes and collect their outputs
             final_nodes = [n for n in pipeline.nodes.values() if n.node_type == NodeType.FINAL]
-            if len(final_nodes) != 1:
+            if len(final_nodes) < 1:
                 return ExecutionResult(
                     success=False,
-                    error=f"Pipeline should have exactly 1 FINAL node, found {len(final_nodes)}"
+                    error=f"Pipeline should have at least 1 FINAL node, found {len(final_nodes)}"
                 )
 
-            final_node_id = final_nodes[0].node_id
-            final_output_data = outputs_registry.get(final_node_id)
+            # Collect outputs from all final nodes
+            final_outputs = {}
+            final_output_paths = {}
+            for final_node in final_nodes:
+                node_id = final_node.node_id
+                output_data = outputs_registry.get(node_id)
 
-            if final_output_data is None:
-                return ExecutionResult(
-                    success=False,
-                    error=f"Final node '{final_node_id}' did not produce output"
-                )
+                if output_data is None:
+                    return ExecutionResult(
+                        success=False,
+                        error=f"Final node '{node_id}' did not produce output"
+                    )
 
-            # Get final output path
-            final_node = final_nodes[0]
-            final_output_path = final_node.outputs[0].ref if final_node.outputs else None
+                final_outputs[node_id] = output_data
+                final_output_paths[node_id] = final_node.outputs[0].ref if final_node.outputs else None
 
             if self.verbose:
                 print(f"\n{'='*60}")
                 print(f"Pipeline execution completed successfully")
-                print(f"Final output from node: {final_node_id}")
+                print(f"Final output from {len(final_nodes)} node(s): {list(final_outputs.keys())}")
                 print(f"{'='*60}\n")
+
+            # Return all final node outputs (for single final node, backwards compatible)
+            return_data = final_outputs[final_nodes[0].node_id] if len(final_nodes) == 1 else final_outputs
 
             return ExecutionResult(
                 success=True,
-                data=final_output_data,
+                data=return_data,
                 metadata={
                     'pipeline_name': pipeline.name,
                     'nodes_executed': len(execution_order),
-                    'final_node_id': final_node_id,
-                    'final_output_path': final_output_path
+                    'final_node_ids': [n.node_id for n in final_nodes],
+                    'final_output_paths': final_output_paths,
+                    # Legacy fields for backwards compatibility (when single final node)
+                    'final_node_id': final_nodes[0].node_id if len(final_nodes) == 1 else None,
+                    'final_output_path': final_output_paths[final_nodes[0].node_id] if len(final_nodes) == 1 else None
                 }
             )
 
@@ -734,3 +812,322 @@ except Exception as e:
             raise ValueError("Pipeline contains cycles - cannot perform topological sort")
 
         return result
+
+    def _group_nodes_into_levels(self, pipeline: Pipeline) -> List[List[str]]:
+        """
+        Group pipeline nodes into execution levels for parallel execution.
+
+        Nodes in the same level have no dependencies on each other and can
+        execute in parallel. Each level must complete before the next begins.
+        AGGREGATE nodes naturally wait for all parents in previous levels.
+
+        Args:
+            pipeline: Pipeline object
+
+        Returns:
+            List of levels, where each level is a list of node IDs
+
+        Raises:
+            ValueError: If pipeline contains cycles
+        """
+        levels = []
+        in_degree = {node_id: len(node.parents) for node_id, node in pipeline.nodes.items()}
+
+        while in_degree:
+            # Current level: all nodes with zero dependencies
+            current_level = [nid for nid, deg in in_degree.items() if deg == 0]
+
+            if not current_level:
+                raise ValueError("Pipeline contains cycles - cannot group into levels")
+
+            levels.append(current_level)
+
+            # Remove current level nodes and update in-degrees
+            for node_id in current_level:
+                del in_degree[node_id]
+                for child_id in pipeline.nodes[node_id].children:
+                    if child_id in in_degree:
+                        in_degree[child_id] -= 1
+
+        return levels
+
+    def _execute_node_worker(
+        self,
+        node_id: str,
+        pipeline: Pipeline,
+        procedures: Dict[str, 'Procedure'],
+        outputs_registry: Dict[str, Any],
+        outputs_lock: Lock,
+        file_cache: Dict[str, Any],
+        file_cache_lock: Lock,
+        config: Optional[Dict[str, Any]],
+        save_intermediates: bool,
+        intermediate_dir: Optional[str]
+    ) -> tuple:
+        """
+        Worker function to execute a single pipeline node in parallel.
+
+        This function is designed to be thread-safe and executed in a ThreadPoolExecutor.
+        It resolves inputs, executes the node's procedure, and stores results.
+
+        Args:
+            node_id: ID of the node to execute
+            pipeline: Pipeline object
+            procedures: Dict mapping node_id to Procedure objects
+            outputs_registry: Shared dict for storing node outputs (thread-safe with lock)
+            outputs_lock: Lock for writing to outputs_registry
+            file_cache: Shared dict for caching file loads (thread-safe with lock)
+            file_cache_lock: Lock for writing to file_cache
+            config: Optional configuration for execution
+            save_intermediates: Whether to save intermediate results
+            intermediate_dir: Directory for intermediate results
+
+        Returns:
+            Tuple of (node_id, ExecutionResult)
+        """
+        try:
+            node = pipeline.nodes[node_id]
+            procedure = procedures[node_id]
+
+            if self.verbose:
+                print(f"[Thread] Executing node: {node_id} ({node.node_type.value})")
+
+            # Resolve input data sources
+            if len(node.data_sources) == 0:
+                raise ValueError(f"Node '{node_id}' has no data sources")
+
+            source_node_mapping = None
+
+            if len(node.data_sources) == 1:
+                # Single input
+                input_data = self._resolve_data_reference(
+                    node.data_sources[0],
+                    outputs_registry,
+                    file_cache,
+                    file_cache_lock
+                )
+            else:
+                # Multiple inputs (AGGREGATE node)
+                source_node_mapping = {}
+                all_resolved_data = []
+
+                for ds in node.data_sources:
+                    # Thread-safe read from registries
+                    resolved_data = self._resolve_data_reference(
+                        ds, outputs_registry, file_cache, file_cache_lock
+                    )
+                    all_resolved_data.append(resolved_data)
+
+                    if ds.ref_type == "node":
+                        source_node_mapping[ds.ref] = resolved_data
+
+                input_data = all_resolved_data[0]
+
+                if self.verbose:
+                    print(f"  [Thread] Multi-source node: {len(node.data_sources)} inputs")
+
+            # Setup intermediate directory
+            node_intermediate_dir = None
+            if save_intermediates and intermediate_dir:
+                node_intermediate_dir = os.path.join(intermediate_dir, node_id)
+                os.makedirs(node_intermediate_dir, exist_ok=True)
+
+            # Execute procedure
+            result = self.execute_procedure(
+                procedure=procedure,
+                input_data=input_data,
+                config=config,
+                save_intermediates=save_intermediates,
+                intermediate_dir=node_intermediate_dir,
+                override_data_sources=node.data_sources,
+                override_outputs=node.outputs,
+                source_node_mapping=source_node_mapping
+            )
+
+            if not result.success:
+                return (node_id, result)
+
+            # Thread-safe write to outputs_registry
+            with outputs_lock:
+                outputs_registry[node_id] = result.data
+
+            # Save intermediate if requested
+            if save_intermediates and intermediate_dir:
+                output_path = os.path.join(intermediate_dir, f"{node_id}_output.json")
+                with open(output_path, 'w') as f:
+                    json.dump(result.data, f, indent=2)
+
+            if self.verbose:
+                data_info = f"{len(result.data)} records" if isinstance(result.data, list) else type(result.data).__name__
+                print(f"  [Thread] ✓ Node '{node_id}' completed: {data_info}")
+
+            return (node_id, result)
+
+        except Exception as e:
+            error_result = ExecutionResult(
+                success=False,
+                error=f"Node '{node_id}' execution failed: {str(e)}\n{traceback.format_exc()}"
+            )
+            return (node_id, error_result)
+
+    def _execute_pipeline_parallel(
+        self,
+        pipeline: Pipeline,
+        procedures: Dict[str, 'Procedure'],
+        levels: List[List[str]],
+        max_workers: int,
+        config: Optional[Dict[str, Any]],
+        save_intermediates: bool,
+        intermediate_dir: Optional[str]
+    ) -> ExecutionResult:
+        """
+        Execute pipeline nodes in parallel using level-based execution.
+
+        Nodes are grouped into levels based on their dependencies. All nodes
+        in a level execute in parallel, then the next level begins. This ensures
+        AGGREGATE nodes receive all their inputs before execution.
+
+        Args:
+            pipeline: Pipeline object
+            procedures: Dict mapping node_id to Procedure objects
+            levels: List of execution levels (each level is a list of node IDs)
+            max_workers: Maximum number of parallel threads
+            config: Optional configuration
+            save_intermediates: Whether to save intermediate results
+            intermediate_dir: Directory for intermediate results
+
+        Returns:
+            ExecutionResult with data from final node(s) and execution metadata
+        """
+        # Initialize thread-safe registries
+        outputs_registry: Dict[str, Any] = {}
+        outputs_lock = Lock()
+        file_cache: Dict[str, Any] = {}
+        file_cache_lock = Lock()
+
+        # Track failed nodes for best-effort execution
+        failed_nodes: Set[str] = set()
+
+        if self.verbose:
+            print(f"\n{'='*60}")
+            print(f"Parallel execution: {len(levels)} levels, max {max_workers} workers")
+            print(f"{'='*60}\n")
+
+        # Execute level by level
+        for level_idx, level_nodes in enumerate(levels):
+            if self.verbose:
+                print(f"Level {level_idx + 1}/{len(levels)}: {len(level_nodes)} nodes - {level_nodes}")
+
+            # Skip nodes whose parents failed (best-effort)
+            executable_nodes = [
+                nid for nid in level_nodes
+                if not any(parent in failed_nodes for parent in pipeline.nodes[nid].parents)
+            ]
+
+            if not executable_nodes:
+                if self.verbose:
+                    print(f"  Skipping level {level_idx + 1} - all nodes depend on failed parents")
+                continue
+
+            # Execute all nodes in level in parallel
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._execute_node_worker,
+                        node_id,
+                        pipeline,
+                        procedures,
+                        outputs_registry,
+                        outputs_lock,
+                        file_cache,
+                        file_cache_lock,
+                        config,
+                        save_intermediates,
+                        intermediate_dir
+                    ): node_id
+                    for node_id in executable_nodes
+                }
+
+                # Collect results as they complete (best-effort)
+                for future in as_completed(futures):
+                    node_id, result = future.result()
+
+                    if not result.success:
+                        failed_nodes.add(node_id)
+                        if self.verbose:
+                            print(f"  ✗ Node '{node_id}' failed: {result.error}")
+                        # Continue with other nodes (best-effort)
+
+            if self.verbose:
+                successful = len([n for n in executable_nodes if n not in failed_nodes])
+                print(f"  Level {level_idx + 1} complete: {successful}/{len(executable_nodes)} successful\n")
+
+        # Collect final outputs
+        final_nodes = [n for n in pipeline.nodes.values() if n.node_type == NodeType.FINAL]
+
+        if not final_nodes:
+            return ExecutionResult(
+                success=False,
+                error="Pipeline has no FINAL nodes"
+            )
+
+        # Collect outputs from successful final nodes
+        final_outputs = {}
+        final_output_paths = {}
+        successful_finals = []
+
+        for final_node in final_nodes:
+            node_id = final_node.node_id
+
+            if node_id in failed_nodes:
+                continue
+
+            output_data = outputs_registry.get(node_id)
+            if output_data is None:
+                continue
+
+            final_outputs[node_id] = output_data
+            final_output_paths[node_id] = final_node.outputs[0].ref if final_node.outputs else None
+            successful_finals.append(node_id)
+
+        # Determine overall success
+        all_finals_succeeded = len(successful_finals) == len(final_nodes)
+
+        if self.verbose:
+            print(f"\n{'='*60}")
+            print(f"Parallel execution completed")
+            print(f"Final outputs: {len(successful_finals)}/{len(final_nodes)} successful")
+            if failed_nodes:
+                print(f"Failed nodes: {list(failed_nodes)}")
+            print(f"{'='*60}\n")
+
+        # Return based on success
+        if not successful_finals:
+            return ExecutionResult(
+                success=False,
+                error=f"All final nodes failed. Failed nodes: {list(failed_nodes)}",
+                metadata={
+                    'failed_nodes': list(failed_nodes),
+                    'pipeline_name': pipeline.name
+                }
+            )
+
+        return_data = final_outputs[successful_finals[0]] if len(successful_finals) == 1 else final_outputs
+
+        return ExecutionResult(
+            success=all_finals_succeeded,
+            data=return_data,
+            metadata={
+                'pipeline_name': pipeline.name,
+                'execution_mode': 'parallel',
+                'levels_executed': len(levels),
+                'nodes_executed': len(outputs_registry),
+                'nodes_failed': len(failed_nodes),
+                'failed_nodes': list(failed_nodes) if failed_nodes else None,
+                'final_node_ids': successful_finals,
+                'final_output_paths': final_output_paths,
+                # Legacy fields for backwards compatibility
+                'final_node_id': successful_finals[0] if len(successful_finals) == 1 else None,
+                'final_output_path': final_output_paths[successful_finals[0]] if len(successful_finals) == 1 else None
+            }
+        )

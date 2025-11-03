@@ -1,14 +1,12 @@
 name: student_grade_analysis_pipeline
 output_path: grade_with_average.json
 properties:
-  description: Calculate sum and average of student grades using two-step pipeline
   base_system: abstract
-  default_model: gpt-4o-mini
-  created_by: manual creation
-
+  parallel_execution: true
+  max_parallel_workers: 4
 nodes:
   sum_node:
-    node_type: normal
+    node_type: fanout
     procedure_path: sum_score_procedure.yaml
     data_sources:
       - type: file
@@ -18,8 +16,11 @@ nodes:
       - type: node
         name: average_node_input
         reference: average_node
+      - type: node
+        name: deviation_node_input
+        reference: deviation_node
     metadata:
-      description: First step - calculate total sum of scores
+      description: First step - calculate total sum of scores (fanout to average and deviation)
 
   average_node:
     node_type: final
@@ -35,6 +36,40 @@ nodes:
     metadata:
       description: Second step - calculate average from sum
 
+  median_node:
+    node_type: normal
+    procedure_path: median_score_procedure.yaml
+    data_sources:
+      - type: file
+        name: grade.json
+        reference: grade.json
+    outputs:
+      - type: node
+        name: deviation_node_input
+        reference: deviation_node
+    metadata:
+      description: Parallel step - calculate median of scores (feeds into deviation aggregate)
+
+  deviation_node:
+    node_type: final
+    procedure_path: deviation_calculation_procedure.yaml
+    data_sources:
+      - type: node
+        name: sum_node_output
+        reference: sum_node
+      - type: node
+        name: median_node_output
+        reference: median_node
+    outputs:
+      - type: file
+        name: grade_with_deviation.json
+        reference: grade_with_deviation.json
+    metadata:
+      description: Aggregate step - calculate deviation ratio from sum and median data
+
 edges:
   sum_node:
     - average_node
+    - deviation_node
+  median_node:
+    - deviation_node
