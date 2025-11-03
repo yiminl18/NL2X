@@ -1,0 +1,61 @@
+name: process_medium_performers
+data_sources:
+  - type: node
+    name: classify_node_medium_output
+    reference: classify_node
+outputs:
+  - type: file
+    name: medium_performers.json
+    reference: medium_performers.json
+properties:
+  description: Process medium-performing students (80 <= average < 90)
+  created_by: manual creation for conditional routing test
+dataset_schema:
+  fields:
+    name: String
+    calculus: Integer
+    physics: Integer
+    biology: Integer
+    total_score: Integer
+    average: Float
+    _performance_level: String
+subtasks:
+  - Add encouraging message for medium performers
+operators:
+  - name: add_message
+    type: PythonCode
+    source:
+      system: abstract
+      name: add_medium_performer_message
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Add message for medium performers
+            for record in data:
+                record['message'] = 'Good job! You can do even better!'
+                record['recommendation'] = 'Focus on areas where you scored below 85'
+
+            # Return modified data
+            return data
+    input:
+      fields:
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        total_score: Integer
+        average: Float
+        _performance_level: String
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer
+      total_score: Integer
+      average: Float
+      _performance_level: String
+      message: String
+      recommendation: String

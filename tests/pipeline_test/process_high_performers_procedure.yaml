@@ -1,0 +1,61 @@
+name: process_high_performers
+data_sources:
+  - type: node
+    name: classify_node_high_output
+    reference: classify_node
+outputs:
+  - type: file
+    name: high_performers.json
+    reference: high_performers.json
+properties:
+  description: Process high-performing students (average >= 90)
+  created_by: manual creation for conditional routing test
+dataset_schema:
+  fields:
+    name: String
+    calculus: Integer
+    physics: Integer
+    biology: Integer
+    total_score: Integer
+    average: Float
+    _performance_level: String
+subtasks:
+  - Add encouraging message for high performers
+operators:
+  - name: add_message
+    type: PythonCode
+    source:
+      system: abstract
+      name: add_high_performer_message
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Add message for high performers
+            for record in data:
+                record['message'] = 'Excellent work! Keep it up!'
+                record['recommendation'] = 'Consider advanced courses or academic competitions'
+
+            # Return modified data
+            return data
+    input:
+      fields:
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        total_score: Integer
+        average: Float
+        _performance_level: String
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer
+      total_score: Integer
+      average: Float
+      _performance_level: String
+      message: String
+      recommendation: String

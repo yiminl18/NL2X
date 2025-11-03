@@ -23,18 +23,18 @@ nodes:
       description: First step - calculate total sum of scores (fanout to average and deviation)
 
   average_node:
-    node_type: final
+    node_type: normal
     procedure_path: average_from_sum_procedure.yaml
     data_sources:
       - type: node
         name: sum_node_output
         reference: sum_node
     outputs:
-      - type: file
-        name: grade_with_average.json
-        reference: grade_with_average.json
+      - type: node
+        name: classify_node_input
+        reference: classify_node
     metadata:
-      description: Second step - calculate average from sum
+      description: Second step - calculate average from sum (feeds into classifier)
 
   median_node:
     node_type: normal
@@ -67,9 +67,84 @@ nodes:
     metadata:
       description: Aggregate step - calculate deviation ratio from sum and median data
 
+  classify_node:
+    node_type: conditional_routing
+    procedure_path: classify_students_procedure.yaml
+    data_sources:
+      - type: node
+        name: average_node_output
+        reference: average_node
+    outputs:
+      - type: node
+        name: high_node_input
+        reference: high_node
+        output_name: high
+      - type: node
+        name: medium_node_input
+        reference: medium_node
+        output_name: medium
+      - type: node
+        name: low_node_input
+        reference: low_node
+        output_name: low
+    metadata:
+      description: Classify students by performance level based on average score
+      routing_field: _performance_level
+
+  high_node:
+    node_type: final
+    procedure_path: process_high_performers_procedure.yaml
+    data_sources:
+      - type: node
+        name: classify_node_high_output
+        reference: classify_node
+        output_name: high
+    outputs:
+      - type: file
+        name: high_performers.json
+        reference: high_performers.json
+    metadata:
+      description: Process high-performing students (average >= 90)
+
+  medium_node:
+    node_type: final
+    procedure_path: process_medium_performers_procedure.yaml
+    data_sources:
+      - type: node
+        name: classify_node_medium_output
+        reference: classify_node
+        output_name: medium
+    outputs:
+      - type: file
+        name: medium_performers.json
+        reference: medium_performers.json
+    metadata:
+      description: Process medium-performing students (80 <= average < 90)
+
+  low_node:
+    node_type: final
+    procedure_path: process_low_performers_procedure.yaml
+    data_sources:
+      - type: node
+        name: classify_node_low_output
+        reference: classify_node
+        output_name: low
+    outputs:
+      - type: file
+        name: low_performers.json
+        reference: low_performers.json
+    metadata:
+      description: Process low-performing students (average < 80)
+
 edges:
   sum_node:
     - average_node
     - deviation_node
   median_node:
     - deviation_node
+  average_node:
+    - classify_node
+  classify_node:
+    - high_node
+    - medium_node
+    - low_node

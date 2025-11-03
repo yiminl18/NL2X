@@ -19,24 +19,27 @@ class NodeType(Enum):
     FANOUT = "fanout"
     AGGREGATE = "aggregate"
     FINAL = "final"
+    CONDITIONAL_ROUTING = "conditional_routing"
 
 
 class DataReference:
     """Represents a data reference (input source or output destination) for a pipeline node."""
 
-    def __init__(self, ref_type: str, ref: str):
+    def __init__(self, ref_type: str, ref: str, output_name: str = 'default'):
         """
         Initialize a data reference.
 
         Args:
             ref_type: Type of reference - "node" or "file"
             ref: Reference target - node_id for nodes, file_path for files
+            output_name: For node references, which output branch to read from (default: 'default')
         """
         if ref_type not in ("node", "file"):
             raise ValueError(f"ref_type must be 'node' or 'file', got: {ref_type}")
 
         self.ref_type = ref_type
         self.ref = ref
+        self.output_name = output_name
         self.name = self._generate_name()
 
     def _generate_name(self) -> str:
@@ -48,18 +51,24 @@ class DataReference:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize DataReference to dictionary."""
-        return {
+        result = {
             "type": self.ref_type,
             "name": self.name,
             "reference": self.ref
         }
+        if self.output_name != 'default':
+            result["output_name"] = self.output_name
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'DataReference':
         """Deserialize DataReference from dictionary."""
-        return cls(data["type"], data["reference"])
+        output_name = data.get("output_name", "default")
+        return cls(data["type"], data["reference"], output_name)
 
     def __repr__(self):
+        if self.output_name != 'default':
+            return f"DataReference(type='{self.ref_type}', name='{self.name}', ref='{self.ref}', output='{self.output_name}')"
         return f"DataReference(type='{self.ref_type}', name='{self.name}', ref='{self.ref}')"
 
 
@@ -173,6 +182,51 @@ class Pipeline:
         self.nodes[node_id] = node
         return node_id
 
+    def add_conditional_routing(
+        self,
+        procedure_path: str,
+        node_id: str,
+        data_sources: List[DataReference],
+        output_branches: Dict[str, str],
+        routing_field: str = '_route_to'
+    ) -> str:
+        """
+        Add a conditional routing node to the pipeline.
+
+        Args:
+            procedure_path: Path to procedure file (must produce routing_field)
+            node_id: Unique node identifier
+            data_sources: List of DataReferences specifying input data
+            output_branches: Dict mapping output_name -> target_node_id
+            routing_field: Name of field in procedure output that contains routing target
+
+        Returns:
+            The node_id of the added node
+
+        Raises:
+            ValueError: If node_id already exists or output_branches has less than 2 entries
+        """
+        if len(output_branches) < 2:
+            raise ValueError(f"ConditionalRouting node must have at least 2 output branches, got {len(output_branches)}")
+
+        # Create outputs with output_name set for each branch
+        outputs = [DataReference("node", target_node_id, output_name=branch_name)
+                   for branch_name, target_node_id in output_branches.items()]
+
+        # Set metadata with routing_field
+        metadata = {'routing_field': routing_field}
+
+        # Add node
+        self.add_procedure(procedure_path, node_id, NodeType.CONDITIONAL_ROUTING,
+                          data_sources, outputs, metadata)
+
+        # Add edges to all target nodes
+        for target_node_id in output_branches.values():
+            if target_node_id in self.nodes:
+                self.add_edge(node_id, target_node_id)
+
+        return node_id
+
     def add_edge(self, from_node_id: str, to_node_id: str):
         """
         Add directed edge between nodes.
@@ -241,6 +295,16 @@ class Pipeline:
                     errors.append(f"Final node '{node_id}' must have exactly 1 output, has {len(node.outputs)}")
                 elif node.outputs[0].ref_type != "file":
                     errors.append(f"Final node '{node_id}' output must be a file, got node reference '{node.outputs[0].ref}'")
+
+            elif node.node_type == NodeType.CONDITIONAL_ROUTING:
+                # CONDITIONAL_ROUTING: Must have at least 2 outputs, all must be nodes, metadata must have routing_field
+                if len(node.outputs) < 2:
+                    errors.append(f"ConditionalRouting node '{node_id}' must have at least 2 outputs, has {len(node.outputs)}")
+                for output in node.outputs:
+                    if output.ref_type == "file":
+                        errors.append(f"ConditionalRouting node '{node_id}' has file output '{output.name}' (only node outputs allowed for routing nodes)")
+                if 'routing_field' not in node.metadata:
+                    errors.append(f"ConditionalRouting node '{node_id}' must have 'routing_field' in metadata")
 
             elif node.node_type == NodeType.NORMAL:
                 # NORMAL: All outputs must be nodes (not files)

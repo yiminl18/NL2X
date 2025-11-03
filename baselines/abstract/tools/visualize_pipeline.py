@@ -35,17 +35,19 @@ Pipeline = pipeline_module.Pipeline
 
 # Color scheme for node types
 NODE_COLORS = {
-    'fanout': '#FFA500',    # Orange - splits flow
-    'normal': '#4A90E2',    # Blue - standard processing
-    'aggregate': '#9B59B6', # Purple - merges inputs
-    'final': '#27AE60'      # Green - outputs to file
+    'fanout': '#FFA500',              # Orange - splits flow
+    'normal': '#4A90E2',              # Blue - standard processing
+    'aggregate': '#9B59B6',           # Purple - merges inputs
+    'final': '#27AE60',               # Green - outputs to file
+    'conditional_routing': '#E74C3C'  # Red - routes by condition
 }
 
 NODE_TYPE_DESCRIPTIONS = {
     'fanout': 'Splits to multiple outputs',
     'normal': 'Standard processing',
     'aggregate': 'Merges multiple inputs',
-    'final': 'Outputs to file'
+    'final': 'Outputs to file',
+    'conditional_routing': 'Routes records by condition'
 }
 
 
@@ -166,7 +168,11 @@ def load_and_analyze_pipeline(pipeline_path: str, verbose: bool = False) -> Dict
             'file_inputs': [ds.ref for ds in node.data_sources if ds.ref_type == 'file'],
             'node_inputs': [ds.ref for ds in node.data_sources if ds.ref_type == 'node'],
             'file_outputs': [out.ref for out in node.outputs if out.ref_type == 'file'],
-            'node_outputs': [out.ref for out in node.outputs if out.ref_type == 'node']
+            'node_outputs': [
+                {'ref': out.ref, 'output_name': out.output_name}
+                for out in node.outputs if out.ref_type == 'node'
+            ],
+            'routing_field': node.metadata.get('routing_field')  # For conditional routing
         }
 
     return {
@@ -215,12 +221,21 @@ def build_vis_data(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
             for node_input in node_info['node_inputs']:
                 tooltip_parts.append(f"• node: {node_input}<br/>")
 
-        if node_info['file_outputs'] or node_info['node_outputs']:
+        # Special handling for conditional routing nodes
+        if node_type == 'conditional_routing':
+            routing_field = node_info.get('routing_field', '_route_to')
+            tooltip_parts.append(f"<hr style='margin: 5px 0;'/><b>Routing Field:</b> <code>{routing_field}</code><br/>")
+            tooltip_parts.append(f"<b>Output Branches:</b><br/>")
+            for output in node_info['node_outputs']:
+                branch_name = output['output_name']
+                target_node = output['ref']
+                tooltip_parts.append(f"• <span style='color: #E74C3C; font-weight: bold;'>{branch_name}</span> → {target_node}<br/>")
+        elif node_info['file_outputs'] or node_info['node_outputs']:
             tooltip_parts.append(f"<hr style='margin: 5px 0;'/><b>Outputs:</b><br/>")
             for file_output in node_info['file_outputs']:
                 tooltip_parts.append(f"• file: {Path(file_output).name}<br/>")
             for node_output in node_info['node_outputs']:
-                tooltip_parts.append(f"• node: {node_output}<br/>")
+                tooltip_parts.append(f"• node: {node_output['ref']}<br/>")
 
         tooltip_parts.append("</div>")
         tooltip_html = "".join(tooltip_parts)
@@ -241,10 +256,11 @@ def build_vis_data(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
             },
             'font': {
                 'size': 14,
-                'color': '#ffffff' if node_type in ['aggregate', 'final'] else '#000000'
+                'color': '#ffffff' if node_type in ['aggregate', 'final', 'conditional_routing'] else '#000000'
             },
-            'shape': 'box',
-            'margin': 10
+            'shape': 'diamond' if node_type == 'conditional_routing' else 'box',
+            'margin': 10,
+            'borderWidth': 3 if node_type == 'conditional_routing' else 2
         }
 
         vis_nodes.append(vis_node)
@@ -307,6 +323,8 @@ def build_vis_data(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
 
     # Build edges (node-to-node)
     for from_id, to_ids in pipeline_data['edges'].items():
+        from_node = pipeline_data['nodes'][from_id]
+
         for to_id in to_ids:
             vis_edge = {
                 'from': from_id,
@@ -320,6 +338,27 @@ def build_vis_data(pipeline_data: Dict[str, Any]) -> Dict[str, Any]:
                     'type': 'cubicBezier'
                 }
             }
+
+            # Add label for conditional routing edges
+            if from_node['type'] == 'conditional_routing':
+                # Find the output_name for this specific to_id
+                for output in from_node['node_outputs']:
+                    if output['ref'] == to_id:
+                        vis_edge['label'] = output['output_name']
+                        vis_edge['font'] = {
+                            'size': 12,
+                            'color': '#E74C3C',
+                            'strokeWidth': 0,
+                            'align': 'horizontal',
+                            'bold': True
+                        }
+                        # Use different color for routing edges
+                        vis_edge['color'] = {
+                            'color': '#E74C3C',
+                            'highlight': '#C0392B'
+                        }
+                        break
+
             vis_edges.append(vis_edge)
 
     # Build edges (file-to-node and node-to-file)

@@ -1,0 +1,64 @@
+name: classify_students_by_performance
+data_sources:
+  - type: node
+    name: average_node_output
+    reference: average_node
+outputs:
+  - type: node
+    name: classified_students
+    reference: classify_node
+properties:
+  description: Classify students into performance levels based on average score
+  created_by: manual creation for conditional routing test
+dataset_schema:
+  fields:
+    name: String
+    calculus: Integer
+    physics: Integer
+    biology: Integer
+    total_score: Integer
+    average_score: Float
+subtasks:
+  - Classify students into high/medium/low performance levels based on average score
+operators:
+  - name: add_performance_level
+    type: PythonCode
+    source:
+      system: abstract
+      name: add_performance_level
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Add performance level classification
+            for record in data:
+                average_score = record.get('average_score', 0)
+
+                # Classify based on average score
+                if average_score >= 90:
+                    record['_performance_level'] = 'high'
+                elif average_score >= 80:
+                    record['_performance_level'] = 'medium'
+                else:
+                    record['_performance_level'] = 'low'
+
+            # Return modified data
+            return data
+    input:
+      fields:
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        total_score: Integer
+        average_score: Float
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer
+      total_score: Integer
+      average_score: Float
+      _performance_level: String

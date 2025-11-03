@@ -1,0 +1,61 @@
+name: process_low_performers
+data_sources:
+  - type: node
+    name: classify_node_low_output
+    reference: classify_node
+outputs:
+  - type: file
+    name: low_performers.json
+    reference: low_performers.json
+properties:
+  description: Process low-performing students (average < 80)
+  created_by: manual creation for conditional routing test
+dataset_schema:
+  fields:
+    name: String
+    calculus: Integer
+    physics: Integer
+    biology: Integer
+    total_score: Integer
+    average: Float
+    _performance_level: String
+subtasks:
+  - Add supportive message and tutoring recommendations for low performers
+operators:
+  - name: add_message
+    type: PythonCode
+    source:
+      system: abstract
+      name: add_low_performer_message
+    properties:
+      function: |
+        def process(sources):
+            # Get input data from sources
+            data = sources['input_data']
+
+            # Add message for low performers
+            for record in data:
+                record['message'] = "Let's work together to improve your grades."
+                record['recommendation'] = 'Schedule tutoring sessions and create a study plan'
+
+            # Return modified data
+            return data
+    input:
+      fields:
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        total_score: Integer
+        average: Float
+        _performance_level: String
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer
+      total_score: Integer
+      average: Float
+      _performance_level: String
+      message: String
+      recommendation: String

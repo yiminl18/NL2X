@@ -7,10 +7,11 @@ In this system, a **Procedure** is a sequence of operators that are executed in 
     * **Corresponds to:** "Map" phase of Map-Reduce.
     * **Description:** The scheduler **splits** a single large input (e.g., one file) into multiple smaller chunks. It then launches an **identical** underlying **procedure** instance for each chunk to process them in parallel.
     * **Example:** Split a 10GB log file into 100 x 100MB chunks; run 100 parallel instances of the log-processing **procedure**.
-* **Conditional Routing**
-    * **Corresponds to:** "Routing data to different **procedures**."
-    * **Description:** The scheduler **inspects** the input file (or its metadata). Based on predefined rules, it **selects only one** appropriate downstream **procedure** to execute. This is a "choice" or "selection" logic.
-    * **Example:** If filename contains "invoice," route to the "Finance **Procedure**." If it contains "log," route to the "Logging **Procedure**."
+* **Conditional Routing** (implemented as `CONDITIONAL_ROUTING` node type)
+    * **Corresponds to:** "Routing individual records to different downstream nodes."
+    * **Description:** A procedure first processes all input records (possibly adding new fields), then routes each record to one of multiple output branches based on a routing field value. Each record is sent to exactly one branch.
+    * **Implementation:** The procedure must produce a field (default: `_route_to`) containing the target branch name. The scheduler groups records by this field and sends each group to its designated downstream node.
+    * **Example:** A procedure classifies documents by type, adding a `_route_to` field with values like "invoice", "receipt", or "other". Records are then routed to separate processing pipelines based on their classification.
 * **Scatter**
     * **Description:** The scheduler sends the same input data to **multiple different procedures** simultaneously. Each **procedure** performs a different task on the same data.
     * **Example:** A product info file is sent to "**Procedure** A (update inventory)," "**Procedure** B (update website)," and "**Procedure** C (generate report)" all at the same time.
@@ -49,3 +50,79 @@ In this system, a **Procedure** is a sequence of operators that are executed in 
 * **Conditional Loop**
     * **Description:** The scheduler check if the output of the **procedure** meets some conditions.
     * **Examples:** Clean the data to its quality satisfies the threshold.
+
+## ConditionalRouting Node Type
+
+### Overview
+
+The `CONDITIONAL_ROUTING` node type enables record-level routing within a pipeline. Unlike file-level routing, this node processes all records through a procedure and then distributes them to different downstream nodes based on a field value in each record.
+
+### Requirements
+
+1. **Procedure**: Must produce a routing field (default: `_route_to`) containing the target branch name
+2. **Multiple Outputs**: At least 2 output branches must be defined
+3. **Single Routing**: Each record is sent to exactly one branch based on its routing field value
+4. **Consistent Schema**: All output branches receive data with the same schema
+
+### Usage Example
+
+```python
+from baselines.abstract.pipeline import Pipeline, DataReference
+
+pipeline = Pipeline(name="document_classifier")
+
+# Add a conditional routing node
+pipeline.add_conditional_routing(
+    procedure_path="classify_documents.json",
+    node_id="classifier",
+    data_sources=[DataReference("file", "documents.json")],
+    output_branches={
+        "invoice": "process_invoices",
+        "receipt": "process_receipts",
+        "other": "process_general"
+    },
+    routing_field="_route_to"  # Optional, defaults to "_route_to"
+)
+```
+
+### Procedure Design
+
+The procedure must add the routing field to each record. Example using a Map operator:
+
+```json
+{
+    "type": "map",
+    "prompt": "Classify the document type. Set _route_to to 'invoice', 'receipt', or 'other'",
+    "output": {
+        "schema": {
+            "_route_to": "string"
+        }
+    }
+}
+```
+
+### Validation Rules
+
+- Must have at least 2 outputs
+- All outputs must be node references (not files)
+- Metadata must contain `routing_field`
+- Records with unmatched routing values are sent to the 'default' branch if it exists
+
+### Execution Behavior
+
+1. Execute the procedure on all input records
+2. Group records by routing field value
+3. Send each group to its designated output branch
+4. Downstream nodes access their branch using `DataReference` with `output_name`
+
+### DataReference with Output Names
+
+When connecting to a conditional routing node, specify which branch to read:
+
+```python
+# Child node reading from "invoice" branch
+DataReference("node", "classifier", output_name="invoice")
+
+# If output_name is omitted, defaults to "default"
+DataReference("node", "classifier")  # Reads "default" branch
+```

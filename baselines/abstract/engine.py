@@ -529,7 +529,20 @@ except Exception as e:
                 raise ValueError(
                     f"Cannot resolve node reference '{ref.ref}': node has not been executed yet"
                 )
-            return outputs_registry[ref.ref]
+
+            # Get node output (now a dict with output_name keys)
+            node_output = outputs_registry[ref.ref]
+
+            # Extract data for the requested output branch
+            output_name = ref.output_name
+            if output_name not in node_output:
+                available = list(node_output.keys())
+                raise ValueError(
+                    f"Cannot resolve output '{output_name}' from node '{ref.ref}'. "
+                    f"Available outputs: {available}"
+                )
+
+            return node_output[output_name]
 
         elif ref.ref_type == "file":
             # Check cache first (read-only)
@@ -949,7 +962,40 @@ except Exception as e:
 
             # Thread-safe write to outputs_registry
             with outputs_lock:
-                outputs_registry[node_id] = result.data
+                if node.node_type == NodeType.CONDITIONAL_ROUTING:
+                    # Route records to different branches based on routing_field
+                    routing_field = node.metadata.get('routing_field', '_route_to')
+                    branch_outputs = {}
+
+                    # Pre-initialize all declared output branches (ensures empty branches exist)
+                    for output in node.outputs:
+                        if output.ref_type == 'node':
+                            branch_outputs[output.output_name] = []
+
+                    # Route records to branches
+                    for record in result.data:
+                        # Get routing target from record
+                        target = record.get(routing_field, 'default')
+
+                        # Add record to target branch
+                        if target in branch_outputs:
+                            branch_outputs[target].append(record)
+                        else:
+                            # Route to default if target not in declared branches
+                            if 'default' not in branch_outputs:
+                                branch_outputs['default'] = []
+                            branch_outputs['default'].append(record)
+                            if self.verbose:
+                                print(f"  [Warning] Record routed to undeclared branch '{target}', using 'default'")
+
+                    outputs_registry[node_id] = branch_outputs
+
+                    if self.verbose:
+                        branch_info = ', '.join(f"{k}: {len(v)}" for k, v in branch_outputs.items())
+                        print(f"  [Thread] Routed to branches: {branch_info}")
+                else:
+                    # Normal node: wrap in default key for consistent structure
+                    outputs_registry[node_id] = {'default': result.data}
 
             # Save intermediate if requested
             if save_intermediates and intermediate_dir:
