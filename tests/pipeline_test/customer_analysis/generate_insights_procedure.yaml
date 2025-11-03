@@ -1,0 +1,190 @@
+name: generate_customer_insights
+data_sources:
+  - type: file
+    name: preprocessed_data.json
+    reference: preprocessed_data.json
+outputs:
+  - type: file
+    name: customer_insights.json
+    reference: customer_insights.json
+properties:
+  description: Generate customer engagement scores and personalized recommendations
+  created_by: test creation
+dataset_schema:
+  fields:
+    customer_id: String
+    name: String
+    purchases: List[Dict]
+    join_date: String
+    region: String
+    total_spent: Float
+    item_count: Integer
+    avg_purchase: Float
+    top_category: String
+    tenure_months: Integer
+    spending_tier: String
+    category_diversity: Float
+    purchase_summary: String
+    price_min: Float
+    price_max: Float
+subtasks:
+  - Calculate customer engagement score based on tenure, frequency, and diversity
+  - Generate personalized recommendations and next purchase estimates
+operators:
+  - name: calculate_engagement
+    type: PythonCode
+    source:
+      system: abstract
+      name: calculate_engagement
+    properties:
+      function: |
+        def process(sources):
+            data = sources['input_data']
+
+            for record in data:
+                # Calculate engagement score
+                # Formula: (tenure_months * 0.3) + (item_count * 2) + (category_diversity * 20)
+                tenure = record.get('tenure_months', 0)
+                item_count = record.get('item_count', 0)
+                diversity = record.get('category_diversity', 0.0)
+
+                engagement_score = (tenure * 0.3) + (item_count * 2) + (diversity * 20)
+                record['engagement_score'] = round(engagement_score, 2)
+
+                # Classify engagement level
+                if engagement_score >= 30:
+                    level = 'Very High'
+                elif engagement_score >= 20:
+                    level = 'High'
+                elif engagement_score >= 10:
+                    level = 'Medium'
+                else:
+                    level = 'Low'
+                record['engagement_level'] = level
+
+            return data
+    input:
+      fields:
+        customer_id: String
+        name: String
+        purchases: List[Dict]
+        join_date: String
+        region: String
+        total_spent: Float
+        item_count: Integer
+        avg_purchase: Float
+        top_category: String
+        tenure_months: Integer
+        spending_tier: String
+        category_diversity: Float
+        purchase_summary: String
+        price_min: Float
+        price_max: Float
+    output:
+      customer_id: String
+      name: String
+      purchases: List[Dict]
+      join_date: String
+      region: String
+      total_spent: Float
+      item_count: Integer
+      avg_purchase: Float
+      top_category: String
+      tenure_months: Integer
+      spending_tier: String
+      category_diversity: Float
+      purchase_summary: String
+      price_min: Float
+      price_max: Float
+      engagement_score: Float
+      engagement_level: String
+
+  - name: generate_recommendations
+    type: PythonCode
+    source:
+      system: abstract
+      name: generate_recommendations
+    properties:
+      function: |
+        def process(sources):
+            data = sources['input_data']
+
+            # Recommendation mapping based on top category
+            category_recommendations = {
+                'Electronics': 'Accessories',
+                'Furniture': 'Home Decor',
+                'Appliances': 'Kitchen Supplies',
+                'Food': 'Beverages',
+                'Accessories': 'Electronics',
+                'Home Decor': 'Furniture',
+                'Kitchen Supplies': 'Appliances',
+                'Beverages': 'Food'
+            }
+
+            for record in data:
+                top_category = record.get('top_category', 'Unknown')
+                spending_tier = record.get('spending_tier', 'Bronze')
+                avg_purchase = record.get('avg_purchase', 0)
+                name = record.get('name', 'Customer')
+
+                # Recommend next category
+                recommended_category = category_recommendations.get(top_category, 'General Merchandise')
+                record['recommended_category'] = recommended_category
+
+                # Create personalized message
+                if spending_tier == 'Platinum':
+                    message = f"Dear {name}, as our valued Platinum member with interest in {top_category}, we have exclusive {recommended_category} recommendations for you!"
+                elif spending_tier == 'Gold':
+                    message = f"Hi {name}! Based on your Gold tier status and interest in {top_category}, we recommend exploring {recommended_category} items!"
+                elif spending_tier == 'Silver':
+                    message = f"Hello {name}, thank you for being a Silver member! Check out our {recommended_category} collection!"
+                else:
+                    message = f"Welcome {name}! Discover our {recommended_category} selection today!"
+
+                record['recommendation_message'] = message
+
+                # Estimate next purchase value (20% higher than average)
+                estimated_next = avg_purchase * 1.2
+                record['estimated_next_purchase'] = round(estimated_next, 2)
+
+            return data
+    input:
+      fields:
+        customer_id: String
+        name: String
+        purchases: List[Dict]
+        join_date: String
+        region: String
+        total_spent: Float
+        item_count: Integer
+        avg_purchase: Float
+        top_category: String
+        tenure_months: Integer
+        spending_tier: String
+        category_diversity: Float
+        purchase_summary: String
+        price_min: Float
+        price_max: Float
+        engagement_score: Float
+        engagement_level: String
+    output:
+      customer_id: String
+      name: String
+      purchases: List[Dict]
+      join_date: String
+      region: String
+      total_spent: Float
+      item_count: Integer
+      avg_purchase: Float
+      top_category: String
+      tenure_months: Integer
+      spending_tier: String
+      category_diversity: Float
+      purchase_summary: String
+      price_min: Float
+      price_max: Float
+      engagement_score: Float
+      engagement_level: String
+      recommended_category: String
+      recommendation_message: String
+      estimated_next_purchase: Float

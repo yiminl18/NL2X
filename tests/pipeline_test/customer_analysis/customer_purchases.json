@@ -1,0 +1,35 @@
+[
+  {
+    "customer_id": "C001",
+    "name": "Alice Johnson",
+    "purchases": [
+      {"item": "Laptop", "price": 1200, "category": "Electronics"},
+      {"item": "Mouse", "price": 25, "category": "Electronics"},
+      {"item": "Desk Chair", "price": 350, "category": "Furniture"}
+    ],
+    "join_date": "2023-01-15",
+    "region": "North"
+  },
+  {
+    "customer_id": "C002",
+    "name": "Bob Smith",
+    "purchases": [
+      {"item": "Coffee Maker", "price": 80, "category": "Appliances"},
+      {"item": "Coffee Beans", "price": 15, "category": "Food"}
+    ],
+    "join_date": "2023-06-20",
+    "region": "South"
+  },
+  {
+    "customer_id": "C003",
+    "name": "Carol Lee",
+    "purchases": [
+      {"item": "Monitor", "price": 400, "category": "Electronics"},
+      {"item": "Keyboard", "price": 120, "category": "Electronics"},
+      {"item": "Webcam", "price": 90, "category": "Electronics"},
+      {"item": "Headphones", "price": 150, "category": "Electronics"}
+    ],
+    "join_date": "2022-11-10",
+    "region": "East"
+  }
+]

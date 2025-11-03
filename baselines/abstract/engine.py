@@ -820,7 +820,8 @@ except Exception as e:
                         json.dump(result.data, f, indent=2)
 
                 # Register output in memory for dependent nodes
-                outputs_registry[node_id] = result.data
+                # Wrap in 'default' key for consistency with parallel execution
+                outputs_registry[node_id] = {'default': result.data}
 
                 if self.verbose:
                     data_info = f"{len(result.data)} records" if isinstance(result.data, list) else type(result.data).__name__

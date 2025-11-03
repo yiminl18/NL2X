@@ -1,0 +1,38 @@
+name: customer_analysis_pipeline
+output_path: customer_insights.json
+properties:
+  base_system: abstract
+  parallel_execution: false
+  description: Analyze customer purchase data through preprocessing and insight generation
+nodes:
+  preprocess_node:
+    node_type: normal
+    procedure_path: preprocess_customer_data_procedure.yaml
+    data_sources:
+      - type: file
+        name: customer_purchases.json
+        reference: customer_purchases.json
+    outputs:
+      - type: node
+        name: preprocessed_output
+        reference: analysis_node
+    metadata:
+      description: Preprocess customer data with 3 operators (stats, profile, flatten)
+
+  analysis_node:
+    node_type: final
+    procedure_path: generate_insights_procedure.yaml
+    data_sources:
+      - type: node
+        name: preprocess_node_output
+        reference: preprocess_node
+    outputs:
+      - type: file
+        name: customer_insights.json
+        reference: customer_insights.json
+    metadata:
+      description: Generate insights with 2 operators (engagement score, recommendations)
+
+edges:
+  preprocess_node:
+    - analysis_node

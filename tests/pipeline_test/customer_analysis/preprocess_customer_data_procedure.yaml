@@ -1,0 +1,205 @@
+name: preprocess_customer_data
+data_sources:
+  - type: file
+    name: customer_purchases.json
+    reference: customer_purchases.json
+outputs:
+  - type: file
+    name: preprocessed_data.json
+    reference: preprocessed_data.json
+properties:
+  description: Preprocess customer purchase data with statistics, profile enrichment, and detail flattening
+  created_by: test creation
+dataset_schema:
+  fields:
+    customer_id: String
+    name: String
+    purchases: List[Dict]
+    join_date: String
+    region: String
+subtasks:
+  - Calculate purchase statistics (total spent, item count, average, top category)
+  - Enrich customer profile (tenure, spending tier, category diversity)
+  - Flatten purchase details into summary strings
+operators:
+  - name: calculate_stats
+    type: PythonCode
+    source:
+      system: abstract
+      name: calculate_stats
+    properties:
+      function: |
+        def process(sources):
+            from collections import Counter
+            data = sources['input_data']
+
+            for record in data:
+                purchases = record.get('purchases', [])
+
+                # Calculate total spent
+                total_spent = sum(p.get('price', 0) for p in purchases)
+                record['total_spent'] = total_spent
+
+                # Count items
+                item_count = len(purchases)
+                record['item_count'] = item_count
+
+                # Calculate average purchase value
+                avg_purchase = total_spent / item_count if item_count > 0 else 0
+                record['avg_purchase'] = round(avg_purchase, 2)
+
+                # Find most frequent category
+                categories = [p.get('category', 'Unknown') for p in purchases]
+                if categories:
+                    category_counts = Counter(categories)
+                    top_category = category_counts.most_common(1)[0][0]
+                    record['top_category'] = top_category
+                else:
+                    record['top_category'] = 'None'
+
+            return data
+    input:
+      fields:
+        customer_id: String
+        name: String
+        purchases: List[Dict]
+        join_date: String
+        region: String
+    output:
+      customer_id: String
+      name: String
+      purchases: List[Dict]
+      join_date: String
+      region: String
+      total_spent: Float
+      item_count: Integer
+      avg_purchase: Float
+      top_category: String
+
+  - name: enrich_profile
+    type: PythonCode
+    source:
+      system: abstract
+      name: enrich_profile
+    properties:
+      function: |
+        def process(sources):
+            from datetime import datetime
+            data = sources['input_data']
+
+            for record in data:
+                # Calculate tenure in months
+                join_date_str = record.get('join_date', '')
+                if join_date_str:
+                    join_date = datetime.strptime(join_date_str, '%Y-%m-%d')
+                    current_date = datetime(2025, 1, 1)  # Fixed date for consistent testing
+                    tenure_months = (current_date.year - join_date.year) * 12 + (current_date.month - join_date.month)
+                    record['tenure_months'] = max(0, tenure_months)
+                else:
+                    record['tenure_months'] = 0
+
+                # Assign spending tier
+                total_spent = record.get('total_spent', 0)
+                if total_spent >= 1000:
+                    tier = 'Platinum'
+                elif total_spent >= 500:
+                    tier = 'Gold'
+                elif total_spent >= 200:
+                    tier = 'Silver'
+                else:
+                    tier = 'Bronze'
+                record['spending_tier'] = tier
+
+                # Calculate category diversity score
+                purchases = record.get('purchases', [])
+                if purchases:
+                    categories = [p.get('category') for p in purchases]
+                    unique_categories = len(set(categories))
+                    diversity = unique_categories / len(categories)
+                    record['category_diversity'] = round(diversity, 2)
+                else:
+                    record['category_diversity'] = 0.0
+
+            return data
+    input:
+      fields:
+        customer_id: String
+        name: String
+        purchases: List[Dict]
+        join_date: String
+        region: String
+        total_spent: Float
+        item_count: Integer
+        avg_purchase: Float
+        top_category: String
+    output:
+      customer_id: String
+      name: String
+      purchases: List[Dict]
+      join_date: String
+      region: String
+      total_spent: Float
+      item_count: Integer
+      avg_purchase: Float
+      top_category: String
+      tenure_months: Integer
+      spending_tier: String
+      category_diversity: Float
+
+  - name: flatten_details
+    type: PythonCode
+    source:
+      system: abstract
+      name: flatten_details
+    properties:
+      function: |
+        def process(sources):
+            data = sources['input_data']
+
+            for record in data:
+                purchases = record.get('purchases', [])
+
+                # Create comma-separated purchase summary
+                items = [p.get('item', 'Unknown') for p in purchases]
+                record['purchase_summary'] = ', '.join(items) if items else 'No purchases'
+
+                # Extract price range
+                prices = [p.get('price', 0) for p in purchases]
+                if prices:
+                    record['price_min'] = min(prices)
+                    record['price_max'] = max(prices)
+                else:
+                    record['price_min'] = 0
+                    record['price_max'] = 0
+
+            return data
+    input:
+      fields:
+        customer_id: String
+        name: String
+        purchases: List[Dict]
+        join_date: String
+        region: String
+        total_spent: Float
+        item_count: Integer
+        avg_purchase: Float
+        top_category: String
+        tenure_months: Integer
+        spending_tier: String
+        category_diversity: Float
+    output:
+      customer_id: String
+      name: String
+      purchases: List[Dict]
+      join_date: String
+      region: String
+      total_spent: Float
+      item_count: Integer
+      avg_purchase: Float
+      top_category: String
+      tenure_months: Integer
+      spending_tier: String
+      category_diversity: Float
+      purchase_summary: String
+      price_min: Float
+      price_max: Float
