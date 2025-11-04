@@ -1,4 +1,5 @@
 name: preprocess_customer_data
+base_system: abstract
 data_sources:
   - type: file
     name: customer_purchases.json

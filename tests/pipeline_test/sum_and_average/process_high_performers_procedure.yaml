@@ -1,4 +1,5 @@
 name: process_high_performers
+base_system: abstract
 data_sources:
   - type: node
     name: classify_node_high_output

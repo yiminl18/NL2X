@@ -1,4 +1,5 @@
 name: calculate_student_median
+base_system: abstract
 data_sources:
   - type: file
     name: grade.json

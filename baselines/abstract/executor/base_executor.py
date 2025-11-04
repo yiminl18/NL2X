@@ -1,5 +1,5 @@
 """
-Base Executor Interface for Abstract Pipeline Engine
+Base Executor Interface for Abstract Procedure Engine
 
 This module provides the abstract base class that all system-specific executors
 must implement. This enables the abstract layer to support multiple underlying
@@ -7,12 +7,10 @@ execution systems (DocETL, Lotus, etc.) in a unified way.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, Optional, Union
 from pathlib import Path
 from datetime import datetime
 
-if TYPE_CHECKING:
-    from ..db import DataSource
 
 class ExecutionResult:
     """Container for execution results with metadata."""
@@ -61,7 +59,7 @@ class BaseSystemExecutor(ABC):
     @abstractmethod
     def execute_operator(self,
                         operator: Any,
-                        data_source: 'DataSource',
+                        input_data: Any,
                         config: Optional[Dict[str, Any]] = None,
                         force_execute: bool = False) -> ExecutionResult:
         """Execute single abstract operator and return ExecutionResult."""
@@ -76,20 +74,20 @@ class BaseSystemExecutor(ABC):
         """Check if executor supports given operator type. Default: True for all."""
         return True
 
-    def execute_pipeline(self,
-                        pipeline_config: Dict[str, Any],
-                        data_source: Optional['DataSource'] = None,
-                        save_intermediates: bool = False,
-                        intermediate_dir: Optional[str] = None) -> ExecutionResult:
-        """Execute complete pipeline. Optional method for systems with native pipeline execution."""
+    def execute_procedure(self,
+                         procedure_config: Dict[str, Any],
+                         input_data: Optional[Any] = None,
+                         save_intermediates: bool = False,
+                         intermediate_dir: Optional[str] = None) -> ExecutionResult:
+        """Execute complete procedure. Optional method for systems with native procedure execution."""
         return ExecutionResult(
             success=False,
-            error=f"{self.get_system_name()} executor does not support native pipeline execution"
+            error=f"{self.get_system_name()} executor does not support native procedure execution"
         )
 
     @abstractmethod
-    def execute_original_pipeline(self, pipeline_path: Union[str, Path]) -> ExecutionResult:
+    def execute_original_procedure(self, procedure_path: Union[str, Path]) -> ExecutionResult:
         return ExecutionResult(
             success=False,
-            error=f"{self.get_system_name()} executor does not support native original pipeline execution"
+            error=f"{self.get_system_name()} executor does not support native original procedure execution"
         )

@@ -1,4 +1,5 @@
 name: classify_students_by_performance
+base_system: abstract
 data_sources:
   - type: node
     name: average_node_output

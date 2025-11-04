@@ -1,4 +1,5 @@
 name: generate_customer_insights
+base_system: abstract
 data_sources:
   - type: file
     name: preprocessed_data.json

@@ -1,8 +1,8 @@
 """
-DocETL Executor for Abstract Pipeline Engine
+DocETL Executor for Abstract Procedure Engine
 
 This module provides DocETL-specific execution functionality for abstract operators
-and pipelines. It handles conversion from abstract format to DocETL format and
+and procedures. It handles conversion from abstract format to DocETL format and
 manages execution using DocETL's DSLRunner.
 """
 
@@ -34,9 +34,8 @@ from ..convert.docetl.path_manager import (
     apply_path_mappings
 )
 
-# Use TYPE_CHECKING to avoid circular imports
-if TYPE_CHECKING:
-    from ..db import DatasetManager, DataSource
+# DatasetManager type is used but no longer exists in a separate module
+# Using Any for type hints where needed
 
 
 class DocETLExecutor(BaseSystemExecutor):
@@ -45,7 +44,7 @@ class DocETLExecutor(BaseSystemExecutor):
     def __init__(self,
                  verbose: bool = False,
                  cache_manager: Optional[OperatorCacheManager] = None,
-                 data_manager: Optional['DatasetManager'] = None):
+                 data_manager: Optional[Any] = None):
         """
         Initialize DocETL executor with shared cache manager.
 
@@ -67,55 +66,22 @@ class DocETLExecutor(BaseSystemExecutor):
 
     def execute_operator(self,
                         operator: Operator,
-                        data_source: 'DataSource',
+                        input_data: Any,
                         config: Optional[Dict[str, Any]] = None,
                         force_execute: bool = False) -> ExecutionResult:
-        """Execute single abstract operator using DocETL with caching support."""
-        if self.cache_enabled:
-            cached_result = self.cache_manager.get_cached_result(
-                operator, data_source, force_execute=force_execute
-            )
-            if cached_result:
-                cached_data = cached_result['output_data']
-                if self.verbose:
-                    print(f"✓ Cache hit for operator: {operator.name}")
-                    data_info = f"{len(cached_data)} records" if isinstance(cached_data, list) else type(cached_data).__name__
-                    print(f"  Cached data: {data_info}")
-
-                return ExecutionResult(
-                    success=True,
-                    data=cached_data,
-                    metadata={
-                        **cached_result['metadata'],
-                        'cache_hit': True,
-                        'from_cache': True,
-                        'operator_name': operator.name,
-                        'operator_type': operator.type,
-                        'system': 'docetl'
-                    }
-                )
-            elif self.verbose:
-                if force_execute:
-                    print(f"🔄 Force execution for operator: {operator.name}")
-                else:
-                    print(f"✗ Cache miss for operator: {operator.name}")
-
-        result = self._execute_operator_impl(operator, data_source, config)
-
-        if result.success and self.cache_enabled:
-            self.cache_manager.set_cached_result(
-                operator, data_source, result.data, result.metadata
-            )
-            if self.verbose:
-                if force_execute:
-                    print(f"✓ Updated cache for operator: {operator.name}")
-                else:
-                    print(f"✓ Cached result for operator: {operator.name}")
-
-        result.metadata['cache_hit'] = False
-        result.metadata['force_execute'] = force_execute
-
-        return result
+        """
+        DocETL executor does not support single operator execution for now :(
+        Use execute_original_procedure() or execute_procedure() instead.
+        """
+        return ExecutionResult(
+            success=False,
+            error="DocETLExecutor does not support single operator execution with raw data.",
+            metadata={
+                'operator_name': operator.name,
+                'operator_type': operator.type,
+                'system': 'docetl'
+            }
+        )
 
     def _execute_operator_impl(self,
                                operator: Operator,
@@ -126,21 +92,21 @@ class DocETLExecutor(BaseSystemExecutor):
             from docetl.runner import DSLRunner
 
             docetl_op = abstract_to_docetl(operator)
-            temp_pipeline = self._create_temp_pipeline(
+            temp_procedure = self._create_temp_procedure(
                 docetl_op, data_source, config or {}
             )
 
             start_time = time.time()
 
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-                yaml.dump(temp_pipeline, f, default_flow_style=False, sort_keys=False)
+                yaml.dump(temp_procedure, f, default_flow_style=False, sort_keys=False)
                 temp_file = f.name
-            print(f"Temp pipeline: {temp_pipeline}")
+            print(f"Temp procedure: {temp_procedure}")
             try:
                 runner = DSLRunner.from_yaml(temp_file, max_threads=10)
                 runner.load_run_save()
 
-                output_path = temp_pipeline['pipeline']['output']['path']
+                output_path = temp_procedure['pipeline']['output']['path']
                 with open(output_path, 'r') as f:
                     output_data = json.load(f)
 
@@ -174,17 +140,17 @@ class DocETLExecutor(BaseSystemExecutor):
                 }
             )
 
-    def execute_pipeline(self,
-                        pipeline_config: Dict[str, Any],
-                        data_source: Optional['DataSource'] = None,
-                        save_intermediates: bool = False,
-                        intermediate_dir: Optional[str] = None) -> ExecutionResult:
-        """Execute complete DocETL pipeline with optional DataSource override."""
+    def execute_procedure(self,
+                         procedure_config: Dict[str, Any],
+                         input_data: Optional[Any] = None,
+                         save_intermediates: bool = False,
+                         intermediate_dir: Optional[str] = None) -> ExecutionResult:
+        """Execute complete DocETL procedure (input_data parameter is ignored - uses paths from config)."""
         try:
             from docetl.runner import DSLRunner
 
             if self.data_manager:
-                dataset_paths = get_dataset_paths(pipeline_config)
+                dataset_paths = get_dataset_paths(procedure_config)
                 dataset_path_mapping = {}
 
                 for dataset_name, original_path in dataset_paths.items():
@@ -195,35 +161,33 @@ class DocETLExecutor(BaseSystemExecutor):
                             print(f"Using processed dataset for {dataset_name}: {processed_path}")
 
                 if dataset_path_mapping:
-                    pipeline_config = set_dataset_paths(pipeline_config, dataset_path_mapping, in_place=False)
+                    procedure_config = set_dataset_paths(procedure_config, dataset_path_mapping, in_place=False)
 
-                original_output_path = get_output_path(pipeline_config)
+                original_output_path = get_output_path(procedure_config)
                 if original_output_path:
                     new_output_path = self.data_manager.get_output_path(original_output_path)
                     if new_output_path:
-                        pipeline_config = set_output_path(pipeline_config, new_output_path, in_place=True)
+                        procedure_config = set_output_path(procedure_config, new_output_path, in_place=True)
                         if self.verbose:
                             print(f"Using custom output path: {new_output_path}")
 
-            if data_source:
-                for dataset_name in pipeline_config.get('datasets', {}).keys():
-                    pipeline_config['datasets'][dataset_name]['path'] = data_source.path
+            # Note: input_data parameter is ignored - DocETL uses file paths from procedure_config
 
             if save_intermediates and intermediate_dir:
-                pipeline_config.setdefault('pipeline', {}).setdefault('output', {})
-                pipeline_config['pipeline']['output']['intermediate_dir'] = intermediate_dir
+                procedure_config.setdefault('pipeline', {}).setdefault('output', {})
+                procedure_config['pipeline']['output']['intermediate_dir'] = intermediate_dir
 
             start_time = time.time()
 
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-                yaml.dump(pipeline_config, f, default_flow_style=False, sort_keys=False)
+                yaml.dump(procedure_config, f, default_flow_style=False, sort_keys=False)
                 temp_file = f.name
 
             try:
                 runner = DSLRunner.from_yaml(temp_file, max_threads=10)
                 runner.load_run_save()
 
-                output_path = pipeline_config['pipeline']['output']['path']
+                output_path = procedure_config['pipeline']['output']['path']
                 with open(output_path, 'r') as f:
                     output_data = json.load(f)
 
@@ -239,7 +203,7 @@ class DocETLExecutor(BaseSystemExecutor):
                     metadata={
                         'execution_time': execution_time,
                         'system': 'docetl',
-                        'num_operations': len(pipeline_config.get('operations', [])),
+                        'num_operations': len(procedure_config.get('operations', [])),
                         'intermediate_results': intermediate_results,
                         'output_path': output_path
                     }
@@ -252,35 +216,35 @@ class DocETLExecutor(BaseSystemExecutor):
         except Exception as e:
             return ExecutionResult(
                 success=False,
-                error=f"Pipeline execution failed: {str(e)}\n{traceback.format_exc()}",
+                error=f"Procedure execution failed: {str(e)}\n{traceback.format_exc()}",
                 metadata={'system': 'docetl'}
             )
 
-    def execute_original_pipeline(self, pipeline_path: Union[str, Path]) -> ExecutionResult:
+    def execute_original_procedure(self, procedure_path: Union[str, Path]) -> ExecutionResult:
         """
-        Execute DocETL pipeline from YAML file path (simple wrapper).
+        Execute DocETL procedure from YAML file path (simple wrapper).
         """
         try:
             from docetl.runner import DSLRunner
 
-            pipeline_path = Path(pipeline_path)
+            procedure_path = Path(procedure_path)
 
             if self.verbose:
-                print(f"Executing DocETL pipeline: {pipeline_path}")
+                print(f"Executing DocETL procedure: {procedure_path}")
 
             start_time = time.time()
 
-            # Execute pipeline using DSLRunner
-            runner = DSLRunner.from_yaml(str(pipeline_path), max_threads=10)
+            # Execute procedure using DSLRunner
+            runner = DSLRunner.from_yaml(str(procedure_path), max_threads=10)
             runner.load_run_save()
 
             execution_time = time.time() - start_time
 
-            # Read pipeline config to find output path
-            with open(pipeline_path, 'r') as f:
-                pipeline_config = yaml.safe_load(f)
+            # Read procedure config to find output path
+            with open(procedure_path, 'r') as f:
+                procedure_config = yaml.safe_load(f)
 
-            output_path = pipeline_config.get('pipeline', {}).get('output', {}).get('path')
+            output_path = procedure_config.get('pipeline', {}).get('output', {}).get('path')
 
             if output_path and os.path.exists(output_path):
                 with open(output_path, 'r') as f:
@@ -288,7 +252,7 @@ class DocETLExecutor(BaseSystemExecutor):
 
                 if self.verbose:
                     data_info = f"{len(output_data)} records" if isinstance(output_data, list) else type(output_data).__name__
-                    print(f"Pipeline executed successfully: {data_info}")
+                    print(f"Procedure executed successfully: {data_info}")
 
                 return ExecutionResult(
                     success=True,
@@ -297,13 +261,13 @@ class DocETLExecutor(BaseSystemExecutor):
                         'execution_time': execution_time,
                         'system': 'docetl',
                         'output_path': output_path,
-                        'pipeline_path': str(pipeline_path)
+                        'procedure_path': str(procedure_path)
                     }
                 )
             else:
-                # Pipeline executed but no output file found
+                # Procedure executed but no output file found
                 if self.verbose:
-                    print(f"Warning: Pipeline executed but output file not found: {output_path}")
+                    print(f"Warning: Procedure executed but output file not found: {output_path}")
 
                 return ExecutionResult(
                     success=True,
@@ -312,13 +276,13 @@ class DocETLExecutor(BaseSystemExecutor):
                         'execution_time': execution_time,
                         'system': 'docetl',
                         'output_path': output_path,
-                        'pipeline_path': str(pipeline_path),
+                        'procedure_path': str(procedure_path),
                         'warning': 'Output file not found'
                     }
                 )
 
         except Exception as e:
-            error_msg = f"Pipeline execution failed: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"Procedure execution failed: {str(e)}\n{traceback.format_exc()}"
             if self.verbose:
                 print(f"✗ {error_msg}")
 
@@ -327,11 +291,11 @@ class DocETLExecutor(BaseSystemExecutor):
                 error=error_msg,
                 metadata={
                     'system': 'docetl',
-                    'pipeline_path': str(pipeline_path)
+                    'procedure_path': str(procedure_path)
                 }
             )
 
-    def build_pipeline_config(
+    def build_procedure_config(
         self,
         operators: List[Dict[str, Any]],
         input_path: str,
@@ -342,21 +306,21 @@ class DocETLExecutor(BaseSystemExecutor):
         system_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Build DocETL pipeline configuration dictionary.
+        Build DocETL procedure configuration dictionary.
 
         Args:
             operators: List of DocETL operator dictionaries
             input_path: Path to input dataset
             output_path: Path for output file
             dataset_name: Name for the dataset in config (default: 'input')
-            step_name: Name for the pipeline step (default: 'main')
+            step_name: Name for the procedure step (default: 'main')
             default_model: Default LLM model to use (default: 'gpt-4o-mini')
             system_prompt: Optional system prompt for LLM calls
 
         Returns:
-            Complete DocETL pipeline configuration dictionary
+            Complete DocETL procedure configuration dictionary
         """
-        pipeline_config = {
+        procedure_config = {
             'datasets': {
                 dataset_name: {
                     'type': 'file',
@@ -379,23 +343,23 @@ class DocETLExecutor(BaseSystemExecutor):
 
         # Add optional configurations
         if default_model:
-            pipeline_config['default_model'] = default_model
+            procedure_config['default_model'] = default_model
 
         if system_prompt:
-            pipeline_config['system_prompt'] = system_prompt
+            procedure_config['system_prompt'] = system_prompt
 
-        return pipeline_config
+        return procedure_config
 
-    def _create_temp_pipeline(self,
-                            docetl_op: Dict[str, Any],
-                            data_source: 'DataSource',
-                            config: Dict[str, Any]) -> Dict[str, Any]:
-        """Create temporary pipeline for executing single operator."""
+    def _create_temp_procedure(self,
+                              docetl_op: Dict[str, Any],
+                              data_source: 'DataSource',
+                              config: Dict[str, Any]) -> Dict[str, Any]:
+        """Create temporary procedure for executing single operator."""
         input_path = data_source.path
         output_path = tempfile.mkstemp(suffix='.json')
 
-        # Use centralized pipeline config builder
-        pipeline = self.build_pipeline_config(
+        # Use centralized procedure config builder
+        procedure = self.build_procedure_config(
             operators=[docetl_op],
             input_path=input_path,
             output_path=output_path,
@@ -405,7 +369,7 @@ class DocETLExecutor(BaseSystemExecutor):
             system_prompt=config.get('system_prompt')
         )
 
-        return pipeline
+        return procedure
 
     def _collect_intermediate_results(self, intermediate_dir: str) -> Dict[str, Any]:
         """

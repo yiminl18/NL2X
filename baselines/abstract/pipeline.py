@@ -123,6 +123,7 @@ class Pipeline:
         self.input_path = input_path
         self.output_path = output_path
         self.properties = properties or {}
+        # available_systems will be set by executor based on registered executors
         self.nodes: Dict[str, PipelineNode] = {}
         self.edges: Dict[str, List[str]] = defaultdict(list)
 
@@ -494,6 +495,57 @@ class Pipeline:
                             f"Node '{node_id}' has output to '{target_node_id}' but no edge exists: {node_id} -> {target_node_id}"
                         )
 
+        # System compatibility validation
+        warnings = []
+
+        # Collect all required systems
+        required_systems = set()
+        for node_id, node in self.nodes.items():
+            base_system = node.metadata.get('base_system')
+            if not base_system:
+                errors.append(
+                    f"Node '{node_id}' missing 'base_system' in metadata. "
+                    f"Procedure must declare base_system."
+                )
+            else:
+                required_systems.add(base_system)
+
+        # Get available systems (must exist, no default)
+        available_systems = self.properties.get('available_systems')
+        if available_systems is None:
+            errors.append(
+                "Pipeline properties missing 'available_systems'. "
+                "This should be set automatically by AbstractExecutor."
+            )
+        else:
+            available_systems = set(available_systems)
+
+            # Check missing systems
+            missing_systems = required_systems - available_systems
+            if missing_systems:
+                errors.append(
+                    f"Pipeline requires unavailable systems: {sorted(missing_systems)}. "
+                    f"Available systems: {sorted(available_systems)}"
+                )
+
+        # Cross-system flow detection (warnings)
+        for from_node_id, to_node_ids in self.edges.items():
+            from_system = self.nodes[from_node_id].metadata.get('base_system')
+            for to_node_id in to_node_ids:
+                to_system = self.nodes[to_node_id].metadata.get('base_system')
+                if from_system and to_system and from_system != to_system:
+                    warnings.append(
+                        f"Cross-system data flow: "
+                        f"{from_node_id} ({from_system}) -> {to_node_id} ({to_system}). "
+                        f"Ensure data format compatibility."
+                    )
+
+        # Print warnings if any
+        if warnings:
+            print("⚠️  Pipeline validation warnings:")
+            for warn in warnings:
+                print(f"    {warn}")
+
         if errors:
             error_msg = "Pipeline validation failed:\n" + "\n".join(f"  - {err}" for err in errors)
             raise ValueError(error_msg)
@@ -558,6 +610,13 @@ class Pipeline:
                 procedure_path = cls._resolve_path(procedure_path, config_dir)
 
             metadata = node_data.get("metadata", {})
+
+            # Extract and cache base_system from procedure if not already in metadata
+            if 'base_system' not in metadata and procedure_path:
+                from .procedure import Procedure
+                procedure = Procedure.load(procedure_path)
+                metadata = metadata.copy()  # Don't modify original
+                metadata['base_system'] = procedure.base_system
 
             # Resolve condition_procedure_path if present (for conditional loops)
             if 'condition_procedure_path' in metadata and config_dir:

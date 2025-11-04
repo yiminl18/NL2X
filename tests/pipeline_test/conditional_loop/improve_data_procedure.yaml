@@ -1,4 +1,5 @@
 name: improve_data_quality
+base_system: abstract
 data_sources:
   - type: file
     name: noisy_data.json

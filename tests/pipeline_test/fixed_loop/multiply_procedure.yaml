@@ -1,4 +1,5 @@
 name: multiply_values
+base_system: abstract
 data_sources:
   - type: file
     name: loop_input.json

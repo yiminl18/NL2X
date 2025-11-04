@@ -11,8 +11,6 @@ from pathlib import Path
 import json
 import os
 import traceback
-import subprocess  # For PythonCode operator execution
-import sys
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -21,7 +19,7 @@ from .ops.base import Operator
 from .procedure import Procedure
 
 # Import executors
-from .executor import DocETLExecutor, LotusExecutor, ExecutionResult
+from .executor import AbstractPythonExecutor, DocETLExecutor, LotusExecutor, ExecutionResult
 
 # Import conversion utilities
 from .convert.docetl import dict_to_operator, operator_to_dict
@@ -53,6 +51,10 @@ class AbstractExecutor:
 
         # Initialize executors for different systems with shared cache
         self.executors = {
+            'abstract': AbstractPythonExecutor(
+                verbose=verbose,
+                cache_manager=self.cache_manager
+            ),
             'docetl': DocETLExecutor(
                 verbose=verbose,
                 cache_manager=self.cache_manager
@@ -81,216 +83,6 @@ class AbstractExecutor:
         self.cache_enabled = True
         self.cache_manager.enabled = True
 
-    def _execute_python_code(self,
-                            operator: Operator,
-                            input_data: Any,
-                            timeout: int = 300,
-                            force_execute: bool = False,
-                            source_node_mapping: Optional[Dict[str, Any]] = None) -> ExecutionResult:
-        """
-        Execute Python function in subprocess sandbox with caching support.
-
-        The function must have signature: def process(sources)
-        - sources: Dict with 'input_data' key containing previous operator output
-        - For aggregate nodes: sources also contains keys by source node_id (e.g., 'sum_node', 'median_node')
-        - Returns: Modified data with new fields
-
-        Args:
-            operator: PythonCode operator with 'function' in properties
-            input_data: Input data from previous operator
-            timeout: Subprocess timeout in seconds (default: 300)
-            force_execute: If True, bypass cache and force execution
-            source_node_mapping: Optional dict mapping source node_ids to their data (for aggregate nodes)
-
-        Returns:
-            ExecutionResult with output data or error
-        """
-        # Check cache first if enabled
-        if self.cache_enabled and not force_execute:
-            cached_result = self.cache_manager.get_cached_result(operator, input_data)
-            if cached_result is not None:
-                if self.verbose:
-                    print(f"  ✓ Cache hit for PythonCode operator: {operator.name}")
-                return ExecutionResult(
-                    success=True,
-                    data=cached_result['output_data'],
-                    metadata={**cached_result['metadata'], 'cache_hit': True}
-                )
-
-        try:
-            # Get function from operator properties
-            function_code = operator.properties.get('function')
-            if not function_code:
-                return ExecutionResult(
-                    success=False,
-                    error="PythonCode operator missing 'function' in properties"
-                )
-
-            # Build sources dict with input_data as default
-            sources = {
-                'input_data': input_data
-            }
-
-            # Add source node mappings for aggregate nodes (keyed by node_id)
-            if source_node_mapping:
-                sources.update(source_node_mapping)
-                if self.verbose:
-                    print(f"  Multi-source execution: {list(source_node_mapping.keys())}")
-
-            # Serialize sources to JSON
-            try:
-                sources_json = json.dumps(sources)
-            except (TypeError, ValueError) as e:
-                return ExecutionResult(
-                    success=False,
-                    error=f"Failed to serialize sources to JSON: {str(e)}"
-                )
-
-            # Create wrapper script
-            wrapper_script = f"""
-import json
-import sys
-
-# User-defined function
-{function_code}
-
-# Load sources from stdin
-sources = json.load(sys.stdin)
-
-# Execute function
-try:
-    result = process(sources)
-    # Output result as JSON
-    print(json.dumps(result))
-except Exception as e:
-    print(f"Function execution error: {{e}}", file=sys.stderr)
-    sys.exit(1)
-"""
-
-            if self.verbose:
-                print(f"  Executing Python function in subprocess (timeout: {timeout}s)")
-                print(f"  Sources: {list(sources.keys())}")
-                if isinstance(input_data, list):
-                    print(f"  Input data: {len(input_data)} records")
-
-            # Execute wrapper in subprocess
-            try:
-                result = subprocess.run(
-                    [sys.executable, '-c', wrapper_script],
-                    input=sources_json,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    check=False
-                )
-            except subprocess.TimeoutExpired:
-                return ExecutionResult(
-                    success=False,
-                    error=f"Python function execution timed out after {timeout} seconds"
-                )
-
-            # Check for execution errors
-            if result.returncode != 0:
-                error_msg = result.stderr or "Unknown error (no stderr output)"
-                return ExecutionResult(
-                    success=False,
-                    error=f"Python function execution failed (exit code {result.returncode}):\n{error_msg}"
-                )
-
-            # Parse output JSON
-            try:
-                output_data = json.loads(result.stdout)
-            except json.JSONDecodeError as e:
-                return ExecutionResult(
-                    success=False,
-                    error=f"Failed to parse output JSON: {str(e)}\nStdout: {result.stdout[:500]}"
-                )
-
-            if self.verbose:
-                if isinstance(output_data, list):
-                    print(f"  Output: {len(output_data)} records")
-                else:
-                    print(f"  Output: {type(output_data).__name__}")
-
-            # Create result metadata
-            result_metadata = {
-                'operator_type': 'PythonCode',
-                'operator_name': operator.name,
-                'execution_time': None,
-                'cache_hit': False
-            }
-
-            # Store in cache if enabled
-            if self.cache_enabled:
-                self.cache_manager.set_cached_result(
-                    operator=operator,
-                    input_data=input_data,
-                    output_data=output_data,
-                    metadata=result_metadata
-                )
-                if self.verbose:
-                    print(f"  ✓ Result cached for PythonCode operator: {operator.name}")
-
-            return ExecutionResult(
-                success=True,
-                data=output_data,
-                metadata=result_metadata
-            )
-
-        except Exception as e:
-            return ExecutionResult(
-                success=False,
-                error=f"PythonCode execution failed: {str(e)}\n{traceback.format_exc()}"
-            )
-
-    def _load_from_reference(self, ref: DataReference) -> List[Dict[str, Any]]:
-        """
-        Load data from a DataReference.
-
-        Args:
-            ref: DataReference to load (must be file type)
-
-        Returns:
-            List of dictionaries (raw data)
-
-        Raises:
-            ValueError: If reference is not a file or file doesn't exist
-        """
-        if ref.ref_type != "file":
-            raise ValueError(f"Can only load from file references, got: {ref.ref_type}")
-
-        file_path = Path(ref.ref)
-        if not file_path.exists():
-            raise FileNotFoundError(f"Data file not found: {ref.ref}")
-
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-
-        if not isinstance(data, list):
-            raise ValueError(f"Expected list data in {ref.ref}, got {type(data).__name__}")
-
-        return data
-
-    def _save_to_reference(self, data: List[Dict[str, Any]], ref: DataReference) -> None:
-        """
-        Save data to a DataReference.
-
-        Args:
-            data: Raw data to save
-            ref: DataReference to save to (must be file type)
-
-        Raises:
-            ValueError: If reference is not a file
-        """
-        if ref.ref_type != "file":
-            raise ValueError(f"Can only save to file references, got: {ref.ref_type}")
-
-        file_path = Path(ref.ref)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
-
     def execute_operator(self,
                         operator: Union[Operator, Dict[str, Any]],
                         input_data: Any,
@@ -302,10 +94,6 @@ except Exception as e:
         if isinstance(operator, dict):
             operator = dict_to_operator(operator)
 
-        # Route PythonCode operators to subprocess executor with cache support
-        if operator.type == "PythonCode":
-            return self._execute_python_code(operator, input_data, force_execute=force_execute, source_node_mapping=source_node_mapping)
-
         # Determine which system to use
         system = operator.source.get('system', 'docetl')
 
@@ -315,8 +103,13 @@ except Exception as e:
                 error=f"Executor for system '{system}' not available"
             )
 
+        # Pass source_node_mapping through config
+        exec_config = config or {}
+        if source_node_mapping:
+            exec_config['source_node_mapping'] = source_node_mapping
+
         # Execute using appropriate executor
-        return self.executors[system].execute_operator(operator, input_data, config or {}, force_execute=force_execute)
+        return self.executors[system].execute_operator(operator, input_data, exec_config, force_execute=force_execute)
 
     def execute_procedure(self,
                         procedure: Procedure,
@@ -341,6 +134,14 @@ except Exception as e:
             source_node_mapping: Optional dict mapping source node_ids to their data (for aggregate nodes)
         """
         try:
+            # Validate that executor for procedure's base_system is available
+            base_system = procedure.base_system
+            if base_system not in self.executors:
+                return ExecutionResult(
+                    success=False,
+                    error=f"Executor for system '{base_system}' is not available. "
+                          f"Available systems: {list(self.executors.keys())}"
+                )
             # Use override_data_sources if provided, else procedure.data_sources
             effective_data_sources = override_data_sources if override_data_sources is not None else procedure.data_sources
             effective_outputs = override_outputs if override_outputs is not None else procedure.outputs
@@ -591,7 +392,13 @@ except Exception as e:
             ValueError: If pipeline validation fails or execution error occurs
         """
         try:
-            # Validate pipeline structure
+            # Automatically set available_systems from registered executors
+            pipeline.properties['available_systems'] = list(self.executors.keys())
+
+            if self.verbose:
+                print(f"Available systems: {pipeline.properties['available_systems']}")
+
+            # Validate pipeline structure (includes system compatibility check)
             if self.verbose:
                 print(f"Validating pipeline: {pipeline.name}")
             pipeline.validate()
@@ -1277,6 +1084,9 @@ except Exception as e:
         Returns:
             ExecutionResult with data from final node(s) and execution metadata
         """
+        # Automatically set available_systems from registered executors
+        pipeline.properties['available_systems'] = list(self.executors.keys())
+
         # Initialize thread-safe registries
         outputs_registry: Dict[str, Any] = {}
         outputs_lock = Lock()

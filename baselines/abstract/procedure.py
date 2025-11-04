@@ -14,13 +14,15 @@ class Procedure:
                  outputs: Optional[List[DataReference]] = None,
                  properties: Optional[Dict[str, Any]] = None,
                  dataset_schema: Optional[Dict[str, Any]] = None,
-                 subtasks: Optional[List[str]] = None):
+                 subtasks: Optional[List[str]] = None,
+                 base_system: str = 'docetl'):
         self.name = name
         self.data_sources = data_sources or []
         self.outputs = outputs or []
         self.properties = properties or {}
         self.dataset_schema = dataset_schema
         self.subtasks = subtasks
+        self.base_system = base_system
         self.operators: List[Operator] = []
 
     @classmethod
@@ -28,11 +30,42 @@ class Procedure:
                       data_sources: Optional[List[DataReference]] = None,
                       outputs: Optional[List[DataReference]] = None,
                       properties: Optional[Dict[str, Any]] = None,
-                      dataset_schema: Optional[Dict[str, Any]] = None) -> 'Procedure':
-        """Create procedure from list of operators."""
+                      dataset_schema: Optional[Dict[str, Any]] = None,
+                      base_system: Optional[str] = None) -> 'Procedure':
+        """Create procedure from list of operators.
+
+        Args:
+            operators: List of operators to include in procedure
+            base_system: Base system for execution (e.g., 'docetl', 'lotus').
+                        If None, inferred from first operator.
+
+        Raises:
+            ValueError: If operators use different systems (mixed-system procedures not allowed)
+        """
+        # Infer base_system from operators if not specified
+        if base_system is None:
+            if operators:
+                base_system = operators[0].source.get('system', 'docetl')
+            else:
+                base_system = 'docetl'
+
+        # Validate all operators use the same system
+        if operators:
+            mismatched = []
+            for i, op in enumerate(operators):
+                op_system = op.source.get('system', 'docetl')
+                if op_system != base_system:
+                    mismatched.append(f"  Operator {i} ({op.name}): expected '{base_system}', got '{op_system}'")
+
+            if mismatched:
+                raise ValueError(
+                    f"Mixed-system procedures are not allowed. All operators must use system '{base_system}'.\n"
+                    + "\n".join(mismatched)
+                )
+
         procedure = cls(name=name, data_sources=data_sources,
                       outputs=outputs, properties=properties,
-                      dataset_schema=dataset_schema)
+                      dataset_schema=dataset_schema, base_system=base_system)
         procedure.operators = list(operators)
         return procedure
 
@@ -83,7 +116,7 @@ class Procedure:
 
     def validate(self) -> None:
         """
-        Validate procedure structure.
+        Validate procedure structure and system consistency.
 
         Raises:
             ValueError: If validation fails
@@ -103,12 +136,30 @@ class Procedure:
             if out.ref_type != "file":
                 raise ValueError(f"Procedure outputs must be files, got: {out.ref_type}")
 
+        # Validate all operators use the same system as procedure.base_system
+        if self.operators:
+            mismatched = []
+            for i, op in enumerate(self.operators):
+                op_system = op.source.get('system', 'docetl')
+                if op_system != self.base_system:
+                    mismatched.append(
+                        f"  Operator {i} ({op.name or op.type}): "
+                        f"expected system '{self.base_system}', got '{op_system}'"
+                    )
+
+            if mismatched:
+                raise ValueError(
+                    f"Procedure system validation failed. All operators must use system '{self.base_system}'.\n"
+                    + "\n".join(mismatched)
+                )
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Procedure to dictionary."""
         from .convert.docetl.converter import operator_to_dict
 
         return {
             "name": self.name,
+            "base_system": self.base_system,
             "data_sources": [ds.to_dict() for ds in self.data_sources],
             "outputs": [out.to_dict() for out in self.outputs],
             "properties": self.properties,
@@ -132,13 +183,22 @@ class Procedure:
         if "outputs" in data:
             outputs = [DataReference.from_dict(out) for out in data["outputs"]]
 
+        # Load base_system (REQUIRED, no default)
+        base_system = data.get("base_system")
+        if not base_system:
+            raise ValueError(
+                f"Procedure '{data.get('name', '<unnamed>')}' missing required field 'base_system'. "
+                f"All procedures must declare their base system."
+            )
+
         procedure = cls(
             name=data.get("name", ""),
             data_sources=data_sources,
             outputs=outputs,
             properties=data.get("properties", {}),
             dataset_schema=data.get("dataset_schema"),
-            subtasks=data.get("subtasks")
+            subtasks=data.get("subtasks"),
+            base_system=base_system
         )
 
         # Reconstruct operators
@@ -169,7 +229,7 @@ class Procedure:
         return cls.from_dict(data)
 
     def __repr__(self):
-        return f"Procedure(name='{self.name}', operators={len(self.operators)})"
+        return f"Procedure(name='{self.name}', base_system='{self.base_system}', operators={len(self.operators)})"
 
 
 def optimize_procedure(procedure: Procedure) -> List[Procedure]:

@@ -1,4 +1,5 @@
 name: check_quality_threshold
+base_system: abstract
 data_sources:
   - type: file
     name: improved_data.json

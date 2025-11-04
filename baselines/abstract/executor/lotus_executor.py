@@ -1,8 +1,8 @@
 """
-Lotus Executor for Abstract Pipeline Engine (STUB)
+Lotus Executor for Abstract Procedure Engine (STUB)
 
 This module provides Lotus-specific execution functionality for abstract operators
-and pipelines. This is currently a stub implementation for future development.
+and procedures. This is currently a stub implementation for future development.
 
 TODO: Implement full Lotus execution support
 """
@@ -19,10 +19,6 @@ from ..ops.base import Operator
 # Import cache manager
 from ..cache import OperatorCacheManager
 
-# Use TYPE_CHECKING to avoid circular imports
-if TYPE_CHECKING:
-    from ..db import DatasetManager, DataSource
-
 
 class LotusExecutor(BaseSystemExecutor):
     """Executor for Lotus system-specific operations (STUB)."""
@@ -30,7 +26,7 @@ class LotusExecutor(BaseSystemExecutor):
     def __init__(self,
                  verbose: bool = False,
                  cache_manager: Optional[OperatorCacheManager] = None,
-                 data_manager: Optional['DatasetManager'] = None):
+                 data_manager: Optional[Any] = None):
         """
         Initialize Lotus executor with shared cache manager.
 
@@ -58,10 +54,10 @@ class LotusExecutor(BaseSystemExecutor):
 
     def execute_operator(self,
                         operator: Operator,
-                        data_source: 'DataSource',
+                        input_data: Any,
                         config: Optional[Dict[str, Any]] = None,
                         force_execute: bool = False) -> ExecutionResult:
-        """Execute single abstract operator using Lotus."""
+        """Execute single abstract operator using Lotus (STUB - not implemented)."""
         # TODO: Implement Lotus execution logic
         return ExecutionResult(
             success=False,
@@ -78,23 +74,23 @@ class LotusExecutor(BaseSystemExecutor):
         # TODO: Define supported operator types for Lotus
         return False
 
-    def execute_original_pipeline(self, pipeline_path: Union[str, Path]) -> ExecutionResult:
+    def execute_original_procedure(self, procedure_path: Union[str, Path]) -> ExecutionResult:
         """
-        Execute Lotus pipeline from file path
+        Execute Lotus procedure from file path
 
         Args:
-            pipeline_path: Path to Lotus pipeline configuration file
+            procedure_path: Path to Lotus procedure configuration file
 
         Returns:
             ExecutionResult with error indicating not yet implemented
         """
 
-        # TODO: Implement Lotus pipeline execution
+        # TODO: Implement Lotus procedure execution
         return ExecutionResult(
             success=False,
-            error="LotusExecutor.execute_original_pipeline is not yet implemented. This is a stub for future development.",
+            error="LotusExecutor.execute_original_procedure is not yet implemented. This is a stub for future development.",
             metadata={
                 'system': 'lotus',
-                'pipeline_path': str(pipeline_path)
+                'procedure_path': str(procedure_path)
             }
         )

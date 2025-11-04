@@ -14,7 +14,7 @@ from pathlib import Path
 
 # Add PROJECT_ROOT to sys.path for imports
 SCRIPT_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPT_DIR.parent.parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from baselines.abstract
