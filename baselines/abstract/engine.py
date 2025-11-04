@@ -369,6 +369,54 @@ class AbstractExecutor:
         else:
             raise ValueError(f"Unknown DataReference type: {ref.ref_type}")
 
+    def _load_from_reference(self, ref: DataReference) -> List[Dict[str, Any]]:
+        """
+        Load data from a DataReference.
+
+        Args:
+            ref: DataReference to load (must be file type)
+
+        Returns:
+            List of dictionaries (raw data)
+
+        Raises:
+            ValueError: If reference is not a file or file doesn't exist
+        """
+        if ref.ref_type != "file":
+            raise ValueError(f"Can only load from file references, got: {ref.ref_type}")
+
+        file_path = Path(ref.ref)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Data file not found: {ref.ref}")
+
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+
+        if not isinstance(data, list):
+            raise ValueError(f"Expected list data in {ref.ref}, got {type(data).__name__}")
+
+        return data
+
+    def _save_to_reference(self, data: List[Dict[str, Any]], ref: DataReference) -> None:
+        """
+        Save data to a DataReference.
+
+        Args:
+            data: Raw data to save
+            ref: DataReference to save to (must be file type)
+
+        Raises:
+            ValueError: If reference is not a file
+        """
+        if ref.ref_type != "file":
+            raise ValueError(f"Can only save to file references, got: {ref.ref_type}")
+
+        file_path = Path(ref.ref)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=2)
+
     def execute_pipeline(self,
                         pipeline: Pipeline,
                         initial_data: Optional[Dict[str, Any]] = None,

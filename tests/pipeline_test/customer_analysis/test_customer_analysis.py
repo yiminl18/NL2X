@@ -3,10 +3,9 @@ Test script for customer analysis pipeline.
 
 This script:
 1. Loads the customer_analysis_pipeline.yaml pipeline
-2. Validates the pipeline structure (2 nodes, 5 operators total)
-3. Executes the pipeline using AbstractExecutor
-4. Verifies all expected fields are present in the output
-5. Validates calculation accuracy
+2. Executes the pipeline using AbstractExecutor (validation happens automatically)
+3. Verifies all expected fields are present in the output
+4. Validates calculation accuracy
 """
 
 import json
@@ -79,15 +78,6 @@ def test_customer_analysis():
         print(f"  ❌ Failed to load pipeline: {e}")
         import traceback
         traceback.print_exc()
-        return False
-
-    # Validate pipeline
-    print(f"\n🔍 Validating pipeline...")
-    try:
-        pipeline.validate()
-        print(f"  ✓ Pipeline structure is valid")
-    except Exception as e:
-        print(f"  ❌ Validation failed: {e}")
         return False
 
     # Create executor

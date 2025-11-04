@@ -3,9 +3,8 @@ Test script for conditional loop functionality.
 
 This script:
 1. Loads the conditional_loop_pipeline.yaml pipeline
-2. Validates the pipeline structure
-3. Executes the pipeline using AbstractExecutor
-4. Verifies data quality improves iteratively until threshold is reached
+2. Executes the pipeline using AbstractExecutor (validation happens automatically)
+3. Verifies data quality improves iteratively until threshold is reached
 """
 
 import json
@@ -67,15 +66,6 @@ def test_conditional_loop():
         print(f"  ❌ Failed to load pipeline: {e}")
         import traceback
         traceback.print_exc()
-        return False
-
-    # Validate pipeline
-    print(f"\n🔍 Validating pipeline...")
-    try:
-        pipeline.validate()
-        print(f"  ✓ Pipeline structure is valid")
-    except Exception as e:
-        print(f"  ❌ Validation failed: {e}")
         return False
 
     # Create executor

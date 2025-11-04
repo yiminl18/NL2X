@@ -3,9 +3,8 @@ Test script for fixed loop functionality.
 
 This script:
 1. Loads the fixed_loop_pipeline.yaml pipeline
-2. Validates the pipeline structure
-3. Executes the pipeline using AbstractExecutor
-4. Verifies values are multiplied by 2 three times (e.g., 1 → 2 → 4 → 8)
+2. Executes the pipeline using AbstractExecutor (validation happens automatically)
+3. Verifies values are multiplied by 2 three times (e.g., 1 → 2 → 4 → 8)
 """
 
 import json
@@ -65,15 +64,6 @@ def test_fixed_loop():
         print(f"  ❌ Failed to load pipeline: {e}")
         import traceback
         traceback.print_exc()
-        return False
-
-    # Validate pipeline
-    print(f"\n🔍 Validating pipeline...")
-    try:
-        pipeline.validate()
-        print(f"  ✓ Pipeline structure is valid")
-    except Exception as e:
-        print(f"  ❌ Validation failed: {e}")
         return False
 
     # Create executor

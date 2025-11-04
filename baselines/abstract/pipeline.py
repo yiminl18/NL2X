@@ -666,9 +666,6 @@ class Pipeline:
             for to_node_id in to_node_ids:
                 pipeline.add_edge(from_node_id, to_node_id)
 
-        # Validate pipeline structure
-        pipeline.validate()
-
         return pipeline
 
     def save(self, filepath: Union[str, Path]) -> None:
