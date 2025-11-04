@@ -7,7 +7,7 @@ and procedures. This is currently a stub implementation for future development.
 TODO: Implement full Lotus execution support
 """
 
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, Optional, Union
 from pathlib import Path
 
 # Import base executor and result class

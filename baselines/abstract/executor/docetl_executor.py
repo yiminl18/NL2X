@@ -69,66 +69,107 @@ class DocETLExecutor(BaseSystemExecutor):
                         input_data: Any,
                         config: Optional[Dict[str, Any]] = None,
                         force_execute: bool = False) -> ExecutionResult:
-        """
-        DocETL executor does not support single operator execution for now :(
-        Use execute_original_procedure() or execute_procedure() instead.
-        """
-        return ExecutionResult(
-            success=False,
-            error="DocETLExecutor does not support single operator execution with raw data.",
-            metadata={
-                'operator_name': operator.name,
-                'operator_type': operator.type,
-                'system': 'docetl'
-            }
-        )
-
-    def _execute_operator_impl(self,
-                               operator: Operator,
-                               data_source: 'DataSource',
-                               config: Optional[Dict[str, Any]] = None) -> ExecutionResult:
-        """Internal implementation of operator execution (without caching)."""
-        try:
-            from docetl.runner import DSLRunner
-
-            docetl_op = abstract_to_docetl(operator)
-            temp_procedure = self._create_temp_procedure(
-                docetl_op, data_source, config or {}
+        """Execute single abstract operator using DocETL with caching support."""
+        if self.cache_enabled:
+            cached_result = self.cache_manager.get_cached_result(
+                operator, input_data, force_execute=force_execute
             )
-
-            start_time = time.time()
-
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-                yaml.dump(temp_procedure, f, default_flow_style=False, sort_keys=False)
-                temp_file = f.name
-            print(f"Temp procedure: {temp_procedure}")
-            try:
-                runner = DSLRunner.from_yaml(temp_file, max_threads=10)
-                runner.load_run_save()
-
-                output_path = temp_procedure['pipeline']['output']['path']
-                with open(output_path, 'r') as f:
-                    output_data = json.load(f)
-
-                execution_time = time.time() - start_time
-
-                if os.path.exists(output_path):
-                    os.remove(output_path)
+            if cached_result:
+                cached_data = cached_result['output_data']
+                if self.verbose:
+                    print(f"✓ Cache hit for operator: {operator.name}")
+                    data_info = f"{len(cached_data)} records" if isinstance(cached_data, list) else type(cached_data).__name__
+                    print(f"  Cached data: {data_info}")
 
                 return ExecutionResult(
                     success=True,
-                    data=output_data,
+                    data=cached_data,
                     metadata={
-                        'execution_time': execution_time,
+                        **cached_result['metadata'],
+                        'cache_hit': True,
+                        'from_cache': True,
                         'operator_name': operator.name,
                         'operator_type': operator.type,
                         'system': 'docetl'
                     }
                 )
+            elif self.verbose:
+                if force_execute:
+                    print(f"🔄 Force execution for operator: {operator.name}")
+                else:
+                    print(f"✗ Cache miss for operator: {operator.name}")
 
-            finally:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
+        result = self._execute_operator_impl(operator, input_data, config)
+
+        if result.success and self.cache_enabled:
+            self.cache_manager.set_cached_result(
+                operator, input_data, result.data, result.metadata
+            )
+            if self.verbose:
+                if force_execute:
+                    print(f"✓ Updated cache for operator: {operator.name}")
+                else:
+                    print(f"✓ Cached result for operator: {operator.name}")
+
+        result.metadata['cache_hit'] = False
+        result.metadata['force_execute'] = force_execute
+
+        return result
+
+    def _execute_operator_impl(self,
+                               operator: Operator,
+                               input_data: Any,
+                               config: Optional[Dict[str, Any]] = None) -> ExecutionResult:
+        """Internal implementation of operator execution (without caching)."""
+        temp_input_file = None
+        temp_yaml_file = None
+        temp_output_file = None
+
+        try:
+            from docetl.runner import DSLRunner
+
+            # Save input_data to temporary JSON file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                json.dump(input_data, f, indent=2)
+                temp_input_file = f.name
+
+            # Convert operator and create temporary procedure
+            docetl_op = abstract_to_docetl(operator)
+            temp_procedure = self._create_temp_procedure(
+                docetl_op, temp_input_file, config or {}
+            )
+
+            start_time = time.time()
+
+            # Save procedure to temporary YAML file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                yaml.dump(temp_procedure, f, default_flow_style=False, sort_keys=False)
+                temp_yaml_file = f.name
+
+            if self.verbose:
+                print(f"Temp procedure config: {temp_procedure}")
+
+            # Execute procedure
+            runner = DSLRunner.from_yaml(temp_yaml_file, max_threads=10)
+            runner.load_run_save()
+
+            # Read output
+            temp_output_file = temp_procedure['pipeline']['output']['path']
+            with open(temp_output_file, 'r') as f:
+                output_data = json.load(f)
+
+            execution_time = time.time() - start_time
+
+            return ExecutionResult(
+                success=True,
+                data=output_data,
+                metadata={
+                    'execution_time': execution_time,
+                    'operator_name': operator.name,
+                    'operator_type': operator.type,
+                    'system': 'docetl'
+                }
+            )
 
         except Exception as e:
             return ExecutionResult(
@@ -139,6 +180,11 @@ class DocETLExecutor(BaseSystemExecutor):
                     'operator_type': operator.type
                 }
             )
+        finally:
+            # Clean up all temporary files
+            for temp_file in [temp_input_file, temp_yaml_file, temp_output_file]:
+                if temp_file and os.path.exists(temp_file):
+                    os.remove(temp_file)
 
     def execute_procedure(self,
                          procedure_config: Dict[str, Any],
@@ -352,11 +398,12 @@ class DocETLExecutor(BaseSystemExecutor):
 
     def _create_temp_procedure(self,
                               docetl_op: Dict[str, Any],
-                              data_source: 'DataSource',
+                              input_path: str,
                               config: Dict[str, Any]) -> Dict[str, Any]:
         """Create temporary procedure for executing single operator."""
-        input_path = data_source.path
-        output_path = tempfile.mkstemp(suffix='.json')
+        # Create temporary output file
+        fd, output_path = tempfile.mkstemp(suffix='.json')
+        os.close(fd)  # Close file descriptor
 
         # Use centralized procedure config builder
         procedure = self.build_procedure_config(
