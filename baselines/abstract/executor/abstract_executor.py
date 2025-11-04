@@ -18,10 +18,12 @@ from .base_executor import BaseSystemExecutor, ExecutionResult
 # Import abstract operator classes
 from ..ops.base import Operator
 from ..procedure import Procedure
-from ..pipeline import DataReference
 
 # Import cache manager
 from ..cache import OperatorCacheManager
+
+# Import data I/O utilities
+from ..utils.data_io import load_from_reference, save_to_reference, DataReference
 
 
 class AbstractPythonExecutor(BaseSystemExecutor):
@@ -139,7 +141,7 @@ class AbstractPythonExecutor(BaseSystemExecutor):
             if self.verbose:
                 print(f"Loading input data from: {procedure.data_sources[0].ref}")
 
-            input_data = self._load_from_reference(procedure.data_sources[0])
+            input_data = load_from_reference(procedure.data_sources[0])
 
             # Execute operators sequentially
             current_data = input_data
@@ -171,7 +173,7 @@ class AbstractPythonExecutor(BaseSystemExecutor):
             if procedure.outputs:
                 if self.verbose:
                     print(f"Saving output to: {procedure.outputs[0].ref}")
-                self._save_to_reference(current_data, procedure.outputs[0])
+                save_to_reference(current_data, procedure.outputs[0])
 
             return ExecutionResult(
                 success=True,
@@ -355,51 +357,3 @@ except Exception as e:
                 success=False,
                 error=f"PythonCode execution failed: {str(e)}\n{traceback.format_exc()}"
             )
-
-    def _load_from_reference(self, ref: DataReference) -> List[Dict[str, Any]]:
-        """
-        Load data from a DataReference.
-
-        Args:
-            ref: DataReference to load (must be file type)
-
-        Returns:
-            List of dictionaries (raw data)
-
-        Raises:
-            ValueError: If reference is not a file or file doesn't exist
-        """
-        if ref.ref_type != "file":
-            raise ValueError(f"Can only load from file references, got: {ref.ref_type}")
-
-        file_path = Path(ref.ref)
-        if not file_path.exists():
-            raise FileNotFoundError(f"Data file not found: {ref.ref}")
-
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-
-        if not isinstance(data, list):
-            raise ValueError(f"Expected list data in {ref.ref}, got {type(data).__name__}")
-
-        return data
-
-    def _save_to_reference(self, data: List[Dict[str, Any]], ref: DataReference) -> None:
-        """
-        Save data to a DataReference.
-
-        Args:
-            data: Raw data to save
-            ref: DataReference to save to (must be file type)
-
-        Raises:
-            ValueError: If reference is not a file
-        """
-        if ref.ref_type != "file":
-            raise ValueError(f"Can only save to file references, got: {ref.ref_type}")
-
-        file_path = Path(ref.ref)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)

@@ -25,20 +25,28 @@ from .executor import AbstractPythonExecutor, DocETLExecutor, LotusExecutor, Exe
 from .convert.docetl import dict_to_operator, operator_to_dict
 
 # Import Pipeline and related classes
-from .pipeline import Pipeline, DataReference, NodeType
+from .pipeline import Pipeline, NodeType
 
 # Import cache manager
 from .cache import OperatorCacheManager
 
+# Import data I/O utilities
+from .utils.data_io import load_from_reference, save_to_reference, DataReference
 
-class AbstractExecutor:
-    """Main executor for abstract operators and procedures with caching support."""
+
+class PipelineEngine:
+    """
+    Pipeline execution engine for abstract operators and procedures.
+
+    High-level orchestrator that manages pipeline DAG execution, parallel execution,
+    and routing to system-specific executors (DocETL, Lotus, Abstract).
+    """
 
     def __init__(self,
                  verbose: bool = False,
                  cache_enabled: bool = True,
                  cache_dir: Optional[Union[str, Path]] = None):
-        """Initialize the AbstractExecutor with unified cache manager and system executors."""
+        """Initialize the PipelineEngine with unified cache manager and system executors."""
         self.verbose = verbose
         self.cache_enabled = cache_enabled
         self.cache_dir = cache_dir
@@ -151,7 +159,7 @@ class AbstractExecutor:
                 if effective_data_sources:
                     if self.verbose:
                         print(f"Loading dataset from data_sources: {effective_data_sources[0].ref}")
-                    input_data = self._load_from_reference(effective_data_sources[0])
+                    input_data = load_from_reference(effective_data_sources[0])
                 else:
                     raise ValueError(
                         "input_data is required for procedure execution. "
@@ -177,7 +185,7 @@ class AbstractExecutor:
                     if self.verbose:
                         print(f"Final output saved to: {effective_outputs[0].ref}")
 
-                    self._save_to_reference(result.data, effective_outputs[0])
+                    save_to_reference(result.data, effective_outputs[0])
                     result.metadata['output_path'] = effective_outputs[0].ref
                 elif self.verbose:
                     print(f"Skipping save (output is node reference): {effective_outputs[0].ref}")
@@ -351,7 +359,7 @@ class AbstractExecutor:
                 return file_cache[ref.ref]
 
             # Load from file
-            data = self._load_from_reference(ref)
+            data = load_from_reference(ref)
 
             # Cache with lock if provided (thread-safe write)
             if file_cache is not None:
@@ -368,54 +376,6 @@ class AbstractExecutor:
 
         else:
             raise ValueError(f"Unknown DataReference type: {ref.ref_type}")
-
-    def _load_from_reference(self, ref: DataReference) -> List[Dict[str, Any]]:
-        """
-        Load data from a DataReference.
-
-        Args:
-            ref: DataReference to load (must be file type)
-
-        Returns:
-            List of dictionaries (raw data)
-
-        Raises:
-            ValueError: If reference is not a file or file doesn't exist
-        """
-        if ref.ref_type != "file":
-            raise ValueError(f"Can only load from file references, got: {ref.ref_type}")
-
-        file_path = Path(ref.ref)
-        if not file_path.exists():
-            raise FileNotFoundError(f"Data file not found: {ref.ref}")
-
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-
-        if not isinstance(data, list):
-            raise ValueError(f"Expected list data in {ref.ref}, got {type(data).__name__}")
-
-        return data
-
-    def _save_to_reference(self, data: List[Dict[str, Any]], ref: DataReference) -> None:
-        """
-        Save data to a DataReference.
-
-        Args:
-            data: Raw data to save
-            ref: DataReference to save to (must be file type)
-
-        Raises:
-            ValueError: If reference is not a file
-        """
-        if ref.ref_type != "file":
-            raise ValueError(f"Can only save to file references, got: {ref.ref_type}")
-
-        file_path = Path(ref.ref)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
 
     def execute_pipeline(self,
                         pipeline: Pipeline,

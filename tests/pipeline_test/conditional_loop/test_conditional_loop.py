@@ -3,7 +3,7 @@ Test script for conditional loop functionality.
 
 This script:
 1. Loads the conditional_loop_pipeline.yaml pipeline
-2. Executes the pipeline using AbstractExecutor (validation happens automatically)
+2. Executes the pipeline using PipelineEngine (validation happens automatically)
 3. Verifies data quality improves iteratively until threshold is reached
 """
 
@@ -18,11 +18,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from baselines.abstract
 from baselines.abstract.pipeline import Pipeline
-from baselines.abstract.engine import AbstractExecutor
+from baselines.abstract.engine import PipelineEngine
 
 
 def test_conditional_loop():
-    """Load and execute the conditional loop pipeline using AbstractExecutor."""
+    """Load and execute the conditional loop pipeline using PipelineEngine."""
 
     # Get paths
     pipeline_test_dir = Path(__file__).parent
@@ -70,7 +70,7 @@ def test_conditional_loop():
 
     # Create executor
     print(f"\n⚙️  Creating executor...")
-    executor = AbstractExecutor(verbose=True, cache_enabled=False)
+    executor = PipelineEngine(verbose=True, cache_enabled=False)
     print(f"  ✓ Executor created")
 
     # Execute pipeline

@@ -42,7 +42,7 @@ class BaseSystemExecutor(ABC):
 
     All system executors (DocETL, Lotus, etc.) must inherit from this class
     and implement its abstract methods. This provides a uniform interface for
-    the AbstractExecutor to work with different execution backends.
+    the PipelineEngine to work with different execution backends.
     """
 
     def __init__(self,

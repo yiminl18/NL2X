@@ -3,7 +3,7 @@ Test script for customer analysis pipeline.
 
 This script:
 1. Loads the customer_analysis_pipeline.yaml pipeline
-2. Executes the pipeline using AbstractExecutor (validation happens automatically)
+2. Executes the pipeline using PipelineEngine (validation happens automatically)
 3. Verifies all expected fields are present in the output
 4. Validates calculation accuracy
 """
@@ -19,11 +19,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from baselines.abstract
 from baselines.abstract.pipeline import Pipeline
-from baselines.abstract.engine import AbstractExecutor
+from baselines.abstract.engine import PipelineEngine
 
 
 def test_customer_analysis():
-    """Load and execute the customer analysis pipeline using AbstractExecutor."""
+    """Load and execute the customer analysis pipeline using PipelineEngine."""
 
     # Get paths
     pipeline_test_dir = Path(__file__).parent
@@ -82,7 +82,7 @@ def test_customer_analysis():
 
     # Create executor
     print(f"\n⚙️  Creating executor...")
-    executor = AbstractExecutor(verbose=True, cache_enabled=False)
+    executor = PipelineEngine(verbose=True, cache_enabled=False)
     print(f"  ✓ Executor created")
 
     # Execute pipeline

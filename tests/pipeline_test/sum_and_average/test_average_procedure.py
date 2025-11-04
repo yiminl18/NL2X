@@ -3,7 +3,7 @@ Test script to execute the sum and average pipeline.
 
 This script:
 1. Loads the pipeline from sum_and_average_pipeline.yaml
-2. Executes the pipeline using AbstractExecutor (validation happens automatically)
+2. Executes the pipeline using PipelineEngine (validation happens automatically)
 3. Verifies the output contains both total_score and average_score fields
 """
 
@@ -18,11 +18,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from baselines.abstract
 from baselines.abstract.pipeline import Pipeline
-from baselines.abstract.engine import AbstractExecutor
+from baselines.abstract.engine import PipelineEngine
 
 
 def test_pipeline():
-    """Load and execute the sum and average pipeline using AbstractExecutor."""
+    """Load and execute the sum and average pipeline using PipelineEngine."""
 
     # Get paths
     pipeline_test_dir = Path(__file__).parent
@@ -74,7 +74,7 @@ def test_pipeline():
 
     # Create executor
     print(f"\n⚙️  Creating executor...")
-    executor = AbstractExecutor(verbose=True, cache_enabled=False)
+    executor = PipelineEngine(verbose=True, cache_enabled=False)
     print(f"  ✓ Executor created")
 
     # Execute pipeline

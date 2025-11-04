@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 
 from .ops.base import Operator
-from .pipeline import DataReference
+from .utils.data_io import DataReference
 
 
 class Procedure:

@@ -404,7 +404,7 @@ class ProcedureOptimizer:
         # Load data from procedure if not provided
         if input_data is None and procedure.data_sources:
             try:
-                from .pipeline import DataReference
+                from .utils.data_io import DataReference
                 if procedure.data_sources[0].ref_type == "file":
                     file_path = Path(procedure.data_sources[0].ref)
                     with open(file_path, 'r') as f:

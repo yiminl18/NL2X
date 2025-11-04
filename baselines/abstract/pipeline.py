@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any, Union
 from enum import Enum
 
+from .utils.data_io import DataReference
+
 
 class NodeType(Enum):
     """Node types in the pipeline DAG."""
@@ -24,54 +26,8 @@ class NodeType(Enum):
     CONDITIONAL_LOOP = "conditional_loop"
 
 
-class DataReference:
-    """Represents a data reference (input source or output destination) for a pipeline node."""
-
-    def __init__(self, ref_type: str, ref: str, output_name: str = 'default'):
-        """
-        Initialize a data reference.
-
-        Args:
-            ref_type: Type of reference - "node" or "file"
-            ref: Reference target - node_id for nodes, file_path for files
-            output_name: For node references, which output branch to read from (default: 'default')
-        """
-        if ref_type not in ("node", "file"):
-            raise ValueError(f"ref_type must be 'node' or 'file', got: {ref_type}")
-
-        self.ref_type = ref_type
-        self.ref = ref
-        self.output_name = output_name
-        self.name = self._generate_name()
-
-    def _generate_name(self) -> str:
-        """Auto-generate reference name based on type and reference."""
-        if self.ref_type == "node":
-            return f"{self.ref}_source"
-        else:  # file
-            return Path(self.ref).name
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize DataReference to dictionary."""
-        result = {
-            "type": self.ref_type,
-            "name": self.name,
-            "reference": self.ref
-        }
-        if self.output_name != 'default':
-            result["output_name"] = self.output_name
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'DataReference':
-        """Deserialize DataReference from dictionary."""
-        output_name = data.get("output_name", "default")
-        return cls(data["type"], data["reference"], output_name)
-
-    def __repr__(self):
-        if self.output_name != 'default':
-            return f"DataReference(type='{self.ref_type}', name='{self.name}', ref='{self.ref}', output='{self.output_name}')"
-        return f"DataReference(type='{self.ref_type}', name='{self.name}', ref='{self.ref}')"
+# DataReference class has been moved to .utils.data_io
+# Import it from there to maintain compatibility
 
 
 class PipelineNode:
@@ -515,7 +471,7 @@ class Pipeline:
         if available_systems is None:
             errors.append(
                 "Pipeline properties missing 'available_systems'. "
-                "This should be set automatically by AbstractExecutor."
+                "This should be set automatically by PipelineEngine."
             )
         else:
             available_systems = set(available_systems)

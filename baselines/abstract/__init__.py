@@ -24,7 +24,9 @@ from .ops import (
 
 from .procedure import Procedure, optimize_procedure
 
-from .pipeline import Pipeline, DataReference
+from .pipeline import Pipeline
+
+from .utils.data_io import DataReference
 
 from .optimizer import ProcedureOptimizer
 
