@@ -29,6 +29,9 @@ from ..utils.data_io import load_from_reference, save_to_reference, DataReferenc
 class AbstractExecutor(BaseSystemExecutor):
     """Executor for abstract system - PythonCode operators only."""
 
+    # Supported operator types
+    SUPPORTED_OPERATORS = {'PythonCode', 'Convert', 'Sample', 'Unnest', 'Split', 'Gather'}
+
     def __init__(self,
                  verbose: bool = False,
                  cache_manager: Optional[OperatorCacheManager] = None,
@@ -58,8 +61,8 @@ class AbstractExecutor(BaseSystemExecutor):
         return 'json'
 
     def supports_operator_type(self, op_type: str) -> bool:
-        """Check if executor supports given operator type. Supports PythonCode, Convert, Sample, and Unnest."""
-        return op_type in ('PythonCode', 'Convert', 'Sample', 'Unnest', 'unnest')
+        """Check if executor supports given operator type."""
+        return op_type in self.SUPPORTED_OPERATORS
 
     def execute_operator(self,
                         operator: Operator,
@@ -107,10 +110,28 @@ class AbstractExecutor(BaseSystemExecutor):
                 force_execute=force_execute
             )
 
+        elif operator.type in ('Split', 'split'):
+            # Execute splitting
+            return self._execute_split(
+                operator=operator,
+                input_data=input_data,
+                force_execute=force_execute
+            )
+
+        elif operator.type in ('Gather', 'gather'):
+            # Execute gathering
+            return self._execute_gather(
+                operator=operator,
+                input_data=input_data,
+                force_execute=force_execute
+            )
+
         else:
+            # Get unique operator types (normalized, case-insensitive)
+            supported_types = sorted({op.title() for op in self.SUPPORTED_OPERATORS})
             return ExecutionResult(
                 success=False,
-                error=f"AbstractExecutor only supports PythonCode, Convert, Sample, and Unnest operators, got: {operator.type}",
+                error=f"AbstractExecutor only supports {', '.join(supported_types)} operators, got: {operator.type}",
                 metadata={
                     'operator_name': operator.name,
                     'operator_type': operator.type,
@@ -147,9 +168,10 @@ class AbstractExecutor(BaseSystemExecutor):
             operators = procedure.to_operators()
             for i, op in enumerate(operators):
                 if not self.supports_operator_type(op.type):
+                    supported_types = sorted({op_type.title() for op_type in self.SUPPORTED_OPERATORS})
                     return ExecutionResult(
                         success=False,
-                        error=f"Operator {i} ({op.name}) has type '{op.type}', only PythonCode, Convert, Sample, and Unnest supported",
+                        error=f"Operator {i} ({op.name}) has type '{op.type}', only {', '.join(supported_types)} supported",
                         metadata={
                             'system': 'abstract',
                             'procedure_path': str(procedure_path)
@@ -813,4 +835,329 @@ except Exception as e:
             return ExecutionResult(
                 success=False,
                 error=f"Unnest execution failed: {str(e)}\n{traceback.format_exc()}"
+            )
+
+    def _execute_split(
+        self,
+        operator: Any,
+        input_data: Any,
+        force_execute: bool = False
+    ) -> ExecutionResult:
+        """
+        Execute Split operator - split long text into chunks.
+
+        Supports token-based splitting (using tiktoken) or delimiter-based splitting.
+        Creates chunk records with metadata for downstream processing.
+        """
+        try:
+            # Check cache first
+            if self.cache_enabled and not force_execute:
+                cached_result = self.cache_manager.get_cached_result(
+                    operator=operator,
+                    input_data=input_data
+                )
+                if cached_result is not None:
+                    if self.verbose:
+                        print(f"  ✓ Cache hit for Split operator: {operator.name}")
+                    return cached_result
+
+            # Extract parameters
+            split_key = operator.properties.get('split_key')
+            method = operator.properties.get('method')
+            method_kwargs = operator.properties.get('method_kwargs', {})
+
+            # Validate parameters
+            if not split_key:
+                raise ValueError("split_key is required for Split operator")
+            if not method:
+                raise ValueError("method is required for Split operator")
+            if method not in ('token_count', 'delimiter'):
+                raise ValueError(f"Unsupported split method: {method}")
+
+            # Validate input data
+            if not isinstance(input_data, list):
+                raise TypeError(f"Input data must be a list, got {type(input_data)}")
+
+            if self.verbose:
+                print(f"  Executing Split operator: {operator.name}")
+                print(f"    split_key: {split_key}")
+                print(f"    method: {method}")
+                print(f"    method_kwargs: {method_kwargs}")
+
+            # Process each record
+            output_data = []
+
+            for record in input_data:
+                if not isinstance(record, dict):
+                    raise TypeError(f"Each record must be a dictionary, got {type(record)}")
+
+                # Get text to split
+                if split_key not in record:
+                    available_keys = ', '.join(record.keys())
+                    raise KeyError(
+                        f"split_key '{split_key}' not found in record. "
+                        f"Available keys: {available_keys}"
+                    )
+
+                text_to_split = record[split_key]
+                if not isinstance(text_to_split, str):
+                    raise TypeError(
+                        f"Field '{split_key}' must be a string, got {type(text_to_split)}"
+                    )
+
+                # Split text based on method
+                if method == 'token_count':
+                    chunks = self._split_by_tokens(text_to_split, method_kwargs)
+                elif method == 'delimiter':
+                    chunks = self._split_by_delimiter(text_to_split, method_kwargs)
+                else:
+                    raise ValueError(f"Unsupported method: {method}")
+
+                # Generate unique ID for this document
+                import uuid
+                split_id = str(uuid.uuid4())
+
+                # Create chunk records
+                total_chunks = len(chunks)
+                for chunk_index, chunk_text in enumerate(chunks):
+                    chunk_record = record.copy()
+                    chunk_record['_chunk_text'] = chunk_text
+                    chunk_record['_split_id'] = split_id
+                    chunk_record['_chunk_index'] = chunk_index
+                    chunk_record['_total_chunks'] = total_chunks
+                    output_data.append(chunk_record)
+
+            # Create result metadata
+            result_metadata = {
+                'operator_type': 'Split',
+                'operator_name': operator.name,
+                'split_key': split_key,
+                'method': method,
+                'input_records': len(input_data),
+                'output_records': len(output_data),
+                'cache_hit': False
+            }
+
+            # Store in cache if enabled
+            if self.cache_enabled:
+                self.cache_manager.set_cached_result(
+                    operator=operator,
+                    input_data=input_data,
+                    output_data=output_data,
+                    metadata=result_metadata
+                )
+                if self.verbose:
+                    print(f"  ✓ Result cached for Split operator: {operator.name}")
+
+            return ExecutionResult(
+                success=True,
+                data=output_data,
+                metadata=result_metadata
+            )
+
+        except Exception as e:
+            return ExecutionResult(
+                success=False,
+                error=f"Split execution failed: {str(e)}\n{traceback.format_exc()}"
+            )
+
+    def _split_by_tokens(self, text: str, method_kwargs: Dict[str, Any]) -> List[str]:
+        """Split text by token count using tiktoken."""
+        import tiktoken
+
+        num_tokens = method_kwargs.get('num_tokens')
+        if not num_tokens:
+            raise ValueError("num_tokens is required for token_count method")
+        if not isinstance(num_tokens, int) or num_tokens <= 0:
+            raise ValueError(f"num_tokens must be a positive integer, got {num_tokens}")
+
+        model = method_kwargs.get('model', 'gpt-4o')
+
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            # Fallback to cl100k_base encoding for unknown models
+            encoding = tiktoken.get_encoding('cl100k_base')
+
+        # Encode text to tokens
+        tokens = encoding.encode(text)
+
+        # Split into chunks
+        chunks = []
+        for i in range(0, len(tokens), num_tokens):
+            chunk_tokens = tokens[i:i + num_tokens]
+            chunk_text = encoding.decode(chunk_tokens)
+            chunks.append(chunk_text)
+
+        return chunks
+
+    def _split_by_delimiter(self, text: str, method_kwargs: Dict[str, Any]) -> List[str]:
+        """Split text by delimiter."""
+        delimiter = method_kwargs.get('delimiter')
+        if delimiter is None:
+            raise ValueError("delimiter is required for delimiter method")
+
+        num_splits_to_group = method_kwargs.get('num_splits_to_group', 1)
+        if not isinstance(num_splits_to_group, int) or num_splits_to_group <= 0:
+            raise ValueError(
+                f"num_splits_to_group must be a positive integer, got {num_splits_to_group}"
+            )
+
+        # Split by delimiter
+        splits = text.split(delimiter)
+
+        # Group splits if needed
+        if num_splits_to_group == 1:
+            return [s for s in splits if s.strip()]  # Filter empty strings
+
+        chunks = []
+        for i in range(0, len(splits), num_splits_to_group):
+            group = splits[i:i + num_splits_to_group]
+            chunk_text = delimiter.join(group)
+            if chunk_text.strip():
+                chunks.append(chunk_text)
+
+        return chunks
+
+    def _execute_gather(
+        self,
+        operator: Any,
+        input_data: Any,
+        force_execute: bool = False
+    ) -> ExecutionResult:
+        """
+        Execute Gather operator - add context from adjacent chunks.
+
+        Expects input from Split operator with _chunk_text, _split_id, and _chunk_index fields.
+        Adds _chunk_with_context field containing chunk with surrounding context.
+        """
+        try:
+            # Check cache first
+            if self.cache_enabled and not force_execute:
+                cached_result = self.cache_manager.get_cached_result(
+                    operator=operator,
+                    input_data=input_data
+                )
+                if cached_result is not None:
+                    if self.verbose:
+                        print(f"  ✓ Cache hit for Gather operator: {operator.name}")
+                    return cached_result
+
+            # Extract parameters
+            context_size = operator.properties.get('context_size', 1)
+
+            # Validate parameters
+            if not isinstance(context_size, int) or context_size < 0:
+                raise ValueError(f"context_size must be a non-negative integer, got {context_size}")
+
+            # Validate input data
+            if not isinstance(input_data, list):
+                raise TypeError(f"Input data must be a list, got {type(input_data)}")
+
+            if self.verbose:
+                print(f"  Executing Gather operator: {operator.name}")
+                print(f"    context_size: {context_size}")
+
+            # Validate required fields in input records
+            required_fields = {'_chunk_text', '_split_id', '_chunk_index'}
+            for i, record in enumerate(input_data):
+                if not isinstance(record, dict):
+                    raise TypeError(f"Record {i} must be a dictionary, got {type(record)}")
+
+                missing_fields = required_fields - set(record.keys())
+                if missing_fields:
+                    available_keys = ', '.join(record.keys())
+                    raise ValueError(
+                        f"Record {i} missing required fields: {missing_fields}. "
+                        f"Available keys: {available_keys}. "
+                        f"Gather operator expects input from Split operator."
+                    )
+
+            # Group chunks by split_id
+            chunks_by_split_id = {}
+            for record in input_data:
+                split_id = record['_split_id']
+                if split_id not in chunks_by_split_id:
+                    chunks_by_split_id[split_id] = []
+                chunks_by_split_id[split_id].append(record)
+
+            # Sort chunks within each group by chunk_index
+            for split_id in chunks_by_split_id:
+                chunks_by_split_id[split_id].sort(key=lambda x: x['_chunk_index'])
+
+            # Process each record and add context
+            output_data = []
+
+            for record in input_data:
+                split_id = record['_split_id']
+                chunk_index = record['_chunk_index']
+                chunk_text = record['_chunk_text']
+
+                # Get all chunks for this split_id
+                all_chunks = chunks_by_split_id[split_id]
+
+                # Find current chunk position in sorted list
+                current_position = None
+                for i, chunk in enumerate(all_chunks):
+                    if chunk['_chunk_index'] == chunk_index:
+                        current_position = i
+                        break
+
+                if current_position is None:
+                    raise ValueError(
+                        f"Could not find chunk with index {chunk_index} "
+                        f"in split_id {split_id}"
+                    )
+
+                # Gather context chunks
+                context_chunks = []
+
+                # Add previous chunks
+                for i in range(max(0, current_position - context_size), current_position):
+                    context_chunks.append(all_chunks[i]['_chunk_text'])
+
+                # Add current chunk
+                context_chunks.append(chunk_text)
+
+                # Add next chunks
+                for i in range(current_position + 1, min(len(all_chunks), current_position + context_size + 1)):
+                    context_chunks.append(all_chunks[i]['_chunk_text'])
+
+                # Create output record
+                output_record = record.copy()
+                output_record['_chunk_with_context'] = ' '.join(context_chunks)
+                output_data.append(output_record)
+
+            # Create result metadata
+            result_metadata = {
+                'operator_type': 'Gather',
+                'operator_name': operator.name,
+                'context_size': context_size,
+                'input_records': len(input_data),
+                'output_records': len(output_data),
+                'num_splits': len(chunks_by_split_id),
+                'cache_hit': False
+            }
+
+            # Store in cache if enabled
+            if self.cache_enabled:
+                self.cache_manager.set_cached_result(
+                    operator=operator,
+                    input_data=input_data,
+                    output_data=output_data,
+                    metadata=result_metadata
+                )
+                if self.verbose:
+                    print(f"  ✓ Result cached for Gather operator: {operator.name}")
+
+            return ExecutionResult(
+                success=True,
+                data=output_data,
+                metadata=result_metadata
+            )
+
+        except Exception as e:
+            return ExecutionResult(
+                success=False,
+                error=f"Gather execution failed: {str(e)}\n{traceback.format_exc()}"
             )
