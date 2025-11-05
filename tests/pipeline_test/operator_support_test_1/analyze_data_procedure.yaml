@@ -1,0 +1,84 @@
+name: analyze_data
+base_system: abstract
+
+operators:
+  # Operator 1: Calculate statistics
+  - name: calculate_statistics
+    type: PythonCode
+    source:
+      system: abstract
+      name: PythonCode
+    properties:
+      function: |
+        def process(sources):
+          data = sources['input_data']
+          result = []
+
+          for record in data:
+            # Calculate average
+            avg = (record['calculus'] + record['physics'] +
+                   record['biology'] + record['chemistry']) / 4.0
+
+            # Classify performance
+            if avg >= 90:
+              category = 'Excellent'
+            elif avg >= 80:
+              category = 'Good'
+            elif avg >= 70:
+              category = 'Average'
+            else:
+              category = 'Below Average'
+
+            # Add new fields
+            record['average'] = round(avg, 2)
+            record['performance_category'] = category
+            result.append(record)
+
+          return result
+    input:
+      fields:
+        student_id: Integer
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        chemistry: Integer
+    output:
+      fields:
+        student_id: Integer
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        chemistry: Integer
+        average: Float
+        performance_category: String
+
+  # Operator 2: Project final fields
+  - name: select_final_fields
+    type: Project
+    source:
+      system: abstract
+      name: Project
+    properties:
+      fields:
+        - student_id
+        - name
+        - average
+        - performance_category
+    input:
+      fields:
+        student_id: Integer
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        chemistry: Integer
+        average: Float
+        performance_category: String
+    output:
+      fields:
+        student_id: Integer
+        name: String
+        average: Float
+        performance_category: String

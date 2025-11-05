@@ -1,0 +1,34 @@
+name: operator_support_test_1
+output_path: final_results.json
+properties:
+  base_system: abstract
+  parallel_execution: false
+
+edges:
+  process_node:
+    - analyze_node
+
+nodes:
+  process_node:
+    node_type: normal
+    procedure_path: process_data_procedure.yaml
+    data_sources:
+      - type: file
+        name: input_data
+        reference: student_grades.json
+    outputs:
+      - type: node
+        name: analyze_node_input
+        reference: analyze_node
+
+  analyze_node:
+    node_type: final
+    procedure_path: analyze_data_procedure.yaml
+    data_sources:
+      - type: node
+        name: input_data
+        reference: process_node
+    outputs:
+      - type: file
+        name: final_output
+        reference: final_results.json

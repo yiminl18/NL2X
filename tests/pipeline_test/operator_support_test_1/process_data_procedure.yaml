@@ -1,0 +1,87 @@
+name: process_data
+base_system: abstract
+
+operators:
+  # Operator 1: Create nested structure from flat JSON
+  - name: create_nested
+    type: PythonCode
+    source:
+      system: abstract
+      name: PythonCode
+    properties:
+      function: |
+        def process(sources):
+          data = sources['input_data']
+
+          # Create nested structure
+          result = []
+          for record in data:
+            nested_record = {
+              'student_id': int(record['student_id']),
+              'name': str(record['name']),
+              'grades': {
+                'calculus': int(record['calculus']),
+                'physics': int(record['physics']),
+                'biology': int(record['biology']),
+                'chemistry': int(record['chemistry'])
+              }
+            }
+            result.append(nested_record)
+          return result
+    input:
+      fields: {}
+    output:
+      fields:
+        student_id: Integer
+        name: String
+        grades: Dict
+
+  # Operator 2: Unnest grades dictionary
+  - name: unnest_grades
+    type: Unnest
+    source:
+      system: abstract
+      name: Unnest
+    properties:
+      unnest_key: grades
+      depth: 1
+    input:
+      fields:
+        student_id: Integer
+        name: String
+        grades: Dict
+    output:
+      fields:
+        student_id: Integer
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        chemistry: Integer
+
+  # Operator 3: Sample 5 records
+  - name: sample_students
+    type: Sample
+    source:
+      system: abstract
+      name: Sample
+    properties:
+      method: uniform
+      samples: 5
+      random_state: 42
+    input:
+      fields:
+        student_id: Integer
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        chemistry: Integer
+    output:
+      fields:
+        student_id: Integer
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+        chemistry: Integer

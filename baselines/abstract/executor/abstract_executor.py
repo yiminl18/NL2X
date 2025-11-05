@@ -27,10 +27,10 @@ from ..utils.data_io import load_from_reference, save_to_reference, DataReferenc
 
 
 class AbstractExecutor(BaseSystemExecutor):
-    """Executor for abstract system - PythonCode operators only."""
+    """Executor for abstract system"""
 
     # Supported operator types
-    SUPPORTED_OPERATORS = {'PythonCode', 'Convert', 'Sample', 'Unnest', 'Split', 'Gather'}
+    SUPPORTED_OPERATORS = {'PythonCode', 'Convert', 'Sample', 'Unnest', 'Split', 'Gather', 'Project'}
 
     def __init__(self,
                  verbose: bool = False,
@@ -102,7 +102,7 @@ class AbstractExecutor(BaseSystemExecutor):
                 force_execute=force_execute
             )
 
-        elif operator.type in ('Unnest', 'unnest'):
+        elif operator.type in ('Unnest'):
             # Execute unnesting
             return self._execute_unnest(
                 operator=operator,
@@ -110,7 +110,7 @@ class AbstractExecutor(BaseSystemExecutor):
                 force_execute=force_execute
             )
 
-        elif operator.type in ('Split', 'split'):
+        elif operator.type in ('Split'):
             # Execute splitting
             return self._execute_split(
                 operator=operator,
@@ -118,9 +118,17 @@ class AbstractExecutor(BaseSystemExecutor):
                 force_execute=force_execute
             )
 
-        elif operator.type in ('Gather', 'gather'):
+        elif operator.type in ('Gather'):
             # Execute gathering
             return self._execute_gather(
+                operator=operator,
+                input_data=input_data,
+                force_execute=force_execute
+            )
+
+        elif operator.type in ('Project'):
+            # Execute field projection
+            return self._execute_project(
                 operator=operator,
                 input_data=input_data,
                 force_execute=force_execute
@@ -1160,4 +1168,97 @@ except Exception as e:
             return ExecutionResult(
                 success=False,
                 error=f"Gather execution failed: {str(e)}\n{traceback.format_exc()}"
+            )
+
+    def _execute_project(
+        self,
+        operator: Any,
+        input_data: Any,
+        force_execute: bool = False
+    ) -> ExecutionResult:
+        """
+        Execute Project operator - select specific fields from records.
+
+        Projects (selects) only specified fields from each record, removing all others.
+        Simple field selection without transformation.
+        """
+        try:
+            # Check cache first
+            if self.cache_enabled and not force_execute:
+                cached_result = self.cache_manager.get_cached_result(
+                    operator=operator,
+                    input_data=input_data
+                )
+                if cached_result is not None:
+                    if self.verbose:
+                        print(f"  ✓ Cache hit for Project operator: {operator.name}")
+                    return cached_result
+
+            # Extract parameters
+            fields = operator.properties.get('fields')
+
+            # Validate parameters
+            if not fields:
+                raise ValueError("fields parameter is required for Project operator")
+            if not isinstance(fields, list):
+                raise TypeError(f"fields must be a list, got {type(fields)}")
+            if not all(isinstance(f, str) for f in fields):
+                raise TypeError("All field names must be strings")
+
+            # Validate input data
+            if not isinstance(input_data, list):
+                raise TypeError(f"Input data must be a list, got {type(input_data)}")
+
+            if self.verbose:
+                print(f"  Executing Project operator: {operator.name}")
+                print(f"    fields: {fields}")
+
+            # Project fields from each record
+            output_data = []
+
+            for i, record in enumerate(input_data):
+                if not isinstance(record, dict):
+                    raise TypeError(f"Record {i} must be a dictionary, got {type(record)}")
+
+                # Create new record with only specified fields
+                projected_record = {}
+                for field in fields:
+                    if field in record:
+                        projected_record[field] = record[field]
+                    # Silently skip fields that don't exist (robust behavior)
+
+                output_data.append(projected_record)
+
+            # Create result metadata
+            result_metadata = {
+                'operator_type': 'Project',
+                'operator_name': operator.name,
+                'selected_fields': fields,
+                'num_fields': len(fields),
+                'input_records': len(input_data),
+                'output_records': len(output_data),
+                'cache_hit': False
+            }
+
+            # Store in cache if enabled
+            if self.cache_enabled:
+                self.cache_manager.set_cached_result(
+                    operator=operator,
+                    input_data=input_data,
+                    output_data=output_data,
+                    metadata=result_metadata
+                )
+                if self.verbose:
+                    print(f"  ✓ Result cached for Project operator: {operator.name}")
+
+            return ExecutionResult(
+                success=True,
+                data=output_data,
+                metadata=result_metadata
+            )
+
+        except Exception as e:
+            return ExecutionResult(
+                success=False,
+                error=f"Project execution failed: {str(e)}\n{traceback.format_exc()}"
             )
