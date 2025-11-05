@@ -16,6 +16,7 @@ from .index import Index
 from .search import Search
 from .project import Project
 from .python_code import PythonCodeOperator  # TEMPORARY
+from .convert import ConvertOperator
 
 __all__ = [
     "Operator",
@@ -36,4 +37,5 @@ __all__ = [
     "Search",
     "Project",
     "PythonCodeOperator",  # TEMPORARY
+    "ConvertOperator",
 ]

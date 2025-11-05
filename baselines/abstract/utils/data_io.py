@@ -6,6 +6,32 @@ from pathlib import Path
 import json
 
 
+def get_file_format(file_path: str) -> str:
+    """
+    Extract file format from file path based on extension.
+
+    Args:
+        file_path: Path to the file
+
+    Returns:
+        File format (e.g., 'json', 'csv', 'txt', 'parquet', 'xlsx')
+        Returns 'unknown' if extension is missing or not recognized
+    """
+    path = Path(file_path)
+    extension = path.suffix.lstrip('.').lower()
+
+    if not extension:
+        return 'unknown'
+
+    # Map common extensions to format names
+    known_formats = {'json', 'csv', 'txt', 'parquet', 'xlsx', 'xls'}
+
+    if extension in known_formats:
+        return extension
+
+    return 'unknown'
+
+
 class DataReference:
     """Represents a data reference (input source or output destination) for a pipeline node."""
 

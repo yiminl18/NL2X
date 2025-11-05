@@ -15,7 +15,8 @@ ALL_ABSTRACT_OPERATORS = {
     'Rank', 'TopK', 'Extract', 'Cluster',
     'Split', 'Gather', 'Unnest', 'Sample',
     'Index', 'Project', 'Search',
-    'PythonCode'  # TEMPORARY: Abstract-only, not convertible to any base system
+    'PythonCode',  # TEMPORARY: Abstract-only, not convertible to any base system
+    'Convert'  # Abstract-only, for format conversion (CSV ↔ JSON)
 }
 
 BASE_SYSTEM_SUPPORT: Dict[BaseSystem, List[str]] = {
@@ -230,6 +231,19 @@ OPERATOR_DESCRIPTIONS = {
         'output_schema': {
             'description': 'JSON data returned via stdout from Python process',
             'example': '[{"field1": "processed_value", "new_field": "computed_value"}]'
+        }
+    },
+    # Convert operator (abstract-only, format conversion)
+    'Convert': {
+        'description': 'Convert data between formats (abstract-only)',
+        'core_function': 'Converts data between different formats (currently CSV ↔ JSON). Essential for cross-system data flow where format compatibility is needed. Handles conversion without changing data content or structure. Note: Abstract-only feature, not convertible to any base system.',
+        'input_schema': {
+            'description': 'Data in source format',
+            'example': 'CSV file or JSON list of records'
+        },
+        'output_schema': {
+            'description': 'Data converted to target format',
+            'example': 'JSON list of records or CSV file'
         }
     }
 }

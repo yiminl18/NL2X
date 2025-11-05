@@ -19,7 +19,7 @@ from .ops.base import Operator
 from .procedure import Procedure
 
 # Import executors
-from .executor import AbstractPythonExecutor, DocETLExecutor, LotusExecutor, ExecutionResult
+from .executor import AbstractExecutor, DocETLExecutor, LotusExecutor, ExecutionResult
 
 # Import conversion utilities
 from .convert.docetl import dict_to_operator, operator_to_dict
@@ -59,7 +59,7 @@ class PipelineEngine:
 
         # Initialize executors for different systems with shared cache
         self.executors = {
-            'abstract': AbstractPythonExecutor(
+            'abstract': AbstractExecutor(
                 verbose=verbose,
                 cache_manager=self.cache_manager
             ),

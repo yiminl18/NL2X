@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 
 from .ops.base import Operator
-from .utils.data_io import DataReference
+from .utils.data_io import DataReference, get_file_format
 
 
 class Procedure:
@@ -152,6 +152,38 @@ class Procedure:
                     f"Procedure system validation failed. All operators must use system '{self.base_system}'.\n"
                     + "\n".join(mismatched)
                 )
+
+    def _validate_input_formats(self, executors: Dict[str, Any]) -> List[str]:
+        """
+        Validate that input file formats match the procedure's base system primary data format.
+
+        Args:
+            executors: Dictionary mapping system names to executor instances
+
+        Returns:
+            List of warning messages for format mismatches
+        """
+        warnings = []
+
+        # Get primary data format for this procedure's base system
+        if self.base_system not in executors:
+            return warnings
+
+        primary_format = executors[self.base_system].get_primary_data_format()
+
+        # Check each data source
+        for ds in self.data_sources:
+            if ds.ref_type == "file":
+                file_format = get_file_format(ds.ref)
+
+                if file_format != 'unknown' and file_format != primary_format:
+                    warnings.append(
+                        f"Input file format mismatch in procedure '{self.name}': "
+                        f"file '{ds.ref}' has format '{file_format}' but "
+                        f"base system '{self.base_system}' expects '{primary_format}'"
+                    )
+
+        return warnings
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Procedure to dictionary."""

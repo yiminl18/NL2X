@@ -517,6 +517,19 @@ class Pipeline:
                             f"Ensure data format compatibility."
                         )
 
+        # Validate input file formats for each procedure
+        if executors:
+            for node_id, node in self.nodes.items():
+                if node.procedure_path:
+                    try:
+                        from .procedure import Procedure
+                        procedure = Procedure.load(node.procedure_path)
+                        format_warnings = procedure._validate_input_formats(executors)
+                        warnings.extend(format_warnings)
+                    except Exception:
+                        # Skip validation if procedure cannot be loaded
+                        pass
+
         # Print warnings if any
         if warnings:
             print("⚠️  Pipeline validation warnings:")
