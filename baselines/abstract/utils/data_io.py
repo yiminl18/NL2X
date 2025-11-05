@@ -84,7 +84,7 @@ class DataReference:
 
 def load_from_reference(ref: DataReference) -> List[Dict[str, Any]]:
     """
-    Load data from a DataReference.
+    Load data from a DataReference with format detection.
 
     Args:
         ref: DataReference to load (must be file type)
@@ -93,7 +93,8 @@ def load_from_reference(ref: DataReference) -> List[Dict[str, Any]]:
         List of dictionaries (raw data)
 
     Raises:
-        ValueError: If reference is not a file or file doesn't exist
+        ValueError: If reference is not a file or unsupported format
+        FileNotFoundError: If file doesn't exist
     """
     if ref.ref_type != "file":
         raise ValueError(f"Can only load from file references, got: {ref.ref_type}")
@@ -102,8 +103,19 @@ def load_from_reference(ref: DataReference) -> List[Dict[str, Any]]:
     if not file_path.exists():
         raise FileNotFoundError(f"Data file not found: {ref.ref}")
 
-    with open(file_path, 'r') as f:
-        data = json.load(f)
+    # Detect file format
+    file_format = get_file_format(str(file_path))
+
+    # Load based on format
+    if file_format == 'json':
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+    elif file_format == 'csv':
+        import pandas as pd
+        df = pd.read_csv(file_path)
+        data = df.to_dict('records')
+    else:
+        raise ValueError(f"Unsupported file format: {file_format}. Supported formats: json, csv")
 
     if not isinstance(data, list):
         raise ValueError(f"Expected list data in {ref.ref}, got {type(data).__name__}")

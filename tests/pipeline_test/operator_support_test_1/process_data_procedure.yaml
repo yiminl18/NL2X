@@ -2,6 +2,26 @@ name: process_data
 base_system: abstract
 
 operators:
+  # Operator 0: Convert CSV to JSON
+  - name: convert_csv_to_json
+    type: Convert
+    source:
+      system: abstract
+      name: Convert
+    properties:
+      source_format: csv
+      target_format: json
+    input:
+      fields: {}
+    output:
+      fields:
+        student_id: String
+        name: String
+        calculus: String
+        physics: String
+        biology: String
+        chemistry: String
+
   # Operator 1: Create nested structure from flat JSON
   - name: create_nested
     type: PythonCode

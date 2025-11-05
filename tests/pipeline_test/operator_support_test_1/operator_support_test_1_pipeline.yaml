@@ -15,7 +15,7 @@ nodes:
     data_sources:
       - type: file
         name: input_data
-        reference: student_grades.json
+        reference: student_grades.csv
     outputs:
       - type: node
         name: analyze_node_input
