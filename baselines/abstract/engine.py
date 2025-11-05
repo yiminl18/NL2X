@@ -409,7 +409,7 @@ class PipelineEngine:
             # Validate pipeline structure (includes system compatibility check)
             if self.verbose:
                 print(f"Validating pipeline: {pipeline.name}")
-            pipeline.validate()
+            pipeline.validate(self.executors)
 
             # Load all procedures
             if self.verbose:

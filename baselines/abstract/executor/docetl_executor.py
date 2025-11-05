@@ -31,12 +31,7 @@ from ..convert.docetl.path_manager import (
     set_dataset_paths,
     get_output_path,
     set_output_path,
-    apply_path_mappings
 )
-
-# DatasetManager type is used but no longer exists in a separate module
-# Using Any for type hints where needed
-
 
 class DocETLExecutor(BaseSystemExecutor):
     """Executor for DocETL system-specific operations with caching support."""
@@ -64,6 +59,10 @@ class DocETLExecutor(BaseSystemExecutor):
     def get_system_name(self) -> str:
         return 'docetl'
 
+    def get_primary_data_format(self) -> str:
+        """Get the primary data format supported by the executor (e.g., 'json', 'csv')."""
+        return 'json'
+        
     def execute_operator(self,
                         operator: Operator,
                         input_data: Any,

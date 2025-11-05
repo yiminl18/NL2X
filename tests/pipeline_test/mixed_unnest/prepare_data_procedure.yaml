@@ -1,0 +1,50 @@
+name: prepare_student_data
+base_system: abstract
+data_sources:
+  - type: file
+    name: nested_grades
+    reference: nested_grades.json
+outputs:
+  - type: file
+    name: prepared_data
+    reference: prepared_data.json
+properties:
+  description: Validate and prepare student grade data
+  created_by: test creation
+dataset_schema:
+  fields:
+    name: String
+    grades: Dict
+subtasks:
+  - Validate data structure and field presence
+operators:
+  - name: validate_data
+    type: PythonCode
+    source:
+      system: abstract
+      name: validate_data
+    properties:
+      function: |
+        def process(sources):
+            '''Validate student data structure.'''
+            data = sources['input_data']
+
+            # Validate required fields
+            for record in data:
+                if 'name' not in record:
+                    raise ValueError(f"Record missing 'name' field: {record}")
+                if 'grades' not in record:
+                    raise ValueError(f"Record missing 'grades' field: {record}")
+                if not isinstance(record['grades'], dict):
+                    raise ValueError(f"'grades' must be a dict, got {type(record['grades'])}")
+
+            # Return validated data
+            return data
+      sources: []
+    input:
+      fields:
+        name: String
+        grades: Dict
+    output:
+      name: String
+      grades: Dict

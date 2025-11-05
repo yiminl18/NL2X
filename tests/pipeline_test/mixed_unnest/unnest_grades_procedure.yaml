@@ -1,0 +1,37 @@
+name: unnest_student_grades
+base_system: docetl
+data_sources:
+  - type: file
+    name: prepared_data
+    reference: prepared_data.json
+outputs:
+  - type: file
+    name: unnested_data
+    reference: unnested_data.json
+properties:
+  description: Unnest grades dictionary to flatten structure
+  created_by: test creation
+dataset_schema:
+  fields:
+    name: String
+    grades: Dict
+subtasks:
+  - Unnest the grades dictionary to create flat records
+operators:
+  - name: unnest_grades
+    type: Unnest
+    source:
+      system: docetl
+      name: unnest_grades
+    properties:
+      unnest_key: grades
+      recursive: true
+    input:
+      fields:
+        name: String
+        grades: Dict
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer

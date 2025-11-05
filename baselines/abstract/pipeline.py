@@ -309,9 +309,13 @@ class Pipeline:
         self.nodes[from_node_id].children.append(to_node_id)
         self.nodes[to_node_id].parents.append(from_node_id)
 
-    def validate(self) -> None:
+    def validate(self, executors: Optional[Dict[str, Any]] = None) -> None:
         """
         Validate pipeline structure and data flow consistency with type-specific rules.
+
+        Args:
+            executors: Optional dict of system_name -> executor instances.
+                      When provided, enables data format compatibility checking.
 
         Checks:
         1. Pipeline must have at least 1 final node
@@ -485,16 +489,33 @@ class Pipeline:
                 )
 
         # Cross-system flow detection (warnings)
+        # When executors provided, check data format compatibility instead of just system mismatch
         for from_node_id, to_node_ids in self.edges.items():
             from_system = self.nodes[from_node_id].metadata.get('base_system')
             for to_node_id in to_node_ids:
                 to_system = self.nodes[to_node_id].metadata.get('base_system')
+
                 if from_system and to_system and from_system != to_system:
-                    warnings.append(
-                        f"Cross-system data flow: "
-                        f"{from_node_id} ({from_system}) -> {to_node_id} ({to_system}). "
-                        f"Ensure data format compatibility."
-                    )
+                    # If executors provided, check primary data format compatibility
+                    if executors and from_system in executors and to_system in executors:
+                        from_format = executors[from_system].get_primary_data_format()
+                        to_format = executors[to_system].get_primary_data_format()
+
+                        # Only warn if data formats differ
+                        if from_format != to_format:
+                            warnings.append(
+                                f"Cross-system data flow with incompatible formats: "
+                                f"{from_node_id} ({from_system}:{from_format}) -> "
+                                f"{to_node_id} ({to_system}:{to_format}). "
+                                f"Data conversion may be needed."
+                            )
+                    else:
+                        # Fallback to original warning if executors not provided
+                        warnings.append(
+                            f"Cross-system data flow: "
+                            f"{from_node_id} ({from_system}) -> {to_node_id} ({to_system}). "
+                            f"Ensure data format compatibility."
+                        )
 
         # Print warnings if any
         if warnings:

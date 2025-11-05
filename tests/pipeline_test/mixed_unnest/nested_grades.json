@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Tom",
+    "grades": {
+      "calculus": 80,
+      "physics": 70,
+      "biology": 75
+    }
+  },
+  {
+    "name": "Alice",
+    "grades": {
+      "calculus": 95,
+      "physics": 88,
+      "biology": 92
+    }
+  },
+  {
+    "name": "Bob",
+    "grades": {
+      "calculus": 78,
+      "physics": 85,
+      "biology": 90
+    }
+  },
+  {
+    "name": "Charlie",
+    "grades": {
+      "calculus": 65,
+      "physics": 72,
+      "biology": 68
+    }
+  },
+  {
+    "name": "Diana",
+    "grades": {
+      "calculus": 92,
+      "physics": 95,
+      "biology": 89
+    }
+  }
+]

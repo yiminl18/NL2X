@@ -70,6 +70,11 @@ class BaseSystemExecutor(ABC):
         """Get system identifier (e.g., 'docetl', 'lotus')."""
         pass
 
+    @abstractmethod
+    def get_primary_data_format(self) -> str:
+        """Get the primary data format supported by the executor (e.g., 'json', 'csv')."""
+        pass
+
     def supports_operator_type(self, op_type: str) -> bool:
         """Check if executor supports given operator type. Default: True for all."""
         return True

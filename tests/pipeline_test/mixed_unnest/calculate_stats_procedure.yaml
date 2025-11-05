@@ -1,0 +1,77 @@
+name: calculate_student_statistics
+base_system: abstract
+data_sources:
+  - type: file
+    name: unnested_data
+    reference: unnested_data.json
+outputs:
+  - type: file
+    name: final_statistics
+    reference: final_statistics.json
+properties:
+  description: Calculate average grades and categorize student performance
+  created_by: test creation
+dataset_schema:
+  fields:
+    name: String
+    calculus: Integer
+    physics: Integer
+    biology: Integer
+subtasks:
+  - Calculate average grade and assign performance category
+operators:
+  - name: compute_statistics
+    type: PythonCode
+    source:
+      system: abstract
+      name: compute_statistics
+    properties:
+      function: |
+        def process(sources):
+            '''Calculate average grade and categorize students.'''
+            data = sources['input_data']
+
+            result = []
+            for record in data:
+                name = record.get('name', 'Unknown')
+                calculus = record.get('calculus', 0)
+                physics = record.get('physics', 0)
+                biology = record.get('biology', 0)
+
+                # Calculate average
+                avg_grade = (calculus + physics + biology) / 3.0
+
+                # Categorize performance
+                if avg_grade >= 90:
+                    category = "Excellent"
+                elif avg_grade >= 80:
+                    category = "Good"
+                elif avg_grade >= 70:
+                    category = "Average"
+                else:
+                    category = "Needs Improvement"
+
+                result.append({
+                    'name': name,
+                    'calculus': calculus,
+                    'physics': physics,
+                    'biology': biology,
+                    'average_grade': round(avg_grade, 2),
+                    'category': category
+                })
+
+            return result
+      sources: []
+    input:
+      fields:
+        name: String
+        calculus: Integer
+        physics: Integer
+        biology: Integer
+    output:
+      name: String
+      calculus: Integer
+      physics: Integer
+      biology: Integer
+      average_grade: Float
+      category: String

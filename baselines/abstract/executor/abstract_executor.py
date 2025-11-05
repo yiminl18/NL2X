@@ -53,6 +53,10 @@ class AbstractPythonExecutor(BaseSystemExecutor):
         """Get the name of the execution system."""
         return 'abstract'
 
+    def get_primary_data_format(self) -> str:
+        """Get the primary data format supported by the executor (e.g., 'json', 'csv')."""
+        return 'json'
+
     def supports_operator_type(self, op_type: str) -> bool:
         """Check if executor supports given operator type. Only supports PythonCode."""
         return op_type == 'PythonCode'

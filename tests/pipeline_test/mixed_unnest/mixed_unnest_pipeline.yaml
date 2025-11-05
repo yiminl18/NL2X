@@ -1,0 +1,55 @@
+name: mixed_unnest_pipeline
+output_path: final_statistics.json
+properties:
+  base_system: abstract
+  parallel_execution: false
+  max_parallel_workers: 1
+  default_model: gpt-4o-mini
+  description: Pipeline testing mixed abstract-docetl-abstract procedures with unnest operator
+nodes:
+  prepare_node:
+    node_type: normal
+    procedure_path: prepare_data_procedure.yaml
+    data_sources:
+      - type: file
+        name: nested_grades.json
+        reference: nested_grades.json
+    outputs:
+      - type: node
+        name: prepared_output
+        reference: unnest_node
+    metadata:
+      description: Validate and prepare student data (Abstract PythonCode)
+
+  unnest_node:
+    node_type: normal
+    procedure_path: unnest_grades_procedure.yaml
+    data_sources:
+      - type: node
+        name: prepare_node_output
+        reference: prepare_node
+    outputs:
+      - type: node
+        name: unnested_output
+        reference: calculate_node
+    metadata:
+      description: Unnest grades dictionary (DocETL Unnest operator)
+
+  calculate_node:
+    node_type: final
+    procedure_path: calculate_stats_procedure.yaml
+    data_sources:
+      - type: node
+        name: unnested_data
+        reference: unnest_node
+    outputs:
+      - type: file
+        name: final_statistics
+        reference: final_statistics.json
+    metadata:
+      description: Calculate statistics and categorize (Abstract PythonCode)
+edges:
+  prepare_node:
+    - unnest_node
+  unnest_node:
+    - calculate_node

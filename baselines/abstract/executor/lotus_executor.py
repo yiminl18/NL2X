@@ -46,11 +46,12 @@ class LotusExecutor(BaseSystemExecutor):
     def get_system_name(self) -> str:
         """
         Get the name of the execution system.
-
-        Returns:
-            'lotus' as the system identifier
         """
         return 'lotus'
+
+    def get_primary_data_format(self) -> str:
+        """Get the primary data format supported by the executor (e.g., 'json', 'csv')."""
+        return 'csv'
 
     def execute_operator(self,
                         operator: Operator,
