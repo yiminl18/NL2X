@@ -15,6 +15,7 @@ class ConvertOperator(Operator):
 
     Currently supports:
     - CSV to JSON conversion
+    - HTML to JSON conversion
 
     Usage:
         op = ConvertOperator()
@@ -49,12 +50,12 @@ class ConvertOperator(Operator):
             "properties": {
                 "source_format": {
                     "type": "string",
-                    "enum": ["csv", "json"],
+                    "enum": ["csv", "html"],
                     "description": "Source data format to convert from"
                 },
                 "target_format": {
                     "type": "string",
-                    "enum": ["csv", "json"],
+                    "enum": ["json"],
                     "description": "Target data format to convert to"
                 },
                 "input": {

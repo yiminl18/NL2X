@@ -422,11 +422,11 @@ except Exception as e:
                         input_data: Any,
                         force_execute: bool = False) -> ExecutionResult:
         """
-        Execute format conversion (CSV to JSON, JSON to CSV).
+        Execute format conversion (CSV to JSON, HTML to JSON, etc.).
 
         Args:
             operator: Convert operator with source_format and target_format in properties
-            input_data: Input data (list of dicts for JSON, file path for CSV)
+            input_data: Input data (list of dicts for JSON, file path for CSV/HTML, HTML string)
             force_execute: If True, bypass cache and force execution
 
         Returns:
@@ -462,6 +462,9 @@ except Exception as e:
             # Perform conversion based on formats
             if source_format == 'csv' and target_format == 'json':
                 output_data = self._convert_csv_to_json(input_data)
+
+            elif source_format == 'html' and target_format == 'json':
+                output_data = self._convert_html_to_json(input_data)
 
             elif source_format == 'json' and target_format == 'csv':
                 return ExecutionResult(
@@ -541,6 +544,211 @@ except Exception as e:
 
         else:
             raise ValueError(f"Unsupported input data type for CSV conversion: {type(input_data)}")
+
+    def _convert_html_to_json(self, input_data: Any) -> List[Dict[str, Any]]:
+        """
+        Convert HTML to structured JSON format preserving only text and table content.
+
+        Flattening strategy:
+        - Skips layers without direct text content (only children are preserved)
+        - Only elements with text or special types (tables, lists) create new layers
+
+        Special transformations:
+        - Tables: converted to 2D arrays
+        - Lists: converted to {items: [...]} format
+        - Images: completely removed
+        - Links: treated as regular elements (only text preserved, URLs removed)
+
+        Removes all HTML attributes and style-related tags (<style>, <script>).
+
+        Args:
+            input_data: HTML file path (str), HTML string, or list of such
+
+        Returns:
+            List containing single dict with 'html_structure' key
+            Note: html_structure may be a dict, list, or string depending on content
+        """
+        from bs4 import BeautifulSoup, Tag, NavigableString
+
+        # Handle list input (process each item)
+        if isinstance(input_data, list):
+            results = []
+            for item in input_data:
+                results.extend(self._convert_html_to_json(item))
+            return results
+
+        # Get HTML content
+        if isinstance(input_data, str):
+            # Check if it's a file path
+            if input_data.endswith('.html') or input_data.endswith('.htm'):
+                if self.verbose:
+                    print(f"  Reading HTML file: {input_data}")
+                with open(input_data, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+            else:
+                # Treat as HTML string
+                html_content = input_data
+        else:
+            raise ValueError(f"Unsupported input data type for HTML conversion: {type(input_data)}")
+
+        # Parse HTML
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # Remove unwanted tags
+        for tag in soup.find_all(['script', 'style', 'meta', 'link', 'noscript']):
+            tag.decompose()
+
+        # Parse body or entire document
+        root = soup.body if soup.body else soup
+
+        # Convert to structured JSON
+        structure = self._parse_html_element(root)
+
+        return [{'html_structure': structure}]
+
+    def _parse_html_element(self, element) -> Union[Dict[str, Any], List[Any], str, None]:
+        """
+        Recursively parse HTML element into structured JSON.
+
+        Skips layers without direct text content, returning children directly.
+
+        Args:
+            element: BeautifulSoup Tag or NavigableString
+
+        Returns:
+            - Dict with structure for elements with text
+            - String for text nodes
+            - List for skipped layers with multiple children
+            - None for empty/skipped elements
+        """
+        from bs4 import Tag, NavigableString, Comment
+
+        # Skip comments
+        if isinstance(element, Comment):
+            return None
+
+        # Handle text nodes
+        if isinstance(element, NavigableString):
+            text = str(element).strip()
+            return text if text else None
+
+        # Handle tag elements
+        if isinstance(element, Tag):
+            tag_name = element.name
+
+            # Special handling for tables
+            if tag_name == 'table':
+                return self._parse_table(element)
+
+            # Skip images completely
+            if tag_name == 'img':
+                return None
+
+            # Skip buttons completely
+            if tag_name == 'button':
+                return None
+
+            # Special handling for links - return text only (merges into parent)
+            if tag_name == 'a':
+                return element.get_text(strip=True) or None
+
+            # Special handling for lists
+            if tag_name in ['ul', 'ol']:
+                items = []
+                for li in element.find_all('li', recursive=False):
+                    item_content = self._parse_html_element(li)
+                    if item_content is not None:
+                        # Flatten if item returned a list
+                        if isinstance(item_content, list):
+                            items.extend(item_content)
+                        else:
+                            items.append(item_content)
+                return {
+                    'tag': tag_name,
+                    'type': 'list',
+                    'items': items
+                }
+
+            # Generic element handling
+            children = []
+            direct_text_parts = []
+
+            for child in element.children:
+                # Handle text nodes - add to direct_text
+                if isinstance(child, NavigableString):
+                    text = str(child).strip()
+                    if text:
+                        direct_text_parts.append(text)
+                    continue
+
+                # Handle link elements - add text to direct_text, skip structure
+                if isinstance(child, Tag) and child.name == 'a':
+                    link_text = child.get_text(strip=True)
+                    if link_text:
+                        direct_text_parts.append(link_text)
+                    continue
+
+                # Handle other elements - add to children
+                parsed_child = self._parse_html_element(child)
+                if parsed_child is not None:
+                    # Flatten if child returned a list (skipped empty layer)
+                    if isinstance(parsed_child, list):
+                        children.extend(parsed_child)
+                    else:
+                        children.append(parsed_child)
+
+            # Combine direct text parts
+            direct_text = ' '.join(direct_text_parts)
+
+            # Skip this layer if no direct text
+            if not direct_text:
+                # Return children directly (skip this empty layer)
+                if len(children) == 1:
+                    return children[0]
+                elif len(children) > 1:
+                    return children
+                else:
+                    return None
+
+            # Has direct text, keep this layer
+            result = {
+                'tag': tag_name,
+                'text': direct_text
+            }
+
+            # Only add children field if not empty
+            if children:
+                result['children'] = children
+
+            return result
+
+        return None
+
+    def _parse_table(self, table_element) -> Dict[str, Any]:
+        """
+        Parse HTML table into 2D array structure.
+
+        Args:
+            table_element: BeautifulSoup table Tag
+
+        Returns:
+            Dict with table structure
+        """
+        rows = []
+
+        # Parse all rows (from thead and tbody)
+        for row in table_element.find_all('tr'):
+            cells = []
+            for cell in row.find_all(['th', 'td']):
+                cells.append(cell.get_text(strip=True))
+            if cells:
+                rows.append(cells)
+
+        return {
+            'tag': 'table',
+            'type': 'table',
+            'data': rows
+        }
 
     def _execute_sample(self,
                        operator: Operator,
