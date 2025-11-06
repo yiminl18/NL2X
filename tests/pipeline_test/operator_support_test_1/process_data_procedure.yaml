@@ -14,13 +14,7 @@ operators:
     input:
       fields: {}
     output:
-      fields:
-        student_id: String
-        name: String
-        calculus: String
-        physics: String
-        biology: String
-        chemistry: String
+      fields: {}
 
   # Operator 1: Create nested structure from flat JSON
   - name: create_nested
@@ -90,18 +84,6 @@ operators:
       samples: 5
       random_state: 42
     input:
-      fields:
-        student_id: Integer
-        name: String
-        calculus: Integer
-        physics: Integer
-        biology: Integer
-        chemistry: Integer
+      fields: {}
     output:
-      fields:
-        student_id: Integer
-        name: String
-        calculus: Integer
-        physics: Integer
-        biology: Integer
-        chemistry: Integer
+      fields: {}

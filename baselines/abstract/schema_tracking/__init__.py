@@ -18,7 +18,7 @@ def create_tracker(
     Create system-specific schema tracker.
 
     Args:
-        system: Target system (DOCETL, LOTUS, etc.)
+        system: Target system (DOCETL, LOTUS, ABSTRACT, etc.)
         initial_schema: Initial dataset schema
         verbose: Enable verbose logging
 
@@ -31,6 +31,9 @@ def create_tracker(
     if system == BaseSystem.DOCETL:
         from ...docetl_support.schema_tracking import DocETLSchemaTracker
         return DocETLSchemaTracker(initial_schema, verbose)
+    elif system == BaseSystem.ABSTRACT:
+        from ...abstract_support.schema_tracking import AbstractSchemaTracker
+        return AbstractSchemaTracker(initial_schema, verbose)
     elif system == BaseSystem.LOTUS:
         raise NotImplementedError("LOTUS schema tracking not yet implemented")
     else:
@@ -46,7 +49,7 @@ def create_tracker_from_dataset(
     Create schema tracker by inferring schema from dataset.
 
     Args:
-        system: Target system (DOCETL, LOTUS, etc.)
+        system: Target system (DOCETL, LOTUS, ABSTRACT, etc.)
         dataset_path: Path to dataset file
         verbose: Enable verbose logging
 
@@ -60,6 +63,9 @@ def create_tracker_from_dataset(
     if system == BaseSystem.DOCETL:
         from ...docetl_support.schema_tracking import DocETLSchemaTracker
         return DocETLSchemaTracker.from_dataset(dataset_path, verbose)
+    elif system == BaseSystem.ABSTRACT:
+        from ...abstract_support.schema_tracking import AbstractSchemaTracker
+        return AbstractSchemaTracker.from_dataset(dataset_path, verbose)
     elif system == BaseSystem.LOTUS:
         raise NotImplementedError("LOTUS schema tracking not yet implemented")
     else:
