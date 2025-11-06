@@ -1,7 +1,7 @@
 """
 Shared data I/O utilities for abstract layer.
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 import json
 
@@ -51,6 +51,7 @@ class DataReference:
         self.ref = ref
         self.output_name = output_name
         self.name = self._generate_name()
+        self.format = self._detect_format()  # Track original file format
 
     def _generate_name(self) -> str:
         """Auto-generate reference name based on type and reference."""
@@ -58,6 +59,12 @@ class DataReference:
             return f"{self.ref}_source"
         else:  # file
             return Path(self.ref).name
+
+    def _detect_format(self) -> Optional[str]:
+        """Detect file format for file references."""
+        if self.ref_type == 'file':
+            return get_file_format(self.ref)
+        return None  # Node references don't have file format
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize DataReference to dictionary."""
@@ -82,15 +89,19 @@ class DataReference:
         return f"DataReference(type='{self.ref_type}', name='{self.name}', ref='{self.ref}')"
 
 
-def load_from_reference(ref: DataReference) -> List[Dict[str, Any]]:
+def load_from_reference(ref: DataReference, verbose: bool = False) -> Any:
     """
     Load data from a DataReference with format detection.
 
+    Preserves format semantics: even if CSV is converted to List[Dict],
+    the original format is tracked in ref.format for validation purposes.
+
     Args:
         ref: DataReference to load (must be file type)
+        verbose: If True, print warnings for non-list data
 
     Returns:
-        List of dictionaries (raw data)
+        Data in appropriate format (List[Dict] for CSV/JSON, or other types for future formats)
 
     Raises:
         ValueError: If reference is not a file or unsupported format
@@ -117,18 +128,20 @@ def load_from_reference(ref: DataReference) -> List[Dict[str, Any]]:
     else:
         raise ValueError(f"Unsupported file format: {file_format}. Supported formats: json, csv")
 
-    if not isinstance(data, list):
-        raise ValueError(f"Expected list data in {ref.ref}, got {type(data).__name__}")
+    # Optional warning for non-list data (for backwards compatibility awareness)
+    if verbose and not isinstance(data, list):
+        print(f"Warning: Loaded data from {ref.ref} is {type(data).__name__}, not list. "
+              f"Some operators may require list input.")
 
     return data
 
 
-def save_to_reference(data: List[Dict[str, Any]], ref: DataReference) -> None:
+def save_to_reference(data: Any, ref: DataReference) -> None:
     """
     Save data to a DataReference.
 
     Args:
-        data: Raw data to save
+        data: Data to save (any JSON-serializable type)
         ref: DataReference to save to (must be file type)
 
     Raises:

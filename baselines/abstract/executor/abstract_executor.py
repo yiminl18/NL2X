@@ -457,6 +457,7 @@ except Exception as e:
 
             if self.verbose:
                 print(f"  Converting {source_format} → {target_format}")
+                print(f"  (Explicit format conversion via Convert operator)")
 
             # Perform conversion based on formats
             if source_format == 'csv' and target_format == 'json':

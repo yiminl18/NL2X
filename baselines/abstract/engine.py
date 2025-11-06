@@ -312,6 +312,51 @@ class PipelineEngine:
                 error=f"Procedure range execution failed: {str(e)}\n{traceback.format_exc()}"
             )
 
+    def _check_format_compatibility(self, data_source: DataReference, procedure, warn: bool = True) -> None:
+        """
+        Check if data source format is compatible with procedure's base system.
+
+        Warns if format mismatch detected and first operator is not Convert.
+        Preserves format semantics for future validation.
+
+        Args:
+            data_source: Data source reference to check
+            procedure: Procedure to execute
+            warn: Whether to print warning (default True)
+        """
+        # Only check file references (node references have no format)
+        if data_source.ref_type != 'file':
+            return
+
+        # Skip if format couldn't be detected
+        if not data_source.format or data_source.format == 'unknown':
+            return
+
+        # Get base system's preferred format
+        base_system = procedure.base_system
+        if base_system not in self.executors:
+            return
+
+        expected_format = self.executors[base_system].get_primary_data_format()
+        actual_format = data_source.format
+
+        # Check if formats match
+        if actual_format == expected_format:
+            return  # No warning needed, formats compatible
+
+        # Check if first operator is Convert (explicit conversion)
+        if len(procedure.operators) > 0:
+            first_op = procedure.operators[0]
+            if first_op.type.lower() == 'convert':
+                return  # Convert operator handles format conversion explicitly
+
+        # Format mismatch without Convert operator
+        if warn and self.verbose:
+            print(f"⚠️  Format compatibility notice:")
+            print(f"    Data source '{data_source.name}' is {actual_format} format")
+            print(f"    Procedure '{procedure.name}' base system '{base_system}' expects {expected_format}")
+            print(f"    Data will be auto-converted, but consider adding a Convert operator for clarity.")
+
     def _resolve_data_reference(self,
                                ref: DataReference,
                                outputs_registry: Dict[str, Any],
@@ -505,6 +550,10 @@ class PipelineEngine:
 
                     if self.verbose:
                         print(f"  Multi-source node: {len(node.data_sources)} inputs from {list(source_node_mapping.keys())}")
+
+                # Check format compatibility (warns if format mismatch without Convert operator)
+                if len(node.data_sources) > 0:
+                    self._check_format_compatibility(node.data_sources[0], procedure)
 
                 # Setup intermediate directory for this node
                 node_intermediate_dir = None
